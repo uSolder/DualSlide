@@ -1,0 +1,23 @@
+# CMake-generated build directories
+Software/build/
+
+# Visual Studio / VS Code local files
+.vs/
+.vscode/
+
+# CMake-generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+
+# Compiled outputs
+*.elf
+*.hex
+*.bin
+*.map
+*.a
+*.obj
+*.o
+*.exe
+*.pdb
