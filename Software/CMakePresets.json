@@ -11,9 +11,14 @@
             "name": "windows-debug",
             "displayName": "Windows Debug",
             "inherits": "base",
+            "environment": {
+                "PATH": "C:/msys64/ucrt64/bin;$penv{PATH}"
+            },
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug",
-                "DS_PLATFORM": "windows"
+                "DS_PLATFORM": "windows",
+                "CMAKE_C_COMPILER": "C:/msys64/ucrt64/bin/gcc.exe",
+                "CMAKE_CXX_COMPILER": "C:/msys64/ucrt64/bin/g++.exe"
             }
         },
         {
