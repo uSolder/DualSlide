@@ -1,0 +1,2 @@
+add_subdirectory(app_management)
+add_subdirectory(games)

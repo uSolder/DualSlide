@@ -16,9 +16,15 @@ FetchContent_Declare(
 
 FetchContent_MakeAvailable(SDL3)
 
-target_link_libraries(DualSlideSim PRIVATE SDL3::SDL3)
+target_link_libraries(DualSlideSim
+    PRIVATE
+        DualSlideShared
+        DualSlideAppManager
+        SDL3::SDL3
+)
 
 target_include_directories(DualSlideSim PRIVATE
     "${CMAKE_CURRENT_LIST_DIR}/../shared"
     "${CMAKE_CURRENT_LIST_DIR}/../shared/api"
 )
+

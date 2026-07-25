@@ -9,6 +9,9 @@ set(CMAKE_C_EXTENSIONS OFF)
 set(DS_PLATFORM "windows" CACHE STRING "Build platform: windows or embedded")
 set_property(CACHE DS_PLATFORM PROPERTY STRINGS windows embedded)
 
+add_subdirectory(firmware/shared)
+add_subdirectory(apps)
+
 if(DS_PLATFORM STREQUAL "windows")
     add_subdirectory(firmware/windows)
 elseif(DS_PLATFORM STREQUAL "embedded")
