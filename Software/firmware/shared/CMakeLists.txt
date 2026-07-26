@@ -3,6 +3,8 @@
 # an empty archive to the link step.
 add_library(DualSlideShared INTERFACE)
 
+add_subdirectory(system)
+
 target_include_directories(DualSlideShared
     INTERFACE
         "${CMAKE_CURRENT_LIST_DIR}"

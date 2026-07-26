@@ -19,6 +19,7 @@ FetchContent_MakeAvailable(SDL3)
 target_link_libraries(DualSlideSim
     PRIVATE
         DualSlideShared
+        DualSlideSystem
         DualSlideAppManager
         SDL3::SDL3
 )
@@ -26,5 +27,6 @@ target_link_libraries(DualSlideSim
 target_include_directories(DualSlideSim PRIVATE
     "${CMAKE_CURRENT_LIST_DIR}/../shared"
     "${CMAKE_CURRENT_LIST_DIR}/../shared/api"
+    "${CMAKE_CURRENT_LIST_DIR}/../shared/system/inc"
 )
 
