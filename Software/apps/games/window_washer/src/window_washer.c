@@ -905,8 +905,19 @@ static void WindowWasher_DrawBuilding(Render_TargetTypeDef *Target, const Window
 
 static void WindowWasher_DrawHotelEntrance(Render_TargetTypeDef *Target, const WindowWasher_GameTypeDef *Game)
 {
-    const int16_t GroundY = (int16_t)(HOTEL_GROUND_Y + Game->BuildingScroll);
-    const int16_t EntranceTopY = (int16_t)(HOTEL_ENTRANCE_TOP_Y + Game->BuildingScroll);
+    /*
+     * Stop drawing the ground-floor facade once it has moved completely below
+     * the display. This check must happen before narrowing BuildingScroll to
+     * int16_t, otherwise a long play session can wrap the coordinates and make
+     * the hotel reappear with invalid rectangle dimensions.
+     */
+    if(Game->BuildingScroll >= ((int32_t)RENDER_HEIGHT - HOTEL_ENTRANCE_TOP_Y))
+    {
+        return;
+    }
+
+    const int16_t GroundY = (int16_t)((int32_t)HOTEL_GROUND_Y + Game->BuildingScroll);
+    const int16_t EntranceTopY = (int16_t)((int32_t)HOTEL_ENTRANCE_TOP_Y + Game->BuildingScroll);
     const int16_t EntranceLeftX = (int16_t)(((int16_t)RENDER_WIDTH - (int16_t)HOTEL_ENTRANCE_WIDTH) / 2);
     const int16_t EntranceRightX = (int16_t)(EntranceLeftX + (int16_t)HOTEL_ENTRANCE_WIDTH);
     const int16_t CanopyLeftX = (int16_t)(((int16_t)RENDER_WIDTH - (int16_t)HOTEL_CANOPY_WIDTH) / 2);
@@ -1094,11 +1105,6 @@ static void WindowWasher_DrawHotelEntrance(Render_TargetTypeDef *Target, const W
         22U,
         8U
     };
-
-    if(EntranceTopY >= (int16_t)RENDER_HEIGHT)
-    {
-        return;
-    }
 
     Render_FillRect(Target, &EntranceRecess, COLOUR_WINDOW_RECESS);
     Render_FillRect(Target, &EntranceFrame, COLOUR_FACADE_TRIM);
