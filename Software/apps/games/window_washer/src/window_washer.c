@@ -1748,7 +1748,7 @@ void WindowWasher_Render(void)
     WindowWasher_PendingDeltaTimeMilliseconds = 0U;
 
     Render_ResetClipRect();
-    //Render_Clear(&Target, COLOUR_SKY);
+    Render_Clear(&Target, COLOUR_SKY);
     WindowWasher_DrawBackground(&Target, &WindowWasher_Game);
     WindowWasher_DrawBuilding(&Target, &WindowWasher_Game);
     WindowWasher_DrawHotelEntrance(&Target, &WindowWasher_Game);
