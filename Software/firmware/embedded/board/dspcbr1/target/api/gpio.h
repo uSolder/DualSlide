@@ -1,11 +1,12 @@
-/*
- * gpio.h
+/**
+ * @file gpio.h
+ * @brief Hardware-independent digital GPIO interface.
  *
- * Hardware-independent digital GPIO interface.
+ * This interface provides configuration and logical control of board-level
+ * digital GPIO signals.
  *
- * This interface provides simple logical control of board-level signals.
- * It intentionally does not expose alternate functions, analog modes,
- * drive strength, slew rate, or other target-specific pin configuration.
+ * It intentionally does not expose alternate functions, analog modes, drive
+ * strength, slew rate, or other target-specific configuration.
  */
 
 #ifndef TARGET_INTERFACE_GPIO_H
@@ -25,10 +26,10 @@ extern "C" {
 /**
  * @brief Value representing an unassigned GPIO pin.
  */
-#define GPIO_PIN_NONE    UINT32_MAX
+#define GPIO_PIN_NONE UINT32_MAX
 
 /* -------------------------------------------------------------------------- */
-/* Types                                                                      */
+/* Pin types                                                                  */
 /* -------------------------------------------------------------------------- */
 
 /**
@@ -36,8 +37,8 @@ extern "C" {
  *
  * The target implementation determines how this value is encoded.
  *
- * An STM32 target may encode the port in the upper nibble and the pin number
- * in the lower nibble:
+ * An STM32 target may encode the port in the upper nibble and pin number in
+ * the lower nibble:
  *
  * @code
  * PA0  = 0x00
@@ -45,8 +46,6 @@ extern "C" {
  * PB0  = 0x10
  * PC7  = 0x27
  * @endcode
- *
- * Other targets may use flat pin numbering or another internal representation.
  */
 typedef uint32_t GPIO_PinIdTypeDef;
 
@@ -62,6 +61,40 @@ typedef struct
     GPIO_PinIdTypeDef Pin;
 } GPIO_PinTypeDef;
 
+/* -------------------------------------------------------------------------- */
+/* Configuration types                                                        */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * @brief Digital GPIO operating mode.
+ */
+typedef enum
+{
+    GPIO_MODE_INPUT = 0,
+    GPIO_MODE_OUTPUT
+} GPIO_ModeTypeDef;
+
+/**
+ * @brief Electrical output-driver type.
+ *
+ * This setting applies only when the pin is configured as an output.
+ */
+typedef enum
+{
+    GPIO_OUTPUT_PUSH_PULL = 0,
+    GPIO_OUTPUT_OPEN_DRAIN
+} GPIO_OutputTypeDef;
+
+/**
+ * @brief Internal pull-resistor configuration.
+ */
+typedef enum
+{
+    GPIO_PULL_NONE = 0,
+    GPIO_PULL_UP,
+    GPIO_PULL_DOWN
+} GPIO_PullTypeDef;
+
 /**
  * @brief Logical digital GPIO level.
  */
@@ -70,6 +103,23 @@ typedef enum
     GPIO_LEVEL_LOW = 0,
     GPIO_LEVEL_HIGH
 } GPIO_LevelTypeDef;
+
+/**
+ * @brief Digital GPIO configuration.
+ *
+ * For input pins, OutputType and InitialLevel are ignored.
+ *
+ * For output pins, InitialLevel is applied before the pin is switched into
+ * output mode where the target permits this. This avoids unintended output
+ * pulses during initialization.
+ */
+typedef struct
+{
+    GPIO_ModeTypeDef Mode;
+    GPIO_OutputTypeDef OutputType;
+    GPIO_PullTypeDef Pull;
+    GPIO_LevelTypeDef InitialLevel;
+} GPIO_ConfigTypeDef;
 
 /**
  * @brief Result returned by GPIO operations.
@@ -85,23 +135,48 @@ typedef enum
 } GPIO_ResultTypeDef;
 
 /* -------------------------------------------------------------------------- */
+/* Configuration                                                              */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * @brief Configure a GPIO pin for digital input or output operation.
+ *
+ * The target implementation enables the required GPIO peripheral clock and
+ * applies the requested digital configuration.
+ *
+ * This function does not support alternate-function or analog configuration.
+ *
+ * @param Pin    GPIO pin descriptor.
+ * @param Config Digital pin configuration.
+ *
+ * @return GPIO_RESULT_OK on success.
+ */
+GPIO_ResultTypeDef GPIO_Init(const GPIO_PinTypeDef *Pin, const GPIO_ConfigTypeDef *Config);
+
+/**
+ * @brief Return a GPIO pin to its target-defined reset configuration.
+ *
+ * @param Pin GPIO pin descriptor.
+ *
+ * @return GPIO_RESULT_OK on success.
+ */
+GPIO_ResultTypeDef GPIO_Deinit(const GPIO_PinTypeDef *Pin);
+
+/* -------------------------------------------------------------------------- */
 /* Digital output                                                             */
 /* -------------------------------------------------------------------------- */
 
 /**
  * @brief Set the logical output level of a GPIO pin.
  *
- * The pin must already be configured as a digital output by the target or
- * board initialization code.
+ * The pin must already be configured as a digital output.
  *
  * @param Pin   GPIO pin descriptor.
  * @param Level Desired logical output level.
  *
  * @return GPIO_RESULT_OK on success.
  */
-GPIO_ResultTypeDef GPIO_Write(
-    const GPIO_PinTypeDef *Pin,
-    GPIO_LevelTypeDef Level);
+GPIO_ResultTypeDef GPIO_Write(const GPIO_PinTypeDef *Pin, GPIO_LevelTypeDef Level);
 
 /**
  * @brief Set a GPIO output to the logical high level.
@@ -110,8 +185,7 @@ GPIO_ResultTypeDef GPIO_Write(
  *
  * @return GPIO_RESULT_OK on success.
  */
-GPIO_ResultTypeDef GPIO_Set(
-    const GPIO_PinTypeDef *Pin);
+GPIO_ResultTypeDef GPIO_Set(const GPIO_PinTypeDef *Pin);
 
 /**
  * @brief Set a GPIO output to the logical low level.
@@ -120,8 +194,7 @@ GPIO_ResultTypeDef GPIO_Set(
  *
  * @return GPIO_RESULT_OK on success.
  */
-GPIO_ResultTypeDef GPIO_Clear(
-    const GPIO_PinTypeDef *Pin);
+GPIO_ResultTypeDef GPIO_Clear(const GPIO_PinTypeDef *Pin);
 
 /**
  * @brief Toggle the current GPIO output level.
@@ -130,8 +203,7 @@ GPIO_ResultTypeDef GPIO_Clear(
  *
  * @return GPIO_RESULT_OK on success.
  */
-GPIO_ResultTypeDef GPIO_Toggle(
-    const GPIO_PinTypeDef *Pin);
+GPIO_ResultTypeDef GPIO_Toggle(const GPIO_PinTypeDef *Pin);
 
 /* -------------------------------------------------------------------------- */
 /* Digital input                                                              */
@@ -140,50 +212,45 @@ GPIO_ResultTypeDef GPIO_Toggle(
 /**
  * @brief Read the current logical level of a GPIO pin.
  *
- * The pin must already be configured as a digital input or output by the
- * target or board initialization code.
+ * The pin must already be configured as a digital input or output.
  *
  * @param Pin   GPIO pin descriptor.
  * @param Level Receives the current logical pin level.
  *
  * @return GPIO_RESULT_OK on success.
  */
-GPIO_ResultTypeDef GPIO_Read(
-    const GPIO_PinTypeDef *Pin,
-    GPIO_LevelTypeDef *Level);
+GPIO_ResultTypeDef GPIO_Read(const GPIO_PinTypeDef *Pin, GPIO_LevelTypeDef *Level);
 
 /**
  * @brief Determine whether a GPIO pin is logically high.
  *
- * If the pin cannot be read, this function returns false. Use GPIO_Read()
- * when the caller needs explicit error information.
+ * If the pin cannot be read, this function returns false. Use GPIO_Read() when
+ * the caller needs explicit error information.
  *
  * @param Pin GPIO pin descriptor.
  *
  * @return true when the pin is logically high.
  */
-bool GPIO_IsHigh(
-    const GPIO_PinTypeDef *Pin);
+bool GPIO_IsHigh(const GPIO_PinTypeDef *Pin);
 
 /**
  * @brief Determine whether a GPIO pin is logically low.
  *
- * If the pin cannot be read, this function returns false. Use GPIO_Read()
- * when the caller needs explicit error information.
+ * If the pin cannot be read, this function returns false. Use GPIO_Read() when
+ * the caller needs explicit error information.
  *
  * @param Pin GPIO pin descriptor.
  *
  * @return true when the pin is logically low.
  */
-bool GPIO_IsLow(
-    const GPIO_PinTypeDef *Pin);
+bool GPIO_IsLow(const GPIO_PinTypeDef *Pin);
 
 /* -------------------------------------------------------------------------- */
 /* Utility                                                                    */
 /* -------------------------------------------------------------------------- */
 
 /**
- * @brief Determine whether a GPIO pin descriptor contains an assigned pin.
+ * @brief Determine whether a GPIO descriptor contains an assigned pin.
  *
  * This function checks only that the descriptor is non-null and that its pin
  * identifier is not GPIO_PIN_NONE. It does not verify that the pin physically
@@ -193,8 +260,7 @@ bool GPIO_IsLow(
  *
  * @return true when the descriptor contains an assigned pin.
  */
-bool GPIO_IsAssigned(
-    const GPIO_PinTypeDef *Pin);
+bool GPIO_IsAssigned(const GPIO_PinTypeDef *Pin);
 
 #ifdef __cplusplus
 }

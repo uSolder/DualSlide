@@ -121,8 +121,6 @@
   * @{
   */
 
-#define STM32H7A3xxQ
-
 #if defined(STM32H743xx)
   #include "stm32h743xx.h"
 #elif defined(STM32H753xx)

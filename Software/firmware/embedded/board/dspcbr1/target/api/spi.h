@@ -1,16 +1,19 @@
-*
- * spi.h
+/**
+ * @file spi.h
+ * @brief Hardware-independent SPI interface contract.
  *
- * Hardware-independent SPI interface contract.
+ * This interface separates an SPI connection into:
  *
- * This file defines the API implemented by each target-specific SPI driver.
- * It must not include MCU-specific headers or expose peripheral registers.
+ * - SPI_Bus_Handle: the physical shared SPI bus.
+ * - SPI_Device_Handle: one device connected to that bus.
+ *
+ * The target-specific implementation translates target pin and peripheral
+ * identifiers into the required register, clock, and GPIO configuration.
  */
 
 #ifndef TARGET_INTERFACE_SPI_H
 #define TARGET_INTERFACE_SPI_H
 
-#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -19,25 +22,52 @@ extern "C" {
 #endif
 
 /* -------------------------------------------------------------------------- */
-/* Types                                                                      */
+/* Target identifiers                                                         */
 /* -------------------------------------------------------------------------- */
 
-typedef struct SPI_Bus SPI_Bus;
-typedef struct SPI_Device SPI_Device;
+/**
+ * @brief Target-defined GPIO pin identifier.
+ *
+ * Pin constants are provided by the selected target definitions file.
+ */
+typedef uint8_t SPI_Pin;
+
+/**
+ * @brief Target-defined SPI peripheral identifier.
+ *
+ * Peripheral constants are provided by the selected target definitions file.
+ * Targets that do not require an explicit peripheral identifier may ignore
+ * this value.
+ */
+typedef uint8_t SPI_Port;
+
+/**
+ * @brief Value used when an SPI signal is not physically connected.
+ */
+#define SPI_PIN_UNUSED ((SPI_Pin)0xFFU)
+
+/**
+ * @brief Value used when the target determines the SPI peripheral.
+ */
+#define SPI_PORT_AUTO ((SPI_Port)0xFFU)
+
+/* -------------------------------------------------------------------------- */
+/* Configuration types                                                        */
+/* -------------------------------------------------------------------------- */
 
 /**
  * @brief SPI clock polarity and phase configuration.
  */
 typedef enum
 {
-    SPI_MODE_0 = 0, /* CPOL = 0, CPHA = 0 */
-    SPI_MODE_1,     /* CPOL = 0, CPHA = 1 */
-    SPI_MODE_2,     /* CPOL = 1, CPHA = 0 */
-    SPI_MODE_3      /* CPOL = 1, CPHA = 1 */
+    SPI_MODE_0 = 0, /**< CPOL = 0, CPHA = 0. */
+    SPI_MODE_1,     /**< CPOL = 0, CPHA = 1. */
+    SPI_MODE_2,     /**< CPOL = 1, CPHA = 0. */
+    SPI_MODE_3      /**< CPOL = 1, CPHA = 1. */
 } SPI_Mode;
 
 /**
- * @brief SPI bit transmission order.
+ * @brief SPI frame transmission order.
  */
 typedef enum
 {
@@ -46,9 +76,9 @@ typedef enum
 } SPI_BitOrder;
 
 /**
- * @brief SPI frame size.
+ * @brief Number of bits contained in each SPI frame.
  *
- * The target implementation may support only a subset of these sizes.
+ * A target may support only a subset of these frame sizes.
  */
 typedef enum
 {
@@ -56,16 +86,6 @@ typedef enum
     SPI_FRAME_SIZE_9_BIT  = 9,
     SPI_FRAME_SIZE_16_BIT = 16
 } SPI_FrameSize;
-
-/**
- * @brief SPI transfer direction supported by a device.
- */
-typedef enum
-{
-    SPI_DIRECTION_FULL_DUPLEX = 0,
-    SPI_DIRECTION_TX_ONLY,
-    SPI_DIRECTION_RX_ONLY
-} SPI_Direction;
 
 /**
  * @brief SPI chip-select active polarity.
@@ -77,7 +97,7 @@ typedef enum
 } SPI_ChipSelectPolarity;
 
 /**
- * @brief Result returned by SPI operations.
+ * @brief Result returned by an SPI operation.
  */
 typedef enum
 {
@@ -90,284 +110,142 @@ typedef enum
     SPI_RESULT_IO_ERROR
 } SPI_Result;
 
-/**
- * @brief Completion callback for asynchronous transfers.
- *
- * The callback may execute from interrupt context.
- *
- * @param device  Device associated with the transfer.
- * @param result  Final transfer result.
- * @param context User-provided callback context.
- */
-typedef void (*SPI_TransferCallback)(
-    SPI_Device *device,
-    SPI_Result result,
-    void *context);
+/* -------------------------------------------------------------------------- */
+/* Handles                                                                    */
+/* -------------------------------------------------------------------------- */
 
 /**
- * @brief Configuration applied when communicating with one SPI device.
+ * @brief Physical definition of an SPI bus.
+ *
+ * An SPI bus is physically defined by its shared signal pins and, where
+ * required by the target, its peripheral identifier.
+ *
+ * Unused signal pins must be set to SPI_PIN_UNUSED.
  */
 typedef struct
 {
+    SPI_Pin mosi_pin;
+    SPI_Pin miso_pin;
+    SPI_Pin sclk_pin;
+    SPI_Port port;
+} SPI_Bus_Handle;
+
+/**
+ * @brief Definition of one device attached to an SPI bus.
+ *
+ * Device-specific communication settings are stored separately because
+ * multiple devices may share the same physical bus while requiring different
+ * clock frequencies, modes, frame sizes, and chip-select pins.
+ */
+typedef struct
+{
+    SPI_Bus_Handle *bus;
+
+    SPI_Pin chip_select_pin;
+    SPI_ChipSelectPolarity chip_select_polarity;
+
     uint32_t frequency_hz;
     uint32_t timeout_ms;
 
     SPI_Mode mode;
     SPI_BitOrder bit_order;
     SPI_FrameSize frame_size;
-    SPI_Direction direction;
-
-    SPI_ChipSelectPolarity chip_select_polarity;
-
-    /**
-     * When true, the driver automatically asserts chip select before a
-     * transfer and releases it afterward.
-     *
-     * When false, the caller controls chip select using SPI_Select() and
-     * SPI_Deselect().
-     */
-    bool automatic_chip_select;
-} SPI_DeviceConfig;
-
-/**
- * @brief Description of one blocking SPI transfer.
- *
- * The unit represented by count is determined by the configured frame size:
- *
- * - 8-bit frame:  count is the number of uint8_t frames.
- * - 9-bit frame:  count is the number of uint16_t frames.
- * - 16-bit frame: count is the number of uint16_t frames.
- *
- * For full-duplex transfers, tx_data and rx_data may both be non-null.
- * For transmit-only transfers, rx_data may be null.
- * For receive-only transfers, tx_data may be null.
- */
-typedef struct
-{
-    const void *tx_data;
-    void *rx_data;
-    size_t count;
-} SPI_Transfer;
+} SPI_Device_Handle;
 
 /* -------------------------------------------------------------------------- */
 /* Initialization                                                             */
 /* -------------------------------------------------------------------------- */
 
 /**
- * @brief Initialize an SPI bus.
+ * @brief Initialize a physical SPI bus.
  *
- * The bus object and its hardware mapping are defined by the target-specific
- * implementation or board layer.
+ * The target implementation validates the selected pins and peripheral,
+ * configures the required pin routing, and enables the SPI peripheral.
  *
- * @param bus SPI bus to initialize.
- *
- * @return SPI_RESULT_OK on success.
- */
-SPI_Result SPI_BusInit(SPI_Bus *bus);
-
-/**
- * @brief Deinitialize an SPI bus.
- *
- * @param bus SPI bus to deinitialize.
+ * @param bus SPI bus handle.
  *
  * @return SPI_RESULT_OK on success.
  */
-SPI_Result SPI_BusDeinit(SPI_Bus *bus);
+SPI_Result SPI_BusInit(SPI_Bus_Handle *bus);
 
 /**
- * @brief Initialize an SPI device attached to an initialized bus.
+ * @brief Initialize a device attached to an SPI bus.
  *
- * @param device SPI device to initialize.
- * @param config Device communication configuration.
+ * The associated bus must already be initialized. The target implementation
+ * validates the device configuration and configures the chip-select pin as an
+ * inactive GPIO output.
+ *
+ * @param device SPI device handle.
  *
  * @return SPI_RESULT_OK on success.
  */
-SPI_Result SPI_DeviceInit(
-    SPI_Device *device,
-    const SPI_DeviceConfig *config);
-
-/**
- * @brief Deinitialize an SPI device.
- *
- * @param device SPI device to deinitialize.
- *
- * @return SPI_RESULT_OK on success.
- */
-SPI_Result SPI_DeviceDeinit(SPI_Device *device);
-
-/* -------------------------------------------------------------------------- */
-/* Bus ownership                                                              */
-/* -------------------------------------------------------------------------- */
-
-/**
- * @brief Acquire exclusive ownership of an SPI bus.
- *
- * This function allows several operations to be performed without another
- * device taking control of the shared bus between them.
- *
- * It may map to an RTOS mutex, scheduler lock, interrupt-safe lock, or another
- * target-specific synchronization mechanism.
- *
- * @param device    Device requesting ownership.
- * @param timeout_ms Maximum time to wait for the bus.
- *
- * @return SPI_RESULT_OK when the bus is acquired.
- */
-SPI_Result SPI_Acquire(
-    SPI_Device *device,
-    uint32_t timeout_ms);
-
-/**
- * @brief Release ownership of an SPI bus.
- *
- * @param device Device that owns the bus.
- */
-void SPI_Release(SPI_Device *device);
-
-/* -------------------------------------------------------------------------- */
-/* Chip select                                                                */
-/* -------------------------------------------------------------------------- */
-
-/**
- * @brief Assert the device chip-select signal.
- *
- * This should normally be used only when automatic chip select is disabled.
- *
- * @param device SPI device to select.
- *
- * @return SPI_RESULT_OK on success.
- */
-SPI_Result SPI_Select(SPI_Device *device);
-
-/**
- * @brief Deassert the device chip-select signal.
- *
- * @param device SPI device to deselect.
- */
-void SPI_Deselect(SPI_Device *device);
+SPI_Result SPI_DeviceInit(SPI_Device_Handle *device);
 
 /* -------------------------------------------------------------------------- */
 /* Blocking transfers                                                         */
 /* -------------------------------------------------------------------------- */
 
 /**
- * @brief Perform a blocking SPI transfer.
+ * @brief Transmit SPI frames to a device.
  *
- * When automatic chip select is enabled, chip select is asserted before the
- * transfer and released afterward.
+ * The driver applies the device configuration, asserts chip select, transmits
+ * the requested frames, and then deasserts chip select.
  *
- * @param device   SPI device.
- * @param transfer Transfer description.
+ * Buffer element size depends on the configured frame size:
  *
- * @return SPI_RESULT_OK on success.
- */
-SPI_Result SPI_TransferBlocking(
-    SPI_Device *device,
-    const SPI_Transfer *transfer);
-
-/**
- * @brief Perform a blocking transmit-only operation.
+ * - 8-bit frames use uint8_t elements.
+ * - 9-bit frames use uint16_t elements.
+ * - 16-bit frames use uint16_t elements.
  *
- * @param device SPI device.
- * @param data   Frame buffer.
- * @param count  Number of frames.
+ * For 9-bit transfers, only the least significant nine bits of each uint16_t
+ * element are transmitted.
+ *
+ * @param device SPI device handle.
+ * @param data   Frames to transmit.
+ * @param count  Number of frames to transmit.
  *
  * @return SPI_RESULT_OK on success.
  */
-SPI_Result SPI_Write(
-    SPI_Device *device,
-    const void *data,
-    size_t count);
+SPI_Result SPI_Write(SPI_Device_Handle *device, const void *data, size_t count);
 
 /**
- * @brief Perform a blocking receive-only operation.
+ * @brief Receive SPI frames from a device.
  *
- * The target driver transmits its configured idle value while receiving when
- * required by the SPI peripheral.
+ * The driver applies the device configuration, asserts chip select, receives
+ * the requested frames, and then deasserts chip select.
  *
- * @param device SPI device.
- * @param data   Receive frame buffer.
- * @param count  Number of frames.
+ * The target transmits idle frames when clock generation is required.
+ *
+ * Buffer element size depends on the configured frame size:
+ *
+ * - 8-bit frames use uint8_t elements.
+ * - 9-bit frames use uint16_t elements.
+ * - 16-bit frames use uint16_t elements.
+ *
+ * @param device SPI device handle.
+ * @param data   Destination frame buffer.
+ * @param count  Number of frames to receive.
  *
  * @return SPI_RESULT_OK on success.
  */
-SPI_Result SPI_Read(
-    SPI_Device *device,
-    void *data,
-    size_t count);
+SPI_Result SPI_Read(SPI_Device_Handle *device, void *data, size_t count);
 
 /**
- * @brief Perform a blocking full-duplex operation.
+ * @brief Simultaneously transmit and receive SPI frames.
  *
- * @param device SPI device.
- * @param tx_data Transmit frame buffer.
- * @param rx_data Receive frame buffer.
- * @param count   Number of frames.
+ * The driver applies the device configuration, asserts chip select, exchanges
+ * the requested frames, and then deasserts chip select.
+ *
+ * One frame is received for every frame transmitted.
+ *
+ * @param device  SPI device handle.
+ * @param tx_data Frames to transmit.
+ * @param rx_data Destination for received frames.
+ * @param count   Number of frames to exchange.
  *
  * @return SPI_RESULT_OK on success.
  */
-SPI_Result SPI_Exchange(
-    SPI_Device *device,
-    const void *tx_data,
-    void *rx_data,
-    size_t count);
-
-/* -------------------------------------------------------------------------- */
-/* Asynchronous transfers                                                     */
-/* -------------------------------------------------------------------------- */
-
-/**
- * @brief Start an asynchronous SPI transfer.
- *
- * The transfer buffers must remain valid until the callback executes or the
- * operation is cancelled.
- *
- * The target may implement this using DMA, interrupts, or another mechanism.
- * Targets without asynchronous SPI support return SPI_RESULT_UNSUPPORTED.
- *
- * @param device   SPI device.
- * @param transfer Transfer description.
- * @param callback Completion callback.
- * @param context  User-provided callback context.
- *
- * @return SPI_RESULT_OK if the transfer was started.
- */
-SPI_Result SPI_TransferAsync(
-    SPI_Device *device,
-    const SPI_Transfer *transfer,
-    SPI_TransferCallback callback,
-    void *context);
-
-/**
- * @brief Cancel an active asynchronous transfer.
- *
- * @param device SPI device.
- *
- * @return SPI_RESULT_OK if the transfer was cancelled.
- */
-SPI_Result SPI_CancelTransfer(SPI_Device *device);
-
-/* -------------------------------------------------------------------------- */
-/* Status                                                                     */
-/* -------------------------------------------------------------------------- */
-
-/**
- * @brief Determine whether a device currently has an active transfer.
- *
- * @param device SPI device.
- *
- * @return true when a transfer is active.
- */
-bool SPI_IsBusy(const SPI_Device *device);
-
-/**
- * @brief Retrieve the most recent SPI operation result.
- *
- * @param device SPI device.
- *
- * @return Most recent operation result.
- */
-SPI_Result SPI_GetLastResult(const SPI_Device *device);
+SPI_Result SPI_ReadWrite(SPI_Device_Handle *device, const void *tx_data, void *rx_data, size_t count);
 
 #ifdef __cplusplus
 }

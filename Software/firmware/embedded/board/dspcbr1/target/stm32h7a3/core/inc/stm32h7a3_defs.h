@@ -195,3 +195,14 @@
 #define PK13  0xAD
 #define PK14  0xAE
 #define PK15  0xAF
+
+/* -------------------------------------------------------------------------- */
+/* SPI peripheral identifiers                                                 */
+/* -------------------------------------------------------------------------- */
+
+#define SPI_PORT_1 1U
+#define SPI_PORT_2 2U
+#define SPI_PORT_3 3U
+#define SPI_PORT_4 4U
+#define SPI_PORT_5 5U
+#define SPI_PORT_6 6U

@@ -15,4 +15,5 @@ target_link_libraries(DualSlideAppManager
     PUBLIC
         DualSlideShared
         DualSlideWindowWasher
+        DualSlideEmbeddedOptions
 )

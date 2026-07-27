@@ -210,6 +210,115 @@ static uint32_t WindowWasher_Hash(uint32_t Value)
     return Value;
 }
 
+static bool WindowWasher_RectIsVisible(const Render_RectTypeDef *Rect)
+{
+    const int32_t Right = (int32_t)Rect->X + (int32_t)Rect->Width;
+    const int32_t Bottom = (int32_t)Rect->Y + (int32_t)Rect->Height;
+
+    return
+        (Rect->Width > 0U) &&
+        (Rect->Height > 0U) &&
+        (Right > 0) &&
+        (Bottom > 0) &&
+        ((int32_t)Rect->X < (int32_t)RENDER_WIDTH) &&
+        ((int32_t)Rect->Y < (int32_t)RENDER_HEIGHT);
+}
+
+/**
+ * @brief Draw the window recess, frame, and glass without painting over pixels
+ *        that will immediately be replaced by a later layer.
+ */
+static void WindowWasher_DrawWindowBase(
+    Render_TargetTypeDef *Target,
+    int16_t WindowX,
+    int16_t WindowY)
+{
+    const Render_RectTypeDef RecessTop =
+    {
+        (int16_t)(WindowX - 3),
+        (int16_t)(WindowY - 3),
+        WINDOW_WIDTH + 6U,
+        3U
+    };
+
+    const Render_RectTypeDef RecessLeft =
+    {
+        (int16_t)(WindowX - 3),
+        WindowY,
+        3U,
+        WINDOW_HEIGHT
+    };
+
+    const Render_RectTypeDef RecessRight =
+    {
+        (int16_t)(WindowX + (int16_t)WINDOW_WIDTH),
+        WindowY,
+        3U,
+        WINDOW_HEIGHT
+    };
+
+    const Render_RectTypeDef RecessBottom =
+    {
+        (int16_t)(WindowX - 3),
+        (int16_t)(WindowY + (int16_t)WINDOW_HEIGHT),
+        WINDOW_WIDTH + 6U,
+        9U
+    };
+
+    const Render_RectTypeDef FrameTop =
+    {
+        WindowX,
+        WindowY,
+        WINDOW_WIDTH,
+        5U
+    };
+
+    const Render_RectTypeDef FrameBottom =
+    {
+        WindowX,
+        (int16_t)(WindowY + (int16_t)WINDOW_HEIGHT - 5),
+        WINDOW_WIDTH,
+        5U
+    };
+
+    const Render_RectTypeDef FrameLeft =
+    {
+        WindowX,
+        (int16_t)(WindowY + 5),
+        5U,
+        WINDOW_HEIGHT - 10U
+    };
+
+    const Render_RectTypeDef FrameRight =
+    {
+        (int16_t)(WindowX + (int16_t)WINDOW_WIDTH - 5),
+        (int16_t)(WindowY + 5),
+        5U,
+        WINDOW_HEIGHT - 10U
+    };
+
+    const Render_RectTypeDef Glass =
+    {
+        (int16_t)(WindowX + 5),
+        (int16_t)(WindowY + 5),
+        WINDOW_WIDTH - 10U,
+        WINDOW_HEIGHT - 10U
+    };
+
+    Render_FillRect(Target, &RecessTop, COLOUR_WINDOW_RECESS);
+    Render_FillRect(Target, &RecessLeft, COLOUR_WINDOW_RECESS);
+    Render_FillRect(Target, &RecessRight, COLOUR_WINDOW_RECESS);
+    Render_FillRect(Target, &RecessBottom, COLOUR_WINDOW_RECESS);
+
+    Render_FillRect(Target, &FrameTop, COLOUR_WINDOW_FRAME);
+    Render_FillRect(Target, &FrameBottom, COLOUR_WINDOW_FRAME);
+    Render_FillRect(Target, &FrameLeft, COLOUR_WINDOW_FRAME);
+    Render_FillRect(Target, &FrameRight, COLOUR_WINDOW_FRAME);
+
+    Render_FillRect(Target, &Glass, COLOUR_WINDOW);
+}
+
+
 static int16_t WindowWasher_ConvertSliderValue(int32_t Value)
 {
     int32_t CentredValue;
@@ -325,9 +434,12 @@ static void WindowWasher_PaintWasherRectangle(uint16_t X, uint16_t Y, uint16_t W
 {
     for(uint16_t Row = 0U; Row < Height; Row++)
     {
+        Render_ColourIndexTypeDef *Destination =
+            &WindowWasher_WasherPixels[((Y + Row) * WASHER_IMAGE_SIZE) + X];
+
         for(uint16_t Column = 0U; Column < Width; Column++)
         {
-            WindowWasher_WasherPixels[((Y + Row) * WASHER_IMAGE_SIZE) + X + Column] = Colour;
+            Destination[Column] = Colour;
         }
     }
 }
@@ -457,6 +569,9 @@ static void WindowWasher_UpdateWindowCleaning(WindowWasher_GameTypeDef *Game, co
     const int16_t ScrollOffset = (int16_t)(Game->BuildingScroll % WINDOW_STEP_Y);
     const int16_t FigureX = (int16_t)(Figure->PositionX / FIGURE_FIXED_SCALE);
     const int16_t FigureY = WindowWasher_FigureY(Platform, Figure);
+    const int16_t FigureLeft = (int16_t)(FigureX - ((int16_t)FIGURE_WIDTH / 2));
+    const int16_t FigureRight = (int16_t)(FigureX + ((int16_t)FIGURE_WIDTH / 2));
+    const int16_t FigureBottom = (int16_t)(FigureY + (int16_t)FIGURE_HEIGHT);
 
     for(uint8_t WindowIndex = 0U; WindowIndex < CLEAN_WINDOW_TRACKED_COUNT; WindowIndex++)
     {
@@ -472,46 +587,72 @@ static void WindowWasher_UpdateWindowCleaning(WindowWasher_GameTypeDef *Game, co
         }
     }
 
+    /*
+     * Reject rows and columns against the washer bounds before performing the
+     * hash, reachability test, or 64-entry clean-window search.
+     */
     for(int8_t ScreenRow = -1; ScreenRow < 9; ScreenRow++)
     {
         const int32_t WorldRow = FirstWorldRow - ScreenRow;
-        const int16_t WindowY = (int16_t)((ScreenRow * (int16_t)WINDOW_STEP_Y) + ScrollOffset + 8);
+        const int16_t WindowY =
+            (int16_t)((ScreenRow * (int16_t)WINDOW_STEP_Y) + ScrollOffset + 8);
+
+        if((FigureBottom <= WindowY) ||
+           (FigureY >= (int16_t)(WindowY + (int16_t)WINDOW_HEIGHT)))
+        {
+            continue;
+        }
 
         for(uint8_t Column = 0U; Column < WINDOW_COLUMN_COUNT; Column++)
         {
-            const int16_t WindowX = (int16_t)(WINDOW_GRID_LEFT_X + ((int16_t)Column * WINDOW_STEP_X));
+            const int16_t WindowX =
+                (int16_t)(WINDOW_GRID_LEFT_X + ((int16_t)Column * WINDOW_STEP_X));
 
-            if(WindowWasher_WindowIsDirty(Game, WorldRow, Column) && (WindowWasher_FindCleanWindow(Game, WorldRow, Column) == NULL) && ((FigureX + ((int16_t)FIGURE_WIDTH / 2)) > WindowX) && ((FigureX - ((int16_t)FIGURE_WIDTH / 2)) < (WindowX + (int16_t)WINDOW_WIDTH)) && ((FigureY + (int16_t)FIGURE_HEIGHT) > WindowY) && (FigureY < (WindowY + (int16_t)WINDOW_HEIGHT)))
+            if((FigureRight <= WindowX) ||
+               (FigureLeft >= (int16_t)(WindowX + (int16_t)WINDOW_WIDTH)))
             {
-                WindowWasher_CleanWindowTypeDef *CleanWindow = NULL;
+                continue;
+            }
 
-                for(uint8_t CleanIndex = 0U; CleanIndex < CLEAN_WINDOW_TRACKED_COUNT; CleanIndex++)
+            if(!WindowWasher_WindowIsDirty(Game, WorldRow, Column) ||
+               (WindowWasher_FindCleanWindow(Game, WorldRow, Column) != NULL))
+            {
+                continue;
+            }
+
+            WindowWasher_CleanWindowTypeDef *CleanWindow = NULL;
+
+            for(uint8_t CleanIndex = 0U;
+                CleanIndex < CLEAN_WINDOW_TRACKED_COUNT;
+                CleanIndex++)
+            {
+                if(!Game->CleanWindows[CleanIndex].Active)
                 {
-                    if(!Game->CleanWindows[CleanIndex].Active)
+                    CleanWindow = &Game->CleanWindows[CleanIndex];
+                    break;
+                }
+            }
+
+            if(CleanWindow == NULL)
+            {
+                CleanWindow = &Game->CleanWindows[0];
+
+                for(uint8_t CleanIndex = 1U;
+                    CleanIndex < CLEAN_WINDOW_TRACKED_COUNT;
+                    CleanIndex++)
+                {
+                    if(Game->CleanWindows[CleanIndex].WorldRow <
+                       CleanWindow->WorldRow)
                     {
                         CleanWindow = &Game->CleanWindows[CleanIndex];
-                        break;
                     }
                 }
-
-                if(CleanWindow == NULL)
-                {
-                    CleanWindow = &Game->CleanWindows[0];
-
-                    for(uint8_t CleanIndex = 1U; CleanIndex < CLEAN_WINDOW_TRACKED_COUNT; CleanIndex++)
-                    {
-                        if(Game->CleanWindows[CleanIndex].WorldRow < CleanWindow->WorldRow)
-                        {
-                            CleanWindow = &Game->CleanWindows[CleanIndex];
-                        }
-                    }
-                }
-
-                CleanWindow->Active = true;
-                CleanWindow->WorldRow = WorldRow;
-                CleanWindow->Column = Column;
-                CleanWindow->SparkleFrameCount = CLEAN_WINDOW_SPARKLE_FRAMES;
             }
+
+            CleanWindow->Active = true;
+            CleanWindow->WorldRow = WorldRow;
+            CleanWindow->Column = Column;
+            CleanWindow->SparkleFrameCount = CLEAN_WINDOW_SPARKLE_FRAMES;
         }
     }
 }
@@ -770,7 +911,9 @@ static void WindowWasher_DrawWindowScene(Render_TargetTypeDef *Target, int16_t W
     }
 }
 
-static void WindowWasher_DrawBackground(Render_TargetTypeDef *Target, const WindowWasher_GameTypeDef *Game)
+static void WindowWasher_DrawBackgroundLayer(
+    Render_TargetTypeDef *Target,
+    const WindowWasher_GameTypeDef *Game)
 {
     const int16_t CloudY = (int16_t)(145 + ((Game->BuildingScroll / 70) % 360));
     const int16_t MountainBaseY = (int16_t)((int16_t)RENDER_HEIGHT + 30 + (Game->BuildingScroll / 80));
@@ -810,40 +953,132 @@ static void WindowWasher_DrawBackground(Render_TargetTypeDef *Target, const Wind
 
         BandedCloudOne.Y = (int16_t)(BandedCloudOne.Y + (CloudBand * 360));
         BandedCloudTwo.Y = (int16_t)(BandedCloudTwo.Y + (CloudBand * 360));
-        Render_FillRect(Target, &BandedCloudOne, COLOUR_BACKGROUND_CLOUD);
-        Render_FillRect(Target, &BandedCloudTwo, COLOUR_BACKGROUND_CLOUD);
+
+        if(WindowWasher_RectIsVisible(&BandedCloudOne))
+        {
+            Render_FillRect(Target, &BandedCloudOne, COLOUR_BACKGROUND_CLOUD);
+        }
+
+        if(WindowWasher_RectIsVisible(&BandedCloudTwo))
+        {
+            Render_FillRect(Target, &BandedCloudTwo, COLOUR_BACKGROUND_CLOUD);
+        }
     }
 
     if(MountainBaseY < ((int16_t)RENDER_HEIGHT + 180))
     {
-        Render_DrawPolygon(Target, Mountains, (uint8_t)(sizeof(Mountains) / sizeof(Mountains[0])), COLOUR_BACKGROUND_MOUNTAIN);
+        Render_DrawPolygon(
+            Target,
+            Mountains,
+            (uint8_t)(sizeof(Mountains) / sizeof(Mountains[0])),
+            COLOUR_BACKGROUND_MOUNTAIN);
     }
 
-    for(uint8_t BlockIndex = 0U; BlockIndex < (uint8_t)(sizeof(CityBlocks) / sizeof(CityBlocks[0])); BlockIndex++)
+    for(uint8_t BlockIndex = 0U;
+        BlockIndex < (uint8_t)(sizeof(CityBlocks) / sizeof(CityBlocks[0]));
+        BlockIndex++)
     {
-        const Render_RectTypeDef Light = { (int16_t)(CityBlocks[BlockIndex].X + 7), (int16_t)(CityBlocks[BlockIndex].Y + 13), 4U, 8U };
+        if(!WindowWasher_RectIsVisible(&CityBlocks[BlockIndex]))
+        {
+            continue;
+        }
+
+        const Render_RectTypeDef Light =
+        {
+            (int16_t)(CityBlocks[BlockIndex].X + 7),
+            (int16_t)(CityBlocks[BlockIndex].Y + 13),
+            4U,
+            8U
+        };
 
         Render_FillRect(Target, &CityBlocks[BlockIndex], COLOUR_BACKGROUND_CITY);
         Render_FillRect(Target, &Light, COLOUR_BACKGROUND_CITY_LIGHT);
     }
 
-    Render_FillRect(Target, &AntennaBase, COLOUR_BACKGROUND_CITY);
-    Render_FillRect(Target, &AntennaLowerMast, COLOUR_BACKGROUND_CITY);
-    Render_FillRect(Target, &AntennaUpperMast, COLOUR_BACKGROUND_CITY);
-
-    if(AntennaLightOn)
+    if(WindowWasher_RectIsVisible(&AntennaBase))
     {
-        Render_FillRect(Target, &AntennaLight, COLOUR_ANTENNA_LIGHT);
+        Render_FillRect(Target, &AntennaBase, COLOUR_BACKGROUND_CITY);
+        Render_FillRect(Target, &AntennaLowerMast, COLOUR_BACKGROUND_CITY);
+        Render_FillRect(Target, &AntennaUpperMast, COLOUR_BACKGROUND_CITY);
+
+        if(AntennaLightOn)
+        {
+            Render_FillRect(Target, &AntennaLight, COLOUR_ANTENNA_LIGHT);
+        }
     }
+}
+
+static void WindowWasher_DrawBackground(
+    Render_TargetTypeDef *Target,
+    const WindowWasher_GameTypeDef *Game)
+{
+    const Render_RectTypeDef LeftVisibleStrip =
+    {
+        0,
+        0,
+        BUILDING_LEFT_X,
+        RENDER_HEIGHT
+    };
+
+    const Render_RectTypeDef RightVisibleStrip =
+    {
+        BUILDING_RIGHT_X,
+        0,
+        (uint16_t)((int16_t)RENDER_WIDTH - BUILDING_RIGHT_X),
+        RENDER_HEIGHT
+    };
+
+    /*
+     * The building covers the centre 660 pixels of the background. Draw the
+     * scenery only into the two side strips instead of painting it and then
+     * immediately replacing it with the facade.
+     */
+    Render_SetClipRect(&LeftVisibleStrip);
+    WindowWasher_DrawBackgroundLayer(Target, Game);
+
+    Render_SetClipRect(&RightVisibleStrip);
+    WindowWasher_DrawBackgroundLayer(Target, Game);
+
+    Render_ResetClipRect();
 }
 
 static void WindowWasher_DrawBuilding(Render_TargetTypeDef *Target, const WindowWasher_GameTypeDef *Game)
 {
-    const Render_RectTypeDef Building = { BUILDING_LEFT_X, 0, (uint16_t)(BUILDING_RIGHT_X - BUILDING_LEFT_X), RENDER_HEIGHT };
-    const Render_RectTypeDef LeftCorner = { BUILDING_LEFT_X, 0, 26U, RENDER_HEIGHT };
-    const Render_RectTypeDef RightCorner = { (int16_t)(BUILDING_RIGHT_X - 26), 0, 26U, RENDER_HEIGHT };
-    const Render_RectTypeDef LeftCornerHighlight = { (int16_t)(BUILDING_LEFT_X + 21), 0, 3U, RENDER_HEIGHT };
-    const Render_RectTypeDef RightCornerHighlight = { (int16_t)(BUILDING_RIGHT_X - 24), 0, 3U, RENDER_HEIGHT };
+    const Render_RectTypeDef Building =
+    {
+        BUILDING_LEFT_X,
+        0,
+        (uint16_t)(BUILDING_RIGHT_X - BUILDING_LEFT_X),
+        RENDER_HEIGHT
+    };
+    const Render_RectTypeDef LeftCorner =
+    {
+        BUILDING_LEFT_X,
+        0,
+        26U,
+        RENDER_HEIGHT
+    };
+    const Render_RectTypeDef RightCorner =
+    {
+        (int16_t)(BUILDING_RIGHT_X - 26),
+        0,
+        26U,
+        RENDER_HEIGHT
+    };
+    const Render_RectTypeDef LeftCornerHighlight =
+    {
+        (int16_t)(BUILDING_LEFT_X + 21),
+        0,
+        3U,
+        RENDER_HEIGHT
+    };
+    const Render_RectTypeDef RightCornerHighlight =
+    {
+        (int16_t)(BUILDING_RIGHT_X - 24),
+        0,
+        3U,
+        RENDER_HEIGHT
+    };
     const int32_t FirstWorldRow = Game->BuildingScroll / WINDOW_STEP_Y;
     const int16_t ScrollOffset = (int16_t)(Game->BuildingScroll % WINDOW_STEP_Y);
 
@@ -856,44 +1091,115 @@ static void WindowWasher_DrawBuilding(Render_TargetTypeDef *Target, const Window
     for(int8_t ScreenRow = -1; ScreenRow < 9; ScreenRow++)
     {
         const int32_t WorldRow = FirstWorldRow - ScreenRow;
-        const int16_t WindowY = (int16_t)((ScreenRow * (int16_t)WINDOW_STEP_Y) + ScrollOffset + 8);
+        const int16_t WindowY =
+            (int16_t)((ScreenRow * (int16_t)WINDOW_STEP_Y) + ScrollOffset + 8);
+        const Render_RectTypeDef RowBounds =
+        {
+            (int16_t)(WINDOW_GRID_LEFT_X - 3),
+            (int16_t)(WindowY - 3),
+            WINDOW_GRID_WIDTH + 6U,
+            WINDOW_HEIGHT + 9U
+        };
+
+        if(!WindowWasher_RectIsVisible(&RowBounds))
+        {
+            continue;
+        }
+
         for(uint8_t Column = 0U; Column < WINDOW_COLUMN_COUNT; Column++)
         {
-            const int16_t WindowX = (int16_t)(WINDOW_GRID_LEFT_X + ((int16_t)Column * WINDOW_STEP_X));
-            const Render_RectTypeDef Recess = { (int16_t)(WindowX - 3), (int16_t)(WindowY - 3), WINDOW_WIDTH + 6U, WINDOW_HEIGHT + 9U };
-            const Render_RectTypeDef Frame = { WindowX, WindowY, WINDOW_WIDTH, WINDOW_HEIGHT };
-            const Render_RectTypeDef Glass = { (int16_t)(WindowX + 5), (int16_t)(WindowY + 5), WINDOW_WIDTH - 10U, WINDOW_HEIGHT - 10U };
-            const Render_RectTypeDef SillShadow = { (int16_t)(WindowX - 3), (int16_t)(WindowY + WINDOW_HEIGHT + 3U), WINDOW_WIDTH + 6U, 4U };
-            const Render_RectTypeDef Sill = { (int16_t)(WindowX - 3), (int16_t)(WindowY + WINDOW_HEIGHT), WINDOW_WIDTH + 6U, 3U };
-            const uint32_t ScenePattern = WindowWasher_Hash(Game->LayoutSeed ^ ((uint32_t)WorldRow * 0xD1B54A35U) ^ ((uint32_t)Column * 0x94D049BBU));
-            const WindowWasher_CleanWindowTypeDef *CleanWindow = WindowWasher_FindCleanWindow(Game, WorldRow, Column);
+            const int16_t WindowX =
+                (int16_t)(WINDOW_GRID_LEFT_X + ((int16_t)Column * WINDOW_STEP_X));
+            const uint32_t ScenePattern =
+                WindowWasher_Hash(
+                    Game->LayoutSeed ^
+                    ((uint32_t)WorldRow * 0xD1B54A35U) ^
+                    ((uint32_t)Column * 0x94D049BBU));
+            const bool Dirty =
+                WindowWasher_WindowIsDirty(Game, WorldRow, Column);
+            const WindowWasher_CleanWindowTypeDef *CleanWindow =
+                Dirty
+                    ? WindowWasher_FindCleanWindow(Game, WorldRow, Column)
+                    : NULL;
+            const Render_RectTypeDef SillShadow =
+            {
+                (int16_t)(WindowX - 3),
+                (int16_t)(WindowY + WINDOW_HEIGHT + 3U),
+                WINDOW_WIDTH + 6U,
+                4U
+            };
+            const Render_RectTypeDef Sill =
+            {
+                (int16_t)(WindowX - 3),
+                (int16_t)(WindowY + WINDOW_HEIGHT),
+                WINDOW_WIDTH + 6U,
+                3U
+            };
 
-            Render_FillRect(Target, &Recess, COLOUR_WINDOW_RECESS);
-            Render_FillRect(Target, &Frame, COLOUR_WINDOW_FRAME);
-            Render_FillRect(Target, &Glass, COLOUR_WINDOW);
+            WindowWasher_DrawWindowBase(Target, WindowX, WindowY);
 
             if((ScenePattern % 20U) == 0U)
             {
-                WindowWasher_DrawWindowScene(Target, WindowX, WindowY, ScenePattern);
+                WindowWasher_DrawWindowScene(
+                    Target,
+                    WindowX,
+                    WindowY,
+                    ScenePattern);
             }
 
+            /*
+             * These sit on top of the recess bottom by design. They are narrow
+             * decorative strips, so retaining the tiny overlap is cheaper than
+             * fragmenting the base into additional rectangles.
+             */
             Render_FillRect(Target, &SillShadow, COLOUR_BUILDING_SHADOW);
             Render_FillRect(Target, &Sill, COLOUR_FACADE_TRIM);
 
-            if((CleanWindow == NULL) && WindowWasher_WindowIsDirty(Game, WorldRow, Column))
+            if(Dirty && (CleanWindow == NULL))
             {
-                const Render_RectTypeDef SpotOne = { (int16_t)(WindowX + 13), (int16_t)(WindowY + 11), 12U, 8U };
-                const Render_RectTypeDef SpotTwo = { (int16_t)(WindowX + 38), (int16_t)(WindowY + 25), 15U, 10U };
-                const Render_RectTypeDef SpotThree = { (int16_t)(WindowX + 27), (int16_t)(WindowY + 34), 8U, 5U };
+                const Render_RectTypeDef SpotOne =
+                {
+                    (int16_t)(WindowX + 13),
+                    (int16_t)(WindowY + 11),
+                    12U,
+                    8U
+                };
+                const Render_RectTypeDef SpotTwo =
+                {
+                    (int16_t)(WindowX + 38),
+                    (int16_t)(WindowY + 25),
+                    15U,
+                    10U
+                };
+                const Render_RectTypeDef SpotThree =
+                {
+                    (int16_t)(WindowX + 27),
+                    (int16_t)(WindowY + 34),
+                    8U,
+                    5U
+                };
 
                 Render_FillRect(Target, &SpotOne, COLOUR_DIRT);
                 Render_FillRect(Target, &SpotTwo, COLOUR_DIRT);
                 Render_FillRect(Target, &SpotThree, COLOUR_DIRT);
             }
-            else if((CleanWindow != NULL) && (CleanWindow->SparkleFrameCount > 0U))
+            else if((CleanWindow != NULL) &&
+                    (CleanWindow->SparkleFrameCount > 0U))
             {
-                const Render_RectTypeDef HorizontalSparkle = { (int16_t)(WindowX + 25), (int16_t)(WindowY + 22), 20U, 3U };
-                const Render_RectTypeDef VerticalSparkle = { (int16_t)(WindowX + 33), (int16_t)(WindowY + 14), 4U, 19U };
+                const Render_RectTypeDef HorizontalSparkle =
+                {
+                    (int16_t)(WindowX + 25),
+                    (int16_t)(WindowY + 22),
+                    20U,
+                    3U
+                };
+                const Render_RectTypeDef VerticalSparkle =
+                {
+                    (int16_t)(WindowX + 33),
+                    (int16_t)(WindowY + 14),
+                    4U,
+                    19U
+                };
 
                 Render_FillRect(Target, &HorizontalSparkle, COLOUR_SPARKLE);
                 Render_FillRect(Target, &VerticalSparkle, COLOUR_SPARKLE);
@@ -1169,32 +1475,72 @@ static void WindowWasher_DrawBalconies(Render_TargetTypeDef *Target, const Windo
     for(int8_t ScreenRow = -1; ScreenRow < 4; ScreenRow++)
     {
         const int32_t WorldRow = FirstWorldRow - ScreenRow;
-        const uint32_t Pattern = WindowWasher_BalconyPattern(Game, WorldRow);
-        const bool FromLeft = WindowWasher_BalconyFromLeft(Pattern);
-        const bool HasCentreGap = WindowWasher_BalconyHasCentreGap(Pattern);
-        const int16_t BalconyY = (int16_t)((ScreenRow * (int16_t)BALCONY_STEP_Y) + ScrollOffset + BALCONY_VERTICAL_OFFSET);
-        const int16_t BalconyEndX = WindowWasher_BalconyEndX(Pattern, FromLeft);
-        const int16_t BalconyX = FromLeft ? BUILDING_LEFT_X : BalconyEndX;
-        const uint16_t BalconyWidth = (uint16_t)(FromLeft ? (BalconyEndX - BUILDING_LEFT_X) : (BUILDING_RIGHT_X - BalconyEndX));
-        const int16_t GapLeftX = WindowWasher_BalconyGapLeftX(Pattern);
-        const int16_t GapRightX = (int16_t)(GapLeftX + 160U + ((Pattern >> 8U) % 41U));
+        const int16_t BalconyY =
+            (int16_t)((ScreenRow * (int16_t)BALCONY_STEP_Y) +
+                      ScrollOffset +
+                      BALCONY_VERTICAL_OFFSET);
 
-        if(WorldRow < BALCONY_CLEAR_START)
+        if((WorldRow < BALCONY_CLEAR_START) ||
+           ((int32_t)BalconyY + (int32_t)BALCONY_THICKNESS <= 0) ||
+           ((int32_t)BalconyY - 20 >= (int32_t)RENDER_HEIGHT))
         {
             continue;
         }
 
+        const uint32_t Pattern = WindowWasher_BalconyPattern(Game, WorldRow);
+        const bool FromLeft = WindowWasher_BalconyFromLeft(Pattern);
+        const bool HasCentreGap = WindowWasher_BalconyHasCentreGap(Pattern);
+        const int16_t BalconyEndX =
+            WindowWasher_BalconyEndX(Pattern, FromLeft);
+        const int16_t BalconyX =
+            FromLeft ? BUILDING_LEFT_X : BalconyEndX;
+        const uint16_t BalconyWidth =
+            (uint16_t)(
+                FromLeft
+                    ? (BalconyEndX - BUILDING_LEFT_X)
+                    : (BUILDING_RIGHT_X - BalconyEndX));
+        const int16_t GapLeftX =
+            WindowWasher_BalconyGapLeftX(Pattern);
+        const int16_t GapRightX =
+            (int16_t)(GapLeftX + 160U + ((Pattern >> 8U) % 41U));
+
         if(HasCentreGap)
         {
-            WindowWasher_DrawBalconySection(Target, (int16_t)(BUILDING_LEFT_X - BALCONY_BUILDING_WRAP), BalconyY, (uint16_t)(GapLeftX - BUILDING_LEFT_X + BALCONY_BUILDING_WRAP), GapLeftX);
-            WindowWasher_DrawBalconySection(Target, GapRightX, BalconyY, (uint16_t)(BUILDING_RIGHT_X - GapRightX + BALCONY_BUILDING_WRAP), GapRightX);
+            WindowWasher_DrawBalconySection(
+                Target,
+                (int16_t)(BUILDING_LEFT_X - BALCONY_BUILDING_WRAP),
+                BalconyY,
+                (uint16_t)(
+                    GapLeftX -
+                    BUILDING_LEFT_X +
+                    BALCONY_BUILDING_WRAP),
+                GapLeftX);
+
+            WindowWasher_DrawBalconySection(
+                Target,
+                GapRightX,
+                BalconyY,
+                (uint16_t)(
+                    BUILDING_RIGHT_X -
+                    GapRightX +
+                    BALCONY_BUILDING_WRAP),
+                GapRightX);
         }
         else
         {
-            const int16_t WrappedX = FromLeft ? (int16_t)(BalconyX - BALCONY_BUILDING_WRAP) : BalconyX;
-            const uint16_t WrappedWidth = (uint16_t)(BalconyWidth + BALCONY_BUILDING_WRAP);
+            const int16_t WrappedX =
+                FromLeft
+                    ? (int16_t)(BalconyX - BALCONY_BUILDING_WRAP)
+                    : BalconyX;
+            const uint16_t WrappedWidth =
+                (uint16_t)(BalconyWidth + BALCONY_BUILDING_WRAP);
 
-            WindowWasher_DrawBalconySection(Target, WrappedX, BalconyY, WrappedWidth, BalconyEndX);
+            WindowWasher_DrawBalconySection(
+                Target,
+                WrappedX,
+                BalconyY,
+                WrappedWidth,
+                BalconyEndX);
         }
     }
 }
@@ -1269,27 +1615,6 @@ static void WindowWasher_DrawWasher(Render_TargetTypeDef *Target, const WindowWa
     Render_FillRect(Target, &BrushHead, COLOUR_TOOL_BRISTLES);
     Render_FillRect(Target, &BrushBristlesOne, COLOUR_TOOL_BRISTLES);
     Render_FillRect(Target, &BrushBristlesTwo, COLOUR_TOOL_BRISTLES);
-}
-
-static void WindowWasher_DrawSlider(Render_TargetTypeDef *Target, int16_t X, int16_t Slider)
-{
-    const int16_t Top = 116;
-    const uint16_t Height = 248U;
-    const int16_t CentreY = (int16_t)(Top + (Height / 2U));
-    const uint16_t FillHeight = (uint16_t)(((uint32_t)(Slider < 0 ? -Slider : Slider) * ((Height / 2U) - 3U)) / SLIDER_TRAVEL);
-    const Render_RectTypeDef Frame = { X, Top, 12U, Height };
-    const Render_RectTypeDef Interior = { (int16_t)(X + 2), (int16_t)(Top + 2), 8U, Height - 4U };
-    const Render_RectTypeDef Centre = { (int16_t)(X + 2), CentreY, 8U, 1U };
-    const Render_RectTypeDef Fill = { (int16_t)(X + 2), Slider >= 0 ? (int16_t)(CentreY - FillHeight) : CentreY, 8U, FillHeight };
-
-    Render_FillRect(Target, &Frame, COLOUR_PLATFORM_EDGE);
-    Render_FillRect(Target, &Interior, COLOUR_SKY);
-    Render_FillRect(Target, &Centre, COLOUR_PLATFORM_EDGE);
-
-    if(FillHeight > 0U)
-    {
-        Render_FillRect(Target, &Fill, Slider >= 0 ? COLOUR_SLIDER_UP : COLOUR_SLIDER_DOWN);
-    }
 }
 
 
@@ -1423,15 +1748,13 @@ void WindowWasher_Render(void)
     WindowWasher_PendingDeltaTimeMilliseconds = 0U;
 
     Render_ResetClipRect();
-    Render_Clear(&Target, COLOUR_SKY);
+    //Render_Clear(&Target, COLOUR_SKY);
     WindowWasher_DrawBackground(&Target, &WindowWasher_Game);
     WindowWasher_DrawBuilding(&Target, &WindowWasher_Game);
     WindowWasher_DrawHotelEntrance(&Target, &WindowWasher_Game);
     WindowWasher_DrawBalconies(&Target, &WindowWasher_Game);
     WindowWasher_DrawPlatform(&Target, &Platform);
     WindowWasher_DrawWasher(&Target, &Platform, &WindowWasher_Figure, WindowWasher_Game.Crashed);
-    WindowWasher_DrawSlider(&Target, 24, WindowWasher_Input.LeftSlider);
-    WindowWasher_DrawSlider(&Target, (int16_t)(RENDER_WIDTH - 36U), WindowWasher_Input.RightSlider);
 
     Display_PresentFrame(Frame);
 }

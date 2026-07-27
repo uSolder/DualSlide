@@ -22,6 +22,8 @@ extern "C" {
  */
 uint32_t SystemTime_GetMilliseconds(void);
 
+void SystemTime_DelayMilliseconds(uint32_t Milliseconds);
+
 #ifdef __cplusplus
 }
 #endif

@@ -16,4 +16,5 @@ target_link_libraries(DualSlideSystem
     PUBLIC
         DualSlideShared
         DualSlideAppManager
+        DualSlideEmbeddedOptions
 )

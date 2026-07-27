@@ -14,4 +14,5 @@ target_include_directories(DualSlideWindowWasher
 target_link_libraries(DualSlideWindowWasher
     PUBLIC
         DualSlideShared
+        DualSlideEmbeddedOptions
 )

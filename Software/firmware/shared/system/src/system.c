@@ -9,6 +9,8 @@
 #include "system_time.h"
 #include "system_tasks.h"
 
+#include <stddef.h>
+
 #define AUDIO_SAMPLE_RATE_HZ    (48000U)
 #define AUDIO_CHANNEL_COUNT     (1U)
 #define FRAME_INTERVAL_MS       (16U)
@@ -71,6 +73,7 @@ int System_Run(void)
         {
             SystemTime_DelayMilliseconds((uint32_t)(FRAME_INTERVAL_MS - FrameElapsedMilliseconds));
         }
+
 
         if(!SystemTasks_Process())
         {
