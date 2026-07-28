@@ -16,6 +16,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <stdbool.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -280,6 +282,62 @@ DisplayController_Result DisplayController_Enable(DisplayController_Handle *cont
  * @return DISPLAY_CONTROLLER_RESULT_OK on success.
  */
 DisplayController_Result DisplayController_Disable(DisplayController_Handle *controller);
+
+/**
+ * @brief Return the number of vertical-blank periods observed by the controller.
+ *
+ * The count is incremented by DisplayController_IRQHandler() whenever the LTDC
+ * line interrupt marks the beginning of a new vertical-blank interval.
+ *
+ * @param Controller Display-controller handle.
+ *
+ * @return Number of vertical-blank periods observed since the controller was
+ *         enabled, or zero if the handle is invalid or not initialized.
+ */
+uint32_t DisplayController_GetVerticalBlankCount(const DisplayController_Handle *Controller);
+
+/**
+ * @brief Determine whether a vertical-blank framebuffer reload is pending.
+ *
+ * A reload becomes pending when DisplayController_SetFramebuffer() requests a
+ * shadow-register reload during vertical blanking. It remains pending until the
+ * LTDC reload-complete interrupt is handled.
+ *
+ * @param Controller Display-controller handle.
+ *
+ * @return true if a reload is pending; otherwise false.
+ */
+bool DisplayController_IsReloadPending(const DisplayController_Handle *Controller);
+
+/**
+ * @brief Read and clear the framebuffer-reload completion event.
+ *
+ * Returns whether the LTDC has completed a previously requested vertical-blank
+ * shadow-register reload. When true is returned, the stored completion event is
+ * cleared so it is consumed only once.
+ *
+ * @param Controller Display-controller handle.
+ *
+ * @return true if a reload-complete event was pending; otherwise false.
+ */
+bool DisplayController_ConsumeReloadComplete(DisplayController_Handle *Controller);
+
+/**
+ * @brief Handle LTDC frame and framebuffer-reload interrupts.
+ *
+ * Processes the LTDC line interrupt used to mark the beginning of vertical
+ * blanking and the reload interrupt used to confirm completion of a pending
+ * shadow-register reload.
+ *
+ * This function is intended to be called directly by LTDC_IRQHandler() in the
+ * target interrupt-vector file.
+ */
+void DisplayController_IRQHandler(void);
+
+/**
+ * @brief Wait until the next display-controller event occurs.
+ */
+void DisplayController_WaitForEvent(DisplayController_Handle *Controller);
 
 #ifdef __cplusplus
 }

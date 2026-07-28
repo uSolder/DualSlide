@@ -26,6 +26,7 @@ target_link_options(DualSlideEmbeddedOptions INTERFACE
 
 add_executable(DualSlideFirmware
     main.c
+    board/dspcbr1/target/stm32h7a3/internal/src/it.c
 )
 
 set_target_properties(DualSlideFirmware PROPERTIES

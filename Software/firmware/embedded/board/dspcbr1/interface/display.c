@@ -4,13 +4,16 @@
  *
  * Frames use the LCD controller's native 480x800 layout. The renderer supplies
  * already-rotated pixel data, so this backend performs no rotation or copy.
+ *
+ * Frame acquisition is paced by the LTDC vertical-blank interrupt exposed
+ * through the display-controller driver. At most one frame is acquired during
+ * each display refresh period.
  */
 
 #include "display.h"
 
 #include "board.h"
 #include "display_controller.h"
-#include "stm32h7a3xxq.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -42,8 +45,11 @@ typedef struct
     Display_FrameTypeDef frames[DISPLAY_FRAMEBUFFER_COUNT];
     Display_ColourTypeDef palette[DISPLAY_PALETTE_SIZE];
 
+    uint32_t acquired_vertical_blank_count;
+
     uint8_t visible_index;
     uint8_t writable_index;
+    uint8_t pending_index;
 
     bool initialized;
     bool frame_acquired;
@@ -84,7 +90,7 @@ static const DisplayController_LayerConfiguration Display_Layer =
 static void Display_InitializeDefaultPalette(void);
 static bool Display_ApplyPalette(void);
 static bool Display_CompletePendingSwap(void);
-static void Display_CleanFramebufferCache(const Display_FrameTypeDef *frame);
+static void Display_CleanFramebufferCache(const Display_FrameTypeDef *Frame);
 
 /* -------------------------------------------------------------------------- */
 /* Private functions                                                          */
@@ -98,7 +104,7 @@ static void Display_InitializeDefaultPalette(void)
     uint32_t index;
     uint32_t component;
 
-    for (index = 0U; index < DISPLAY_PALETTE_SIZE; index++)
+    for(index = 0U; index < DISPLAY_PALETTE_SIZE; index++)
     {
         component = index & 0xFFU;
 
@@ -113,12 +119,15 @@ static void Display_InitializeDefaultPalette(void)
 
 /**
  * @brief Apply pending palette changes to the active LTDC layer.
+ *
+ * @return true if no update was required or the palette update was accepted;
+ *         otherwise false.
  */
 static bool Display_ApplyPalette(void)
 {
     DisplayController_Result result;
 
-    if (!Display_State.palette_dirty)
+    if(!Display_State.palette_dirty)
     {
         return true;
     }
@@ -128,7 +137,7 @@ static bool Display_ApplyPalette(void)
         Display_State.palette,
         DISPLAY_PALETTE_SIZE);
 
-    if (result != DISPLAY_CONTROLLER_RESULT_OK)
+    if(result != DISPLAY_CONTROLLER_RESULT_OK)
     {
         return false;
     }
@@ -139,24 +148,32 @@ static bool Display_ApplyPalette(void)
 }
 
 /**
- * @brief Finish a framebuffer-address reload requested at vertical blanking.
+ * @brief Finish a framebuffer swap after the LTDC reload interrupt completes.
  *
- * DisplayController_SetFramebuffer() requests an LTDC vertical-blank reload but
- * returns before that reload occurs. The old visible framebuffer must not be
- * returned to the renderer until the VBR request has completed.
+ * The old visible framebuffer is not returned to the renderer until the
+ * display-controller driver reports that the vertical-blank reload completed.
+ *
+ * @return true if no swap is pending or the pending swap completed; otherwise
+ *         false.
  */
 static bool Display_CompletePendingSwap(void)
 {
-    if (!Display_State.swap_pending)
+    if(!Display_State.swap_pending)
     {
         return true;
     }
 
-    if ((LTDC->SRCR & LTDC_SRCR_VBR) != 0U)
+    if(DisplayController_IsReloadPending(Display_State.controller))
     {
         return false;
     }
 
+    if(!DisplayController_ConsumeReloadComplete(Display_State.controller))
+    {
+        return false;
+    }
+
+    Display_State.visible_index = Display_State.pending_index;
     Display_State.writable_index =
         (Display_State.visible_index == 0U) ? 1U : 0U;
 
@@ -167,15 +184,17 @@ static bool Display_CompletePendingSwap(void)
 
 /**
  * @brief Make CPU framebuffer writes visible to LTDC.
+ *
+ * @param Frame Framebuffer description whose pixel memory must be cleaned.
  */
-static void Display_CleanFramebufferCache(const Display_FrameTypeDef *frame)
+static void Display_CleanFramebufferCache(const Display_FrameTypeDef *Frame)
 {
 #if defined(__DCACHE_PRESENT) && (__DCACHE_PRESENT == 1U)
     SCB_CleanDCache_by_Addr(
-        (uint32_t *)(void *)frame->Pixels,
+        (uint32_t *)(void *)Frame->Pixels,
         (int32_t)DISPLAY_FRAMEBUFFER_SIZE_BYTES);
 #else
-    (void)frame;
+    (void)Frame;
 #endif
 }
 
@@ -188,14 +207,14 @@ bool Display_Init(void)
     DisplayController_Result result;
     uint32_t index;
 
-    if (Display_State.initialized)
+    if(Display_State.initialized)
     {
         return true;
     }
 
     Display_State.controller = Board_GetDisplayController();
 
-    if (Display_State.controller == NULL)
+    if(Display_State.controller == NULL)
     {
         return false;
     }
@@ -203,20 +222,22 @@ bool Display_Init(void)
     memset(Display_Framebuffers, 0, sizeof(Display_Framebuffers));
     memset(&Display_State.frames, 0, sizeof(Display_State.frames));
 
-    for (index = 0U; index < DISPLAY_FRAMEBUFFER_COUNT; index++)
+    for(index = 0U; index < DISPLAY_FRAMEBUFFER_COUNT; index++)
     {
         Display_State.frames[index].Pixels = Display_Framebuffers[index];
         Display_State.frames[index].Width = DISPLAY_WIDTH;
         Display_State.frames[index].Height = DISPLAY_HEIGHT;
         Display_State.frames[index].StridePixels = DISPLAY_WIDTH;
-        Display_State.frames[index].PixelFormat =
-            DISPLAY_PIXEL_FORMAT_CLUT8;
+        Display_State.frames[index].PixelFormat = DISPLAY_PIXEL_FORMAT_CLUT8;
     }
 
+    Display_State.acquired_vertical_blank_count = UINT32_MAX;
     Display_State.visible_index = 0U;
     Display_State.writable_index = 1U;
+    Display_State.pending_index = 0U;
     Display_State.frame_acquired = false;
     Display_State.swap_pending = false;
+    Display_State.palette_dirty = false;
     Display_State.initialized = false;
 
     Display_InitializeDefaultPalette();
@@ -224,23 +245,21 @@ bool Display_Init(void)
     Display_CleanFramebufferCache(&Display_State.frames[0]);
     Display_CleanFramebufferCache(&Display_State.frames[1]);
 
-    result = DisplayController_ConfigureLayer(
-        Display_State.controller,
-        &Display_Layer);
+    result = DisplayController_ConfigureLayer(Display_State.controller, &Display_Layer);
 
-    if (result != DISPLAY_CONTROLLER_RESULT_OK)
+    if(result != DISPLAY_CONTROLLER_RESULT_OK)
     {
         return false;
     }
 
-    if (!Display_ApplyPalette())
+    if(!Display_ApplyPalette())
     {
         return false;
     }
 
     result = DisplayController_Enable(Display_State.controller);
 
-    if (result != DISPLAY_CONTROLLER_RESULT_OK)
+    if(result != DISPLAY_CONTROLLER_RESULT_OK)
     {
         return false;
     }
@@ -250,26 +269,23 @@ bool Display_Init(void)
     return true;
 }
 
-bool Display_SetPalette(
-    uint16_t FirstEntry,
-    const Display_ColourTypeDef *Colours,
-    uint16_t EntryCount)
+bool Display_SetPalette(uint16_t FirstEntry, const Display_ColourTypeDef *Colours, uint16_t EntryCount)
 {
     uint32_t final_entry;
 
-    if (!Display_State.initialized)
+    if(!Display_State.initialized)
     {
         return false;
     }
 
-    if ((Colours == NULL) || (EntryCount == 0U))
+    if((Colours == NULL) || (EntryCount == 0U))
     {
         return false;
     }
 
     final_entry = (uint32_t)FirstEntry + (uint32_t)EntryCount;
 
-    if (final_entry > DISPLAY_PALETTE_SIZE)
+    if(final_entry > DISPLAY_PALETTE_SIZE)
     {
         return false;
     }
@@ -286,25 +302,40 @@ bool Display_SetPalette(
 
 Display_FrameTypeDef *Display_AcquireFrame(void)
 {
-    if (!Display_State.initialized)
+    uint32_t vertical_blank_count;
+
+    if(!Display_State.initialized)
     {
         return NULL;
     }
 
-    if (Display_State.frame_acquired)
+    if(Display_State.frame_acquired)
     {
         return NULL;
     }
 
     /*
-     * The previous front buffer is not writable until LTDC has accepted the
-     * queued vertical-blank framebuffer-address reload.
+     * The previous front buffer remains owned by LTDC until the reload-complete
+     * interrupt confirms that the queued framebuffer-address change occurred.
      */
-    if (!Display_CompletePendingSwap())
+    if(!Display_CompletePendingSwap())
     {
         return NULL;
     }
 
+    vertical_blank_count =
+        DisplayController_GetVerticalBlankCount(Display_State.controller);
+
+    /*
+     * Permit at most one acquisition per vertical-blank period. UINT32_MAX is
+     * used during initialization so the first frame can be acquired immediately.
+     */
+    if(vertical_blank_count == Display_State.acquired_vertical_blank_count)
+    {
+        return NULL;
+    }
+
+    Display_State.acquired_vertical_blank_count = vertical_blank_count;
     Display_State.frame_acquired = true;
 
     return &Display_State.frames[Display_State.writable_index];
@@ -314,45 +345,72 @@ bool Display_PresentFrame(Display_FrameTypeDef *Frame)
 {
     DisplayController_Result result;
 
-    if (!Display_State.initialized)
+    if(!Display_State.initialized)
     {
         return false;
     }
 
-    if (!Display_State.frame_acquired)
+    if(!Display_State.frame_acquired)
     {
         return false;
     }
 
-    if (Frame != &Display_State.frames[Display_State.writable_index])
+    if(Frame != &Display_State.frames[Display_State.writable_index])
     {
         return false;
     }
 
-    if (Display_State.swap_pending)
+    if(Display_State.swap_pending)
     {
         return false;
     }
 
-    if (!Display_ApplyPalette())
+    if(!Display_ApplyPalette())
     {
         return false;
     }
 
     Display_CleanFramebufferCache(Frame);
 
-    result = DisplayController_SetFramebuffer(
-        Display_State.controller,
-        Frame->Pixels);
+    result = DisplayController_SetFramebuffer(Display_State.controller, Frame->Pixels);
 
-    if (result != DISPLAY_CONTROLLER_RESULT_OK)
+    if(result != DISPLAY_CONTROLLER_RESULT_OK)
     {
         return false;
     }
 
-    Display_State.visible_index = Display_State.writable_index;
+    Display_State.pending_index = Display_State.writable_index;
     Display_State.frame_acquired = false;
     Display_State.swap_pending = true;
 
     return true;
+}
+
+void Display_WaitForFrame(void)
+{
+    uint32_t vertical_blank_count;
+
+    if(!Display_State.initialized)
+    {
+        return;
+    }
+
+    for(;;)
+    {
+        if(!Display_CompletePendingSwap())
+        {
+            DisplayController_WaitForEvent(Display_State.controller);
+            continue;
+        }
+
+        vertical_blank_count =
+            DisplayController_GetVerticalBlankCount(Display_State.controller);
+
+        if(vertical_blank_count != Display_State.acquired_vertical_blank_count)
+        {
+            return;
+        }
+
+        DisplayController_WaitForEvent(Display_State.controller);
+    }
 }

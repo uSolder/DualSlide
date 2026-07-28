@@ -88,4 +88,9 @@ Display_FrameTypeDef *Display_AcquireFrame(void);
  */
 bool Display_PresentFrame(Display_FrameTypeDef *Frame);
 
+/**
+ * @brief Wait until the display can begin rendering a new frame.
+ */
+void Display_WaitForFrame(void);
+
 #endif /* DISPLAY_H */

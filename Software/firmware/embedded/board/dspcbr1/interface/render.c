@@ -48,12 +48,8 @@
 /* Private state                                                              */
 /* -------------------------------------------------------------------------- */
 
-static Render_RectTypeDef Render_ClipRect =
-{
-    .X = 0,
-    .Y = 0,
-    .Width = RENDER_WIDTH,
-    .Height = RENDER_HEIGHT
+static Render_RectTypeDef Render_ClipRect = {
+    .X = 0, .Y = 0, .Width = RENDER_WIDTH, .Height = RENDER_HEIGHT
 };
 
 /* -------------------------------------------------------------------------- */
@@ -66,18 +62,8 @@ static Render_RectTypeDef Render_ClipRect =
  * Tenths-of-a-degree angles are linearly interpolated between adjacent
  * entries. This avoids floating-point operations and libm dependencies.
  */
-static const int16_t Render_SineQuarterWave[91] =
-{
-         0,   572,  1144,  1715,  2286,  2856,  3425,  3993,  4560,  5126,
-      5690,  6252,  6813,  7371,  7927,  8481,  9032,  9580, 10126, 10668,
-     11207, 11743, 12275, 12803, 13328, 13848, 14365, 14876, 15384, 15886,
-     16384, 16877, 17364, 17847, 18324, 18795, 19261, 19720, 20174, 20622,
-     21063, 21498, 21926, 22348, 22763, 23170, 23571, 23965, 24351, 24730,
-     25101, 25465, 25821, 26169, 26509, 26841, 27165, 27481, 27788, 28087,
-     28378, 28660, 28934, 29198, 29454, 29701, 29939, 30168, 30388, 30598,
-     30799, 30991, 31173, 31346, 31510, 31664, 31808, 31943, 32068, 32183,
-     32288, 32384, 32469, 32545, 32610, 32666, 32712, 32747, 32767, 32767,
-     32767
+static const int16_t Render_SineQuarterWave[91] = {
+         0,   572,  1144,  1715,  2286,  2856,  3425,  3993,  4560,  5126, 5690,  6252,  6813,  7371,  7927,  8481,  9032,  9580, 10126, 10668, 11207, 11743, 12275, 12803, 13328, 13848, 14365, 14876, 15384, 15886, 16384, 16877, 17364, 17847, 18324, 18795, 19261, 19720, 20174, 20622, 21063, 21498, 21926, 22348, 22763, 23170, 23571, 23965, 24351, 24730, 25101, 25465, 25821, 26169, 26509, 26841, 27165, 27481, 27788, 28087, 28378, 28660, 28934, 29198, 29454, 29701, 29939, 30168, 30388, 30598, 30799, 30991, 31173, 31346, 31510, 31664, 31808, 31943, 32068, 32183, 32288, 32384, 32469, 32545, 32610, 32666, 32712, 32747, 32767, 32767, 32767
 };
 
 /* -------------------------------------------------------------------------- */
@@ -87,11 +73,7 @@ static const int16_t Render_SineQuarterWave[91] =
 static bool Render_IsTargetValid(const Render_TargetTypeDef *Target);
 static bool Render_IsImageValid(const Render_ImageTypeDef *Image);
 static bool Render_IsLogicalPixelVisible(int32_t X, int32_t Y);
-static inline void Render_WriteLogicalPixel(
-    Render_TargetTypeDef *Target,
-    int32_t X,
-    int32_t Y,
-    Render_ColourIndexTypeDef Colour);
+static inline void Render_WriteLogicalPixel( Render_TargetTypeDef *Target, int32_t X, int32_t Y, Render_ColourIndexTypeDef Colour);
 static int32_t Render_MaxInt32(int32_t A, int32_t B);
 static int32_t Render_MinInt32(int32_t A, int32_t B);
 static int32_t Render_NormalizeAngleTenths(int32_t Angle);
@@ -109,8 +91,7 @@ static bool Render_IsTargetValid(const Render_TargetTypeDef *Target)
         return false;
     }
 
-    if ((Target->Width != RENDER_PHYSICAL_WIDTH) ||
-        (Target->Height != RENDER_PHYSICAL_HEIGHT))
+    if ((Target->Width != RENDER_PHYSICAL_WIDTH) || (Target->Height != RENDER_PHYSICAL_HEIGHT))
     {
         return false;
     }
@@ -162,33 +143,20 @@ static bool Render_IsLogicalPixelVisible(int32_t X, int32_t Y)
     int32_t clip_right;
     int32_t clip_bottom;
 
-    if ((X < 0) || (Y < 0) ||
-        (X >= (int32_t)RENDER_WIDTH) ||
-        (Y >= (int32_t)RENDER_HEIGHT))
+    if ((X < 0) || (Y < 0) || (X >= (int32_t)RENDER_WIDTH) || (Y >= (int32_t)RENDER_HEIGHT))
     {
         return false;
     }
 
-    clip_right =
-        (int32_t)Render_ClipRect.X +
-        (int32_t)Render_ClipRect.Width;
+    clip_right = (int32_t)Render_ClipRect.X + (int32_t)Render_ClipRect.Width;
 
-    clip_bottom =
-        (int32_t)Render_ClipRect.Y +
-        (int32_t)Render_ClipRect.Height;
+    clip_bottom = (int32_t)Render_ClipRect.Y + (int32_t)Render_ClipRect.Height;
 
     return
-        (X >= (int32_t)Render_ClipRect.X) &&
-        (Y >= (int32_t)Render_ClipRect.Y) &&
-        (X < clip_right) &&
-        (Y < clip_bottom);
+        (X >= (int32_t)Render_ClipRect.X) && (Y >= (int32_t)Render_ClipRect.Y) && (X < clip_right) && (Y < clip_bottom);
 }
 
-static inline void Render_WriteLogicalPixel(
-    Render_TargetTypeDef *Target,
-    int32_t X,
-    int32_t Y,
-    Render_ColourIndexTypeDef Colour)
+static inline void Render_WriteLogicalPixel( Render_TargetTypeDef *Target, int32_t X, int32_t Y, Render_ColourIndexTypeDef Colour)
 {
     uint32_t physical_x;
     uint32_t physical_y;
@@ -202,9 +170,7 @@ static inline void Render_WriteLogicalPixel(
     physical_x = RENDER_PHYSICAL_X(Y);
     physical_y = RENDER_PHYSICAL_Y(X);
 
-    physical_index =
-        (physical_y * Target->StridePixels) +
-        physical_x;
+    physical_index = (physical_y * Target->StridePixels) + physical_x;
 
     Target->Pixels[physical_index] = Colour;
 }
@@ -270,8 +236,7 @@ static int32_t Render_SineQ15(Render_AngleTypeDef Angle)
 
 static int32_t Render_CosineQ15(Render_AngleTypeDef Angle)
 {
-    return Render_SineQ15(
-        (Render_AngleTypeDef)((int32_t)Angle + 900));
+    return Render_SineQ15( (Render_AngleTypeDef)((int32_t)Angle + 900));
 }
 
 /* -------------------------------------------------------------------------- */
@@ -294,13 +259,9 @@ void Render_SetClipRect(const Render_RectTypeDef *Rect)
     left = Render_MaxInt32((int32_t)Rect->X, 0);
     top = Render_MaxInt32((int32_t)Rect->Y, 0);
 
-    right = Render_MinInt32(
-        (int32_t)Rect->X + (int32_t)Rect->Width,
-        (int32_t)RENDER_WIDTH);
+    right = Render_MinInt32( (int32_t)Rect->X + (int32_t)Rect->Width, (int32_t)RENDER_WIDTH);
 
-    bottom = Render_MinInt32(
-        (int32_t)Rect->Y + (int32_t)Rect->Height,
-        (int32_t)RENDER_HEIGHT);
+    bottom = Render_MinInt32( (int32_t)Rect->Y + (int32_t)Rect->Height, (int32_t)RENDER_HEIGHT);
 
     if ((right <= left) || (bottom <= top))
     {
@@ -329,9 +290,7 @@ void Render_ResetClipRect(void)
 /* Primitive drawing                                                          */
 /* -------------------------------------------------------------------------- */
 
-void Render_Clear(
-    Render_TargetTypeDef *Target,
-    Render_ColourIndexTypeDef Colour)
+void Render_Clear( Render_TargetTypeDef *Target, Render_ColourIndexTypeDef Colour)
 {
     uint32_t physical_y;
 
@@ -342,31 +301,18 @@ void Render_Clear(
 
     if (Target->StridePixels == RENDER_PHYSICAL_WIDTH)
     {
-        memset(
-            Target->Pixels,
-            Colour,
-            (size_t)RENDER_PHYSICAL_WIDTH *
-                (size_t)RENDER_PHYSICAL_HEIGHT);
+        memset( Target->Pixels, Colour, (size_t)RENDER_PHYSICAL_WIDTH * (size_t)RENDER_PHYSICAL_HEIGHT);
 
         return;
     }
 
-    for (physical_y = 0U;
-         physical_y < RENDER_PHYSICAL_HEIGHT;
-         physical_y++)
+    for (physical_y = 0U; physical_y < RENDER_PHYSICAL_HEIGHT; physical_y++)
     {
-        memset(
-            &Target->Pixels[
-                physical_y * Target->StridePixels],
-            Colour,
-            RENDER_PHYSICAL_WIDTH);
+        memset( &Target->Pixels[ physical_y * Target->StridePixels], Colour, RENDER_PHYSICAL_WIDTH);
     }
 }
 
-void Render_FillRect(
-    Render_TargetTypeDef *Target,
-    const Render_RectTypeDef *Rect,
-    Render_ColourIndexTypeDef Colour)
+void Render_FillRect( Render_TargetTypeDef *Target, const Render_RectTypeDef *Rect, Render_ColourIndexTypeDef Colour)
 {
     int32_t left;
     int32_t top;
@@ -382,23 +328,13 @@ void Render_FillRect(
         return;
     }
 
-    left = Render_MaxInt32(
-        (int32_t)Rect->X,
-        (int32_t)Render_ClipRect.X);
+    left = Render_MaxInt32( (int32_t)Rect->X, (int32_t)Render_ClipRect.X);
 
-    top = Render_MaxInt32(
-        (int32_t)Rect->Y,
-        (int32_t)Render_ClipRect.Y);
+    top = Render_MaxInt32( (int32_t)Rect->Y, (int32_t)Render_ClipRect.Y);
 
-    right = Render_MinInt32(
-        (int32_t)Rect->X + (int32_t)Rect->Width,
-        (int32_t)Render_ClipRect.X +
-            (int32_t)Render_ClipRect.Width);
+    right = Render_MinInt32( (int32_t)Rect->X + (int32_t)Rect->Width, (int32_t)Render_ClipRect.X + (int32_t)Render_ClipRect.Width);
 
-    bottom = Render_MinInt32(
-        (int32_t)Rect->Y + (int32_t)Rect->Height,
-        (int32_t)Render_ClipRect.Y +
-            (int32_t)Render_ClipRect.Height);
+    bottom = Render_MinInt32( (int32_t)Rect->Y + (int32_t)Rect->Height, (int32_t)Render_ClipRect.Y + (int32_t)Render_ClipRect.Height);
 
     left = Render_MaxInt32(left, 0);
     top = Render_MaxInt32(top, 0);
@@ -418,10 +354,7 @@ void Render_FillRect(
 
     fill_length = (uint32_t)(bottom - top);
 
-    destination =
-        &Target->Pixels[
-            (physical_y * Target->StridePixels) +
-            RENDER_PHYSICAL_X(bottom - 1)];
+    destination = &Target->Pixels[ (physical_y * Target->StridePixels) + RENDER_PHYSICAL_X(bottom - 1)];
 
     for (logical_x = left; logical_x < right; logical_x++)
     {
@@ -429,11 +362,7 @@ void Render_FillRect(
         destination += Target->StridePixels;
     }
 }
-bool Render_DrawPolygon(
-    Render_TargetTypeDef *Target,
-    const Render_PointTypeDef *Points,
-    uint8_t PointCount,
-    Render_ColourIndexTypeDef Colour)
+bool Render_DrawPolygon( Render_TargetTypeDef *Target, const Render_PointTypeDef *Points, uint8_t PointCount, Render_ColourIndexTypeDef Colour)
 {
     int32_t intersections[RENDER_POLYGON_MAX_VERTEX_COUNT];
     int32_t minimum_y;
@@ -453,8 +382,7 @@ bool Render_DrawPolygon(
         return false;
     }
 
-    if ((PointCount < 3U) ||
-        (PointCount > RENDER_POLYGON_MAX_VERTEX_COUNT))
+    if ((PointCount < 3U) || (PointCount > RENDER_POLYGON_MAX_VERTEX_COUNT))
     {
         return false;
     }
@@ -468,19 +396,12 @@ bool Render_DrawPolygon(
         maximum_y = Render_MaxInt32(maximum_y, Points[index].Y);
     }
 
-    minimum_y = Render_MaxInt32(
-        minimum_y,
-        Render_ClipRect.Y);
+    minimum_y = Render_MaxInt32( minimum_y, Render_ClipRect.Y);
 
-    maximum_y = Render_MinInt32(
-        maximum_y,
-        (int32_t)Render_ClipRect.Y +
-            (int32_t)Render_ClipRect.Height - 1);
+    maximum_y = Render_MinInt32( maximum_y, (int32_t)Render_ClipRect.Y + (int32_t)Render_ClipRect.Height - 1);
 
     minimum_y = Render_MaxInt32(minimum_y, 0);
-    maximum_y = Render_MinInt32(
-        maximum_y,
-        (int32_t)RENDER_HEIGHT - 1);
+    maximum_y = Render_MinInt32( maximum_y, (int32_t)RENDER_HEIGHT - 1);
 
     for (scan_y = minimum_y; scan_y <= maximum_y; scan_y++)
     {
@@ -490,18 +411,9 @@ bool Render_DrawPolygon(
         {
             next = (uint8_t)((index + 1U) % PointCount);
 
-            if (((Points[index].Y <= scan_y) &&
-                 (Points[next].Y > scan_y)) ||
-                ((Points[next].Y <= scan_y) &&
-                 (Points[index].Y > scan_y)))
+            if (((Points[index].Y <= scan_y) && (Points[next].Y > scan_y)) || ((Points[next].Y <= scan_y) && (Points[index].Y > scan_y)))
             {
-                intersections[intersection_count] =
-                    (int32_t)Points[index].X +
-                    (((scan_y - (int32_t)Points[index].Y) *
-                      ((int32_t)Points[next].X -
-                       (int32_t)Points[index].X)) /
-                     ((int32_t)Points[next].Y -
-                      (int32_t)Points[index].Y));
+                intersections[intersection_count] = (int32_t)Points[index].X + (((scan_y - (int32_t)Points[index].Y) * ((int32_t)Points[next].X - (int32_t)Points[index].X)) / ((int32_t)Points[next].Y - (int32_t)Points[index].Y));
 
                 intersection_count++;
             }
@@ -512,11 +424,9 @@ bool Render_DrawPolygon(
             temporary = intersections[index];
             sort_index = index;
 
-            while ((sort_index > 0U) &&
-                   (intersections[sort_index - 1U] > temporary))
+            while ((sort_index > 0U) && (intersections[sort_index - 1U] > temporary))
             {
-                intersections[sort_index] =
-                    intersections[sort_index - 1U];
+                intersections[sort_index] = intersections[sort_index - 1U];
 
                 sort_index--;
             }
@@ -524,34 +434,21 @@ bool Render_DrawPolygon(
             intersections[sort_index] = temporary;
         }
 
-        for (index = 0U;
-             (uint8_t)(index + 1U) < intersection_count;
-             index = (uint8_t)(index + 2U))
+        for (index = 0U; (uint8_t)(index + 1U) < intersection_count; index = (uint8_t)(index + 2U))
         {
             x_start = intersections[index];
             x_end = intersections[index + 1U];
 
-            x_start = Render_MaxInt32(
-                x_start,
-                Render_ClipRect.X);
+            x_start = Render_MaxInt32( x_start, Render_ClipRect.X);
 
-            x_end = Render_MinInt32(
-                x_end,
-                (int32_t)Render_ClipRect.X +
-                    (int32_t)Render_ClipRect.Width - 1);
+            x_end = Render_MinInt32( x_end, (int32_t)Render_ClipRect.X + (int32_t)Render_ClipRect.Width - 1);
 
             x_start = Render_MaxInt32(x_start, 0);
-            x_end = Render_MinInt32(
-                x_end,
-                (int32_t)RENDER_WIDTH - 1);
+            x_end = Render_MinInt32( x_end, (int32_t)RENDER_WIDTH - 1);
 
             if (x_start <= x_end)
             {
-                Render_ColourIndexTypeDef *destination =
-                    &Target->Pixels[
-                        ((uint32_t)x_start *
-                         Target->StridePixels) +
-                        RENDER_PHYSICAL_X(scan_y)];
+                Render_ColourIndexTypeDef *destination = &Target->Pixels[ ((uint32_t)x_start * Target->StridePixels) + RENDER_PHYSICAL_X(scan_y)];
 
                 for (x = x_start; x <= x_end; x++)
                 {
@@ -569,11 +466,7 @@ bool Render_DrawPolygon(
 /* Image drawing                                                              */
 /* -------------------------------------------------------------------------- */
 
-void Render_DrawImage(
-    Render_TargetTypeDef *Target,
-    const Render_ImageTypeDef *Image,
-    int16_t X,
-    int16_t Y)
+void Render_DrawImage( Render_TargetTypeDef *Target, const Render_ImageTypeDef *Image, int16_t X, int16_t Y)
 {
     Render_ImageRegionTypeDef region;
 
@@ -590,12 +483,7 @@ void Render_DrawImage(
     Render_DrawImageRegion(Target, Image, &region, X, Y);
 }
 
-void Render_DrawImageRegion(
-    Render_TargetTypeDef *Target,
-    const Render_ImageTypeDef *Image,
-    const Render_ImageRegionTypeDef *SourceRegion,
-    int16_t X,
-    int16_t Y)
+void Render_DrawImageRegion( Render_TargetTypeDef *Target, const Render_ImageTypeDef *Image, const Render_ImageRegionTypeDef *SourceRegion, int16_t X, int16_t Y)
 {
     int32_t destination_left;
     int32_t destination_top;
@@ -611,78 +499,42 @@ void Render_DrawImageRegion(
     Render_ColourIndexTypeDef *destination;
     Render_ColourIndexTypeDef colour;
 
-    if (!Render_IsTargetValid(Target) ||
-        !Render_IsImageValid(Image) ||
-        (SourceRegion == NULL))
+    if (!Render_IsTargetValid(Target) || !Render_IsImageValid(Image) || (SourceRegion == NULL))
     {
         return;
     }
 
-    if (((uint32_t)SourceRegion->X +
-         (uint32_t)SourceRegion->Width >
-         (uint32_t)Image->Width) ||
-        ((uint32_t)SourceRegion->Y +
-         (uint32_t)SourceRegion->Height >
-         (uint32_t)Image->Height))
+    if (((uint32_t)SourceRegion->X + (uint32_t)SourceRegion->Width > (uint32_t)Image->Width) || ((uint32_t)SourceRegion->Y + (uint32_t)SourceRegion->Height > (uint32_t)Image->Height))
     {
         return;
     }
 
-    destination_left = Render_MaxInt32(
-        (int32_t)X,
-        Render_MaxInt32((int32_t)Render_ClipRect.X, 0));
+    destination_left = Render_MaxInt32( (int32_t)X, Render_MaxInt32((int32_t)Render_ClipRect.X, 0));
 
-    destination_top = Render_MaxInt32(
-        (int32_t)Y,
-        Render_MaxInt32((int32_t)Render_ClipRect.Y, 0));
+    destination_top = Render_MaxInt32( (int32_t)Y, Render_MaxInt32((int32_t)Render_ClipRect.Y, 0));
 
-    destination_right = Render_MinInt32(
-        (int32_t)X + (int32_t)SourceRegion->Width,
-        Render_MinInt32(
-            (int32_t)Render_ClipRect.X +
-                (int32_t)Render_ClipRect.Width,
-            (int32_t)RENDER_WIDTH));
+    destination_right = Render_MinInt32( (int32_t)X + (int32_t)SourceRegion->Width, Render_MinInt32( (int32_t)Render_ClipRect.X + (int32_t)Render_ClipRect.Width, (int32_t)RENDER_WIDTH));
 
-    destination_bottom = Render_MinInt32(
-        (int32_t)Y + (int32_t)SourceRegion->Height,
-        Render_MinInt32(
-            (int32_t)Render_ClipRect.Y +
-                (int32_t)Render_ClipRect.Height,
-            (int32_t)RENDER_HEIGHT));
+    destination_bottom = Render_MinInt32( (int32_t)Y + (int32_t)SourceRegion->Height, Render_MinInt32( (int32_t)Render_ClipRect.Y + (int32_t)Render_ClipRect.Height, (int32_t)RENDER_HEIGHT));
 
-    if ((destination_right <= destination_left) ||
-        (destination_bottom <= destination_top))
+    if ((destination_right <= destination_left) || (destination_bottom <= destination_top))
     {
         return;
     }
 
-    source_start_x =
-        (uint32_t)SourceRegion->X +
-        (uint32_t)(destination_left - (int32_t)X);
+    source_start_x = (uint32_t)SourceRegion->X + (uint32_t)(destination_left - (int32_t)X);
 
-    source_start_y =
-        (uint32_t)SourceRegion->Y +
-        (uint32_t)(destination_top - (int32_t)Y);
+    source_start_y = (uint32_t)SourceRegion->Y + (uint32_t)(destination_top - (int32_t)Y);
 
-    copy_width =
-        (uint32_t)(destination_right - destination_left);
+    copy_width = (uint32_t)(destination_right - destination_left);
 
-    copy_height =
-        (uint32_t)(destination_bottom - destination_top);
+    copy_height = (uint32_t)(destination_bottom - destination_top);
 
     for (row = 0U; row < copy_height; row++)
     {
-        source =
-            &Image->Pixels[
-                ((source_start_y + row) * Image->StridePixels) +
-                source_start_x];
+        source = &Image->Pixels[ ((source_start_y + row) * Image->StridePixels) + source_start_x];
 
-        destination =
-            &Target->Pixels[
-                ((uint32_t)destination_left *
-                 Target->StridePixels) +
-                RENDER_PHYSICAL_X(
-                    (uint32_t)destination_top + row)];
+        destination = &Target->Pixels[ ((uint32_t)destination_left * Target->StridePixels) + RENDER_PHYSICAL_X( (uint32_t)destination_top + row)];
 
         if (!Image->HasTransparentColour)
         {
@@ -708,12 +560,7 @@ void Render_DrawImageRegion(
         }
     }
 }
-void Render_DrawImageRotated(
-    Render_TargetTypeDef *Target,
-    const Render_ImageTypeDef *Image,
-    int16_t CentreX,
-    int16_t CentreY,
-    Render_AngleTypeDef Angle)
+void Render_DrawImageRotated( Render_TargetTypeDef *Target, const Render_ImageTypeDef *Image, int16_t CentreX, int16_t CentreY, Render_AngleTypeDef Angle)
 {
     int32_t sine;
     int32_t cosine;
@@ -736,8 +583,7 @@ void Render_DrawImageRotated(
     Render_ColourIndexTypeDef *destination;
     Render_ColourIndexTypeDef colour;
 
-    if (!Render_IsTargetValid(Target) ||
-        !Render_IsImageValid(Image))
+    if (!Render_IsTargetValid(Target) || !Render_IsImageValid(Image))
     {
         return;
     }
@@ -745,106 +591,55 @@ void Render_DrawImageRotated(
     sine = Render_SineQ15(Angle);
     cosine = Render_CosineQ15(Angle);
 
-    half_width_q15 =
-        (int32_t)Image->Width << (RENDER_TRIG_SHIFT - 1);
+    half_width_q15 = (int32_t)Image->Width << (RENDER_TRIG_SHIFT - 1);
 
-    half_height_q15 =
-        (int32_t)Image->Height << (RENDER_TRIG_SHIFT - 1);
+    half_height_q15 = (int32_t)Image->Height << (RENDER_TRIG_SHIFT - 1);
 
-    radius =
-        ((int32_t)Image->Width +
-         (int32_t)Image->Height + 1) / 2;
+    radius = ((int32_t)Image->Width + (int32_t)Image->Height + 1) / 2;
 
-    destination_left = Render_MaxInt32(
-        (int32_t)CentreX - radius,
-        Render_MaxInt32((int32_t)Render_ClipRect.X, 0));
+    destination_left = Render_MaxInt32( (int32_t)CentreX - radius, Render_MaxInt32((int32_t)Render_ClipRect.X, 0));
 
-    destination_top = Render_MaxInt32(
-        (int32_t)CentreY - radius,
-        Render_MaxInt32((int32_t)Render_ClipRect.Y, 0));
+    destination_top = Render_MaxInt32( (int32_t)CentreY - radius, Render_MaxInt32((int32_t)Render_ClipRect.Y, 0));
 
-    destination_right = Render_MinInt32(
-        (int32_t)CentreX + radius,
-        Render_MinInt32(
-            (int32_t)Render_ClipRect.X +
-                (int32_t)Render_ClipRect.Width - 1,
-            (int32_t)RENDER_WIDTH - 1));
+    destination_right = Render_MinInt32( (int32_t)CentreX + radius, Render_MinInt32( (int32_t)Render_ClipRect.X + (int32_t)Render_ClipRect.Width - 1, (int32_t)RENDER_WIDTH - 1));
 
-    destination_bottom = Render_MinInt32(
-        (int32_t)CentreY + radius,
-        Render_MinInt32(
-            (int32_t)Render_ClipRect.Y +
-                (int32_t)Render_ClipRect.Height - 1,
-            (int32_t)RENDER_HEIGHT - 1));
+    destination_bottom = Render_MinInt32( (int32_t)CentreY + radius, Render_MinInt32( (int32_t)Render_ClipRect.Y + (int32_t)Render_ClipRect.Height - 1, (int32_t)RENDER_HEIGHT - 1));
 
-    if ((destination_right < destination_left) ||
-        (destination_bottom < destination_top))
+    if ((destination_right < destination_left) || (destination_bottom < destination_top))
     {
         return;
     }
 
-    relative_x_q15 =
-        ((destination_left - (int32_t)CentreX)
-         << RENDER_TRIG_SHIFT) +
-        (RENDER_TRIG_ONE / 2);
+    relative_x_q15 = ((destination_left - (int32_t)CentreX) << RENDER_TRIG_SHIFT) + (RENDER_TRIG_ONE / 2);
 
-    for (destination_y = destination_top;
-         destination_y <= destination_bottom;
-         destination_y++)
+    for (destination_y = destination_top; destination_y <= destination_bottom; destination_y++)
     {
-        relative_y_q15 =
-            ((destination_y - (int32_t)CentreY)
-             << RENDER_TRIG_SHIFT) +
-            (RENDER_TRIG_ONE / 2);
+        relative_y_q15 = ((destination_y - (int32_t)CentreY) << RENDER_TRIG_SHIFT) + (RENDER_TRIG_ONE / 2);
 
         /*
          * Perform the expensive transform once at the beginning of each row.
          * Moving one logical pixel right then advances source X by cosine and
          * source Y by negative sine.
          */
-        source_x_q15 =
-            (int32_t)(
-                ((((int64_t)cosine * relative_x_q15) +
-                  ((int64_t)sine * relative_y_q15)) >>
-                 RENDER_TRIG_SHIFT) +
-                half_width_q15);
+        source_x_q15 = (int32_t)( ((((int64_t)cosine * relative_x_q15) + ((int64_t)sine * relative_y_q15)) >> RENDER_TRIG_SHIFT) + half_width_q15);
 
-        source_y_q15 =
-            (int32_t)(
-                (((-(int64_t)sine * relative_x_q15) +
-                  ((int64_t)cosine * relative_y_q15)) >>
-                 RENDER_TRIG_SHIFT) +
-                half_height_q15);
+        source_y_q15 = (int32_t)( (((-(int64_t)sine * relative_x_q15) + ((int64_t)cosine * relative_y_q15)) >> RENDER_TRIG_SHIFT) + half_height_q15);
 
-        destination =
-            &Target->Pixels[
-                ((uint32_t)destination_left *
-                 Target->StridePixels) +
-                RENDER_PHYSICAL_X(destination_y)];
+        destination = &Target->Pixels[ ((uint32_t)destination_left * Target->StridePixels) + RENDER_PHYSICAL_X(destination_y)];
 
-        for (destination_x = destination_left;
-             destination_x <= destination_right;
-             destination_x++)
+        for (destination_x = destination_left; destination_x <= destination_right; destination_x++)
         {
-            source_x =
-                source_x_q15 >> RENDER_TRIG_SHIFT;
+            source_x = source_x_q15 >> RENDER_TRIG_SHIFT;
 
-            source_y =
-                source_y_q15 >> RENDER_TRIG_SHIFT;
+            source_y = source_y_q15 >> RENDER_TRIG_SHIFT;
 
-            if ((source_x >= 0) &&
-                (source_y >= 0) &&
-                (source_x < (int32_t)Image->Width) &&
-                (source_y < (int32_t)Image->Height))
+            if ((source_x >= 0) && (source_y >= 0) && (source_x < (int32_t)Image->Width) && (source_y < (int32_t)Image->Height))
             {
-                source_index =
-                    ((uint32_t)source_y * Image->StridePixels) +
-                    (uint32_t)source_x;
+                source_index = ((uint32_t)source_y * Image->StridePixels) + (uint32_t)source_x;
 
                 colour = Image->Pixels[source_index];
 
-                if (!Image->HasTransparentColour ||
-                    (colour != Image->TransparentColour))
+                if (!Image->HasTransparentColour || (colour != Image->TransparentColour))
                 {
                     *destination = colour;
                 }
@@ -861,13 +656,7 @@ void Render_DrawImageRotated(
 /* Text drawing                                                               */
 /* -------------------------------------------------------------------------- */
 
-void Render_DrawText(
-    Render_TargetTypeDef *Target,
-    const Render_FontTypeDef *Font,
-    const char *Text,
-    int16_t X,
-    int16_t Y,
-    Render_ColourIndexTypeDef Colour)
+void Render_DrawText( Render_TargetTypeDef *Target, const Render_FontTypeDef *Font, const char *Text, int16_t X, int16_t Y, Render_ColourIndexTypeDef Colour)
 {
     uint32_t character_index;
     uint32_t glyph_offset;
@@ -879,14 +668,7 @@ void Render_DrawText(
     uint8_t bit_mask;
     int32_t cursor_x;
 
-    if (!Render_IsTargetValid(Target) ||
-        (Font == NULL) ||
-        (Font->GlyphBits == NULL) ||
-        (Text == NULL) ||
-        (Font->GlyphWidth == 0U) ||
-        (Font->GlyphHeight == 0U) ||
-        (Font->RowStrideBytes == 0U) ||
-        (Font->GlyphStrideBytes == 0U))
+    if (!Render_IsTargetValid(Target) || (Font == NULL) || (Font->GlyphBits == NULL) || (Text == NULL) || (Font->GlyphWidth == 0U) || (Font->GlyphHeight == 0U) || (Font->RowStrideBytes == 0U) || (Font->GlyphStrideBytes == 0U))
     {
         return;
     }
@@ -898,50 +680,34 @@ void Render_DrawText(
         character = (uint8_t)*Text;
         Text++;
 
-        if ((character < Font->FirstCharacter) ||
-            ((uint16_t)(character - Font->FirstCharacter) >=
-             Font->GlyphCount))
+        if ((character < Font->FirstCharacter) || ((uint16_t)(character - Font->FirstCharacter) >= Font->GlyphCount))
         {
             cursor_x += Font->GlyphWidth;
             continue;
         }
 
-        character_index =
-            (uint32_t)(character - Font->FirstCharacter);
+        character_index = (uint32_t)(character - Font->FirstCharacter);
 
-        glyph_offset =
-            character_index * Font->GlyphStrideBytes;
+        glyph_offset = character_index * Font->GlyphStrideBytes;
 
         for (row = 0U; row < Font->GlyphHeight; row++)
         {
-            row_offset =
-                glyph_offset +
-                (row * Font->RowStrideBytes);
+            row_offset = glyph_offset + (row * Font->RowStrideBytes);
 
-            for (column = 0U;
-                 column < Font->GlyphWidth;
-                 column++)
+            for (column = 0U; column < Font->GlyphWidth; column++)
             {
                 byte_offset = row_offset + (column / 8U);
                 bit_mask = (uint8_t)(0x80U >> (column % 8U));
 
                 if ((Font->GlyphBits[byte_offset] & bit_mask) != 0U)
                 {
-                    const int32_t destination_x =
-                        cursor_x + (int32_t)column;
+                    const int32_t destination_x = cursor_x + (int32_t)column;
 
-                    const int32_t destination_y =
-                        (int32_t)Y + (int32_t)row;
+                    const int32_t destination_y = (int32_t)Y + (int32_t)row;
 
-                    if (Render_IsLogicalPixelVisible(
-                            destination_x,
-                            destination_y))
+                    if (Render_IsLogicalPixelVisible( destination_x, destination_y))
                     {
-                        Target->Pixels[
-                            ((uint32_t)destination_x *
-                             Target->StridePixels) +
-                            RENDER_PHYSICAL_X(destination_y)] =
-                            Colour;
+                        Target->Pixels[ ((uint32_t)destination_x * Target->StridePixels) + RENDER_PHYSICAL_X(destination_y)] = Colour;
                     }
                 }
             }

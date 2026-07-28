@@ -23,6 +23,7 @@
 #define DISPLAY_CONTROLLER_REGISTRY_SIZE               1U
 #define DISPLAY_CONTROLLER_MAX_PALETTE_ENTRIES         256U
 #define DISPLAY_CONTROLLER_PIXEL_CLOCK_TOLERANCE_PCT   3U
+#define DISPLAY_CONTROLLER_INTERRUPT_PRIORITY          5U
 
 #define DISPLAY_CONTROLLER_GPIO_MODE_ALTERNATE         2U
 #define DISPLAY_CONTROLLER_GPIO_SPEED_VERY_HIGH        3U
@@ -46,6 +47,10 @@ typedef struct
 {
     DisplayController_Handle *handle;
     DisplayController_LayerConfiguration layer;
+    volatile uint32_t vertical_blank_count;
+    volatile bool reload_pending;
+    volatile bool reload_complete;
+
     bool initialized;
     bool layer_configured;
     bool enabled;
@@ -79,7 +84,9 @@ static uint32_t DisplayController_CalculatePixelClock(const DisplayController_Ti
 static uint32_t DisplayController_GetPixelFormatEncoding(DisplayController_PixelFormat pixel_format);
 static uint32_t DisplayController_GetBytesPerPixel(DisplayController_PixelFormat pixel_format);
 static DisplayController_Result DisplayController_ReloadImmediate(void);
-static DisplayController_Result DisplayController_ReloadVerticalBlanking(void);
+static DisplayController_Result DisplayController_ReloadVerticalBlanking( DisplayController_State *state);
+static void DisplayController_ConfigureInterrupts( const DisplayController_Handle *controller);
+static void DisplayController_DisableInterrupts(void);
 
 /* -------------------------------------------------------------------------- */
 /* State registry                                                             */
@@ -114,6 +121,9 @@ static DisplayController_State *DisplayController_AllocateState(DisplayControlle
         if (!DisplayController_Registry[index].initialized)
         {
             DisplayController_Registry[index].handle = controller;
+            DisplayController_Registry[index].vertical_blank_count = 0U;
+            DisplayController_Registry[index].reload_pending = false;
+            DisplayController_Registry[index].reload_complete = false;
             DisplayController_Registry[index].layer_configured = false;
             DisplayController_Registry[index].enabled = false;
 
@@ -141,41 +151,29 @@ static GPIO_TypeDef *DisplayController_GetGPIOPort(DisplayController_Pin pin)
 
     switch (port_index)
     {
-        case 0U:
-            return GPIOA;
+        case 0U: return GPIOA;
 
-        case 1U:
-            return GPIOB;
+        case 1U: return GPIOB;
 
-        case 2U:
-            return GPIOC;
+        case 2U: return GPIOC;
 
-        case 3U:
-            return GPIOD;
+        case 3U: return GPIOD;
 
-        case 4U:
-            return GPIOE;
+        case 4U: return GPIOE;
 
-        case 5U:
-            return GPIOF;
+        case 5U: return GPIOF;
 
-        case 6U:
-            return GPIOG;
+        case 6U: return GPIOG;
 
-        case 7U:
-            return GPIOH;
+        case 7U: return GPIOH;
 
-        case 8U:
-            return GPIOI;
+        case 8U: return GPIOI;
 
-        case 9U:
-            return GPIOJ;
+        case 9U: return GPIOJ;
 
-        case 10U:
-            return GPIOK;
+        case 10U: return GPIOK;
 
-        default:
-            return NULL;
+        default: return NULL;
     }
 }
 
@@ -197,23 +195,7 @@ static DisplayController_Result DisplayController_GetAlternateFunction(DisplayCo
 
     switch (pin)
     {
-        case PC0:
-        case PC1:
-        case PA5:
-        case PA6:
-        case PA7:
-        case PC4:
-        case PC5:
-        case PB10:
-        case PB14:
-        case PB15:
-        case PC6:
-        case PC7:
-        case PC10:
-        case PC11:
-        case PD2:
-        case PB8:
-        case PB9:
+        case PC0: case PC1: case PA5: case PA6: case PA7: case PC4: case PC5: case PB10: case PB14: case PB15: case PC6: case PC7: case PC10: case PC11: case PD2: case PB8: case PB9:
             *alternate_function = 14U;
             return DISPLAY_CONTROLLER_RESULT_OK;
 
@@ -229,13 +211,11 @@ static DisplayController_Result DisplayController_GetAlternateFunction(DisplayCo
             *alternate_function = 10U;
             return DISPLAY_CONTROLLER_RESULT_OK;
 
-        case PB0:
-        case PB1:
+        case PB0: case PB1:
             *alternate_function = 9U;
             return DISPLAY_CONTROLLER_RESULT_OK;
 
-        default:
-            return DISPLAY_CONTROLLER_RESULT_UNSUPPORTED;
+        default: return DISPLAY_CONTROLLER_RESULT_UNSUPPORTED;
     }
 }
 
@@ -367,26 +347,22 @@ static DisplayController_Result DisplayController_ValidateConfiguration(const Di
         return DISPLAY_CONTROLLER_RESULT_INVALID_ARGUMENT;
     }
 
-    if ((controller->signals.horizontal_sync != DISPLAY_CONTROLLER_POLARITY_ACTIVE_LOW) &&
-        (controller->signals.horizontal_sync != DISPLAY_CONTROLLER_POLARITY_ACTIVE_HIGH))
+    if ((controller->signals.horizontal_sync != DISPLAY_CONTROLLER_POLARITY_ACTIVE_LOW) && (controller->signals.horizontal_sync != DISPLAY_CONTROLLER_POLARITY_ACTIVE_HIGH))
     {
         return DISPLAY_CONTROLLER_RESULT_INVALID_ARGUMENT;
     }
 
-    if ((controller->signals.vertical_sync != DISPLAY_CONTROLLER_POLARITY_ACTIVE_LOW) &&
-        (controller->signals.vertical_sync != DISPLAY_CONTROLLER_POLARITY_ACTIVE_HIGH))
+    if ((controller->signals.vertical_sync != DISPLAY_CONTROLLER_POLARITY_ACTIVE_LOW) && (controller->signals.vertical_sync != DISPLAY_CONTROLLER_POLARITY_ACTIVE_HIGH))
     {
         return DISPLAY_CONTROLLER_RESULT_INVALID_ARGUMENT;
     }
 
-    if ((controller->signals.data_enable != DISPLAY_CONTROLLER_POLARITY_ACTIVE_LOW) &&
-        (controller->signals.data_enable != DISPLAY_CONTROLLER_POLARITY_ACTIVE_HIGH))
+    if ((controller->signals.data_enable != DISPLAY_CONTROLLER_POLARITY_ACTIVE_LOW) && (controller->signals.data_enable != DISPLAY_CONTROLLER_POLARITY_ACTIVE_HIGH))
     {
         return DISPLAY_CONTROLLER_RESULT_INVALID_ARGUMENT;
     }
 
-    if ((controller->signals.pixel_clock_edge != DISPLAY_CONTROLLER_PIXEL_CLOCK_RISING_EDGE) &&
-        (controller->signals.pixel_clock_edge != DISPLAY_CONTROLLER_PIXEL_CLOCK_FALLING_EDGE))
+    if ((controller->signals.pixel_clock_edge != DISPLAY_CONTROLLER_PIXEL_CLOCK_RISING_EDGE) && (controller->signals.pixel_clock_edge != DISPLAY_CONTROLLER_PIXEL_CLOCK_FALLING_EDGE))
     {
         return DISPLAY_CONTROLLER_RESULT_INVALID_ARGUMENT;
     }
@@ -577,17 +553,9 @@ static uint32_t DisplayController_CalculatePixelClock(const DisplayController_Ti
         return 0U;
     }
 
-    horizontal_total =
-        (uint64_t)timing->horizontal_sync_width +
-        (uint64_t)timing->horizontal_back_porch +
-        (uint64_t)timing->active_width +
-        (uint64_t)timing->horizontal_front_porch;
+    horizontal_total = (uint64_t)timing->horizontal_sync_width + (uint64_t)timing->horizontal_back_porch + (uint64_t)timing->active_width + (uint64_t)timing->horizontal_front_porch;
 
-    vertical_total =
-        (uint64_t)timing->vertical_sync_height +
-        (uint64_t)timing->vertical_back_porch +
-        (uint64_t)timing->active_height +
-        (uint64_t)timing->vertical_front_porch;
+    vertical_total = (uint64_t)timing->vertical_sync_height + (uint64_t)timing->vertical_back_porch + (uint64_t)timing->active_height + (uint64_t)timing->vertical_front_porch;
 
     pixel_clock_hz = horizontal_total * vertical_total * (uint64_t)timing->refresh_rate_millihz / 1000ULL;
 
@@ -603,20 +571,15 @@ static uint32_t DisplayController_GetPixelFormatEncoding(DisplayController_Pixel
 {
     switch (pixel_format)
     {
-        case DISPLAY_CONTROLLER_PIXEL_FORMAT_ARGB8888:
-            return 0U;
+        case DISPLAY_CONTROLLER_PIXEL_FORMAT_ARGB8888: return 0U;
 
-        case DISPLAY_CONTROLLER_PIXEL_FORMAT_RGB888:
-            return 1U;
+        case DISPLAY_CONTROLLER_PIXEL_FORMAT_RGB888: return 1U;
 
-        case DISPLAY_CONTROLLER_PIXEL_FORMAT_RGB565:
-            return 2U;
+        case DISPLAY_CONTROLLER_PIXEL_FORMAT_RGB565: return 2U;
 
-        case DISPLAY_CONTROLLER_PIXEL_FORMAT_INDEXED_8_BIT:
-            return 5U;
+        case DISPLAY_CONTROLLER_PIXEL_FORMAT_INDEXED_8_BIT: return 5U;
 
-        default:
-            return UINT32_MAX;
+        default: return UINT32_MAX;
     }
 }
 
@@ -624,20 +587,15 @@ static uint32_t DisplayController_GetBytesPerPixel(DisplayController_PixelFormat
 {
     switch (pixel_format)
     {
-        case DISPLAY_CONTROLLER_PIXEL_FORMAT_ARGB8888:
-            return 4U;
+        case DISPLAY_CONTROLLER_PIXEL_FORMAT_ARGB8888: return 4U;
 
-        case DISPLAY_CONTROLLER_PIXEL_FORMAT_RGB888:
-            return 3U;
+        case DISPLAY_CONTROLLER_PIXEL_FORMAT_RGB888: return 3U;
 
-        case DISPLAY_CONTROLLER_PIXEL_FORMAT_RGB565:
-            return 2U;
+        case DISPLAY_CONTROLLER_PIXEL_FORMAT_RGB565: return 2U;
 
-        case DISPLAY_CONTROLLER_PIXEL_FORMAT_INDEXED_8_BIT:
-            return 1U;
+        case DISPLAY_CONTROLLER_PIXEL_FORMAT_INDEXED_8_BIT: return 1U;
 
-        default:
-            return 0U;
+        default: return 0U;
     }
 }
 
@@ -667,10 +625,7 @@ static DisplayController_Result DisplayController_ConfigureGlobalRegisters(const
     accumulated_active_height = (uint32_t)controller->timing.vertical_sync_height + (uint32_t)controller->timing.vertical_back_porch + (uint32_t)controller->timing.active_height - 1U;
     total_height = (uint32_t)controller->timing.vertical_sync_height + (uint32_t)controller->timing.vertical_back_porch + (uint32_t)controller->timing.active_height + (uint32_t)controller->timing.vertical_front_porch - 1U;
 
-    if ((horizontal_sync_width > 0x0FFFU) || (accumulated_horizontal_back_porch > 0x0FFFU) ||
-        (accumulated_active_width > 0x0FFFU) || (total_width > 0x0FFFU) ||
-        (vertical_sync_height > 0x07FFU) || (accumulated_vertical_back_porch > 0x07FFU) ||
-        (accumulated_active_height > 0x07FFU) || (total_height > 0x07FFU))
+    if ((horizontal_sync_width > 0x0FFFU) || (accumulated_horizontal_back_porch > 0x0FFFU) || (accumulated_active_width > 0x0FFFU) || (total_width > 0x0FFFU) || (vertical_sync_height > 0x07FFU) || (accumulated_vertical_back_porch > 0x07FFU) || (accumulated_active_height > 0x07FFU) || (total_height > 0x07FFU))
     {
         return DISPLAY_CONTROLLER_RESULT_UNSUPPORTED;
     }
@@ -704,10 +659,7 @@ static DisplayController_Result DisplayController_ConfigureGlobalRegisters(const
 
     LTDC->GCR = global_control;
 
-    LTDC->BCCR =
-        ((uint32_t)controller->background_color.red << LTDC_BCCR_BCRED_Pos) |
-        ((uint32_t)controller->background_color.green << LTDC_BCCR_BCGREEN_Pos) |
-        ((uint32_t)controller->background_color.blue << LTDC_BCCR_BCBLUE_Pos);
+    LTDC->BCCR = ((uint32_t)controller->background_color.red << LTDC_BCCR_BCRED_Pos) | ((uint32_t)controller->background_color.green << LTDC_BCCR_BCGREEN_Pos) | ((uint32_t)controller->background_color.blue << LTDC_BCCR_BCBLUE_Pos);
 
     return DISPLAY_CONTROLLER_RESULT_OK;
 }
@@ -745,27 +697,19 @@ static DisplayController_Result DisplayController_ConfigureLayerRegisters(const 
 
     LTDC_Layer1->CR = 0U;
 
-    LTDC_Layer1->WHPCR =
-        ((window_stop_x & 0x0FFFU) << LTDC_LxWHPCR_WHSPPOS_Pos) |
-        ((window_start_x & 0x0FFFU) << LTDC_LxWHPCR_WHSTPOS_Pos);
+    LTDC_Layer1->WHPCR = ((window_stop_x & 0x0FFFU) << LTDC_LxWHPCR_WHSPPOS_Pos) | ((window_start_x & 0x0FFFU) << LTDC_LxWHPCR_WHSTPOS_Pos);
 
-    LTDC_Layer1->WVPCR =
-        ((window_stop_y & 0x07FFU) << LTDC_LxWVPCR_WVSPPOS_Pos) |
-        ((window_start_y & 0x07FFU) << LTDC_LxWVPCR_WVSTPOS_Pos);
+    LTDC_Layer1->WVPCR = ((window_stop_y & 0x07FFU) << LTDC_LxWVPCR_WVSPPOS_Pos) | ((window_start_y & 0x07FFU) << LTDC_LxWVPCR_WVSTPOS_Pos);
 
     LTDC_Layer1->PFCR = pixel_format;
     LTDC_Layer1->CACR = 0xFFU;
     LTDC_Layer1->DCCR = 0U;
 
-    LTDC_Layer1->BFCR =
-        (DISPLAY_CONTROLLER_BLEND_FACTOR_1_CA << LTDC_LxBFCR_BF1_Pos) |
-        (DISPLAY_CONTROLLER_BLEND_FACTOR_2_CA << LTDC_LxBFCR_BF2_Pos);
+    LTDC_Layer1->BFCR = (DISPLAY_CONTROLLER_BLEND_FACTOR_1_CA << LTDC_LxBFCR_BF1_Pos) | (DISPLAY_CONTROLLER_BLEND_FACTOR_2_CA << LTDC_LxBFCR_BF2_Pos);
 
     LTDC_Layer1->CFBAR = (uint32_t)(uintptr_t)layer->framebuffer;
 
-    LTDC_Layer1->CFBLR =
-        (((line_length_bytes + 3U) & 0x1FFFU) << LTDC_LxCFBLR_CFBLL_Pos) |
-        ((line_pitch_bytes & 0x1FFFU) << LTDC_LxCFBLR_CFBP_Pos);
+    LTDC_Layer1->CFBLR = (((line_length_bytes + 3U) & 0x1FFFU) << LTDC_LxCFBLR_CFBLL_Pos) | ((line_pitch_bytes & 0x1FFFU) << LTDC_LxCFBLR_CFBP_Pos);
 
     LTDC_Layer1->CFBLNR = (uint32_t)layer->height;
 
@@ -784,11 +728,52 @@ static DisplayController_Result DisplayController_ReloadImmediate(void)
     return DISPLAY_CONTROLLER_RESULT_OK;
 }
 
-static DisplayController_Result DisplayController_ReloadVerticalBlanking(void)
+static DisplayController_Result DisplayController_ReloadVerticalBlanking( DisplayController_State *state)
 {
+    if(state == NULL)
+    {
+        return DISPLAY_CONTROLLER_RESULT_INVALID_ARGUMENT;
+    }
+
+    state->reload_pending = true;
+    state->reload_complete = false;
+
     LTDC->SRCR = LTDC_SRCR_VBR;
 
     return DISPLAY_CONTROLLER_RESULT_OK;
+}
+
+/**
+ * @brief Configure the LTDC line and reload interrupts.
+ *
+ * The line interrupt is placed on the first line following the active image,
+ * which is the beginning of the vertical-front-porch blanking interval.
+ */
+static void DisplayController_ConfigureInterrupts( const DisplayController_Handle *controller)
+{
+    uint32_t first_vertical_blank_line;
+
+    first_vertical_blank_line = (uint32_t)controller->timing.vertical_sync_height + (uint32_t)controller->timing.vertical_back_porch + (uint32_t)controller->timing.active_height;
+
+    LTDC->LIPCR = first_vertical_blank_line;
+    LTDC->ICR = LTDC_ICR_CLIF | LTDC_ICR_CRRIF;
+    LTDC->IER |= LTDC_IER_LIE | LTDC_IER_RRIE;
+
+    NVIC_ClearPendingIRQ(LTDC_IRQn);
+    NVIC_SetPriority(LTDC_IRQn, DISPLAY_CONTROLLER_INTERRUPT_PRIORITY);
+    NVIC_EnableIRQ(LTDC_IRQn);
+}
+
+/**
+ * @brief Disable LTDC frame-related interrupts.
+ */
+static void DisplayController_DisableInterrupts(void)
+{
+    NVIC_DisableIRQ(LTDC_IRQn);
+    NVIC_ClearPendingIRQ(LTDC_IRQn);
+
+    LTDC->IER &= ~(LTDC_IER_LIE | LTDC_IER_RRIE);
+    LTDC->ICR = LTDC_ICR_CLIF | LTDC_ICR_CRRIF;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -853,6 +838,9 @@ DisplayController_Result DisplayController_Init(DisplayController_Handle *contro
         return result;
     }
 
+    state->vertical_blank_count = 0U;
+    state->reload_pending = false;
+    state->reload_complete = false;
     state->initialized = true;
     state->layer_configured = false;
     state->enabled = false;
@@ -928,7 +916,7 @@ DisplayController_Result DisplayController_SetFramebuffer(DisplayController_Hand
 
     if (state->enabled)
     {
-        return DisplayController_ReloadVerticalBlanking();
+        return DisplayController_ReloadVerticalBlanking(state);
     }
 
     return DisplayController_ReloadImmediate();
@@ -968,18 +956,14 @@ DisplayController_Result DisplayController_SetPalette(DisplayController_Handle *
     {
         color = palette[index] & 0x00FFFFFFUL;
 
-        LTDC_Layer1->CLUTWR =
-            ((uint32_t)index << DISPLAY_CONTROLLER_CLUT_INDEX_POSITION) |
-            (((color >> 16U) & 0xFFU) << DISPLAY_CONTROLLER_CLUT_RED_POSITION) |
-            (((color >> 8U) & 0xFFU) << DISPLAY_CONTROLLER_CLUT_GREEN_POSITION) |
-            (((color >> 0U) & 0xFFU) << DISPLAY_CONTROLLER_CLUT_BLUE_POSITION);
+        LTDC_Layer1->CLUTWR = ((uint32_t)index << DISPLAY_CONTROLLER_CLUT_INDEX_POSITION) | (((color >> 16U) & 0xFFU) << DISPLAY_CONTROLLER_CLUT_RED_POSITION) | (((color >> 8U) & 0xFFU) << DISPLAY_CONTROLLER_CLUT_GREEN_POSITION) | (((color >> 0U) & 0xFFU) << DISPLAY_CONTROLLER_CLUT_BLUE_POSITION);
     }
 
     LTDC_Layer1->CR |= LTDC_LxCR_CLUTEN;
 
     if (state->enabled)
     {
-        return DisplayController_ReloadVerticalBlanking();
+        return DisplayController_ReloadVerticalBlanking(state);
     }
 
     return DisplayController_ReloadImmediate();
@@ -1011,6 +995,12 @@ DisplayController_Result DisplayController_Enable(DisplayController_Handle *cont
         return DISPLAY_CONTROLLER_RESULT_NOT_INITIALIZED;
     }
 
+    state->vertical_blank_count = 0U;
+    state->reload_pending = false;
+    state->reload_complete = false;
+
+    DisplayController_ConfigureInterrupts(controller);
+
     LTDC_Layer1->CR |= LTDC_LxCR_LEN;
     LTDC->GCR |= LTDC_GCR_LTDCEN;
 
@@ -1040,10 +1030,106 @@ DisplayController_Result DisplayController_Disable(DisplayController_Handle *con
         return DISPLAY_CONTROLLER_RESULT_OK;
     }
 
+    DisplayController_DisableInterrupts();
+
     LTDC_Layer1->CR &= ~LTDC_LxCR_LEN;
     LTDC->GCR &= ~LTDC_GCR_LTDCEN;
 
+    state->reload_pending = false;
+    state->reload_complete = false;
     state->enabled = false;
 
     return DisplayController_ReloadImmediate();
+}
+
+uint32_t DisplayController_GetVerticalBlankCount( const DisplayController_Handle *controller)
+{
+    const DisplayController_State *state = DisplayController_FindState(controller);
+
+    if(state == NULL)
+    {
+        return 0U;
+    }
+
+    return state->vertical_blank_count;
+}
+
+bool DisplayController_IsReloadPending( const DisplayController_Handle *controller)
+{
+    const DisplayController_State *state = DisplayController_FindState(controller);
+
+    if(state == NULL)
+    {
+        return false;
+    }
+
+    return state->reload_pending;
+}
+
+bool DisplayController_ConsumeReloadComplete( DisplayController_Handle *controller)
+{
+    DisplayController_State *state = DisplayController_FindState(controller);
+    bool reload_complete;
+
+    if(state == NULL)
+    {
+        return false;
+    }
+
+    reload_complete = state->reload_complete;
+    state->reload_complete = false;
+
+    return reload_complete;
+}
+
+/**
+ * @brief Handle LTDC line and shadow-register reload interrupts.
+ *
+ * This function is called by LTDC_IRQHandler() in the target interrupt-vector
+ * file. It intentionally contains all LTDC interrupt-register handling so the
+ * vector file remains a thin forwarding layer.
+ */
+void DisplayController_IRQHandler(void)
+{
+    uint32_t interrupt_status;
+    size_t index;
+
+    interrupt_status = LTDC->ISR;
+
+    if((interrupt_status & LTDC_ISR_LIF) != 0U)
+    {
+        LTDC->ICR = LTDC_ICR_CLIF;
+
+        for(index = 0U; index < DISPLAY_CONTROLLER_REGISTRY_SIZE; index++)
+        {
+            DisplayController_State *state = &DisplayController_Registry[index];
+
+            if(state->initialized && state->enabled)
+            {
+                state->vertical_blank_count++;
+            }
+        }
+    }
+
+    if((interrupt_status & LTDC_ISR_RRIF) != 0U)
+    {
+        LTDC->ICR = LTDC_ICR_CRRIF;
+
+        for(index = 0U; index < DISPLAY_CONTROLLER_REGISTRY_SIZE; index++)
+        {
+            DisplayController_State *state = &DisplayController_Registry[index];
+
+            if(state->initialized && state->enabled)
+            {
+                state->reload_pending = false;
+                state->reload_complete = true;
+            }
+        }
+    }
+}
+
+void DisplayController_WaitForEvent(DisplayController_Handle *Controller)
+{
+    (void)Controller;
+    __WFI();
 }

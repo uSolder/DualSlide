@@ -12,6 +12,7 @@
 
 #include <stddef.h>
 
+
 #define INPUT_LEFT_SLIDER_NUMBER      ((Input_NumberTypeDef)1U)
 #define INPUT_RIGHT_SLIDER_NUMBER     ((Input_NumberTypeDef)2U)
 #define INPUT_PRIMARY_BUTTON_NUMBER   ((Input_NumberTypeDef)3U)
@@ -44,13 +45,26 @@
 #define BALCONY_THICKNESS (16U)
 #define BALCONY_BUILDING_WRAP (14U)
 #define BALCONY_CLEAR_START (2)
-#define BUILDING_SPEED_SCALE (256U)
-#define BUILDING_START_SPEED (384U)
-#define BUILDING_FULL_SPEED (1075U)
-#define BUILDING_RAMP_MILLISECONDS       (240000ULL)
-#define BUILDING_GROUND_HOLD_MILLISECONDS (1000ULL)
-#define BUILDING_START_RAMP_MILLISECONDS  (1000ULL)
-#define BUILDING_INTRO_MILLISECONDS       (BUILDING_GROUND_HOLD_MILLISECONDS + BUILDING_START_RAMP_MILLISECONDS)
+/*
+ * Building scroll speed is intentionally restricted to whole pixels per
+ * rendered frame. Before SPEED_1_START_TIME_MS, the building remains stopped.
+ *
+ * Start times must be listed in ascending order.
+ */
+#define SPEED_1               (2U)       /* Pixels per frame. */
+#define SPEED_1_START_TIME_MS (1000ULL)
+
+#define SPEED_2               (3U)       /* Pixels per frame. */
+#define SPEED_2_START_TIME_MS (15000ULL)
+
+#define SPEED_3               (4U)       /* Pixels per frame. */
+#define SPEED_3_START_TIME_MS (30000ULL)
+
+#define SPEED_4               (5U)       /* Pixels per frame. */
+#define SPEED_4_START_TIME_MS (60000ULL)
+
+#define SPEED_5               (6U)       /* Pixels per frame. */
+#define SPEED_5_START_TIME_MS (120000ULL)
 
 #define HOTEL_GROUND_Y         ((int16_t)RENDER_HEIGHT - 34)
 #define HOTEL_ENTRANCE_TOP_Y   ((int16_t)RENDER_HEIGHT - 218)
@@ -165,6 +179,36 @@ typedef struct
     WindowWasher_CleanWindowTypeDef CleanWindows[CLEAN_WINDOW_TRACKED_COUNT];
 } WindowWasher_GameTypeDef;
 
+/**
+ * @brief Per-stage CPU cycle measurements for the most recently rendered frame.
+ *
+ * Inspect WindowWasher_Profile in the debugger. On non-Cortex-M7 builds, the
+ * measurements remain zero so the shared application continues to compile.
+ */
+typedef struct
+{
+    uint32_t AcquireFrame;
+    uint32_t MakePlatform;
+    uint32_t UpdateGame;
+    uint32_t Clear;
+    uint32_t Background;
+
+    /* Complete building stage and its internal breakdown. */
+    uint32_t Building;
+    uint32_t BuildingBase;
+    uint32_t WindowBase;
+    uint32_t WindowScene;
+    uint32_t Sills;
+    uint32_t DirtyEffects;
+
+    uint32_t HotelEntrance;
+    uint32_t Balconies;
+    uint32_t Platform;
+    uint32_t Washer;
+    uint32_t PresentFrame;
+    uint32_t TotalFrame;
+} WindowWasher_ProfileTypeDef;
+
 static Render_ColourIndexTypeDef WindowWasher_WasherPixels[WASHER_IMAGE_SIZE * WASHER_IMAGE_SIZE];
 
 static const Render_ImageTypeDef WindowWasher_WasherImage =
@@ -183,6 +227,57 @@ static WindowWasher_FigureTypeDef WindowWasher_Figure;
 static uint32_t WindowWasher_PendingDeltaTimeMilliseconds;
 static bool WindowWasher_Initialized;
 static bool WindowWasher_Paused;
+static volatile WindowWasher_ProfileTypeDef WindowWasher_Profile;
+
+/**
+ * @brief Enable the Cortex-M7 DWT cycle counter.
+ */
+static void WindowWasher_ProfileInit(void)
+{
+#if defined(__ARM_ARCH_7EM__)
+    volatile uint32_t * const Demcr = (volatile uint32_t *)0xE000EDFCUL;
+    volatile uint32_t * const DwtControl = (volatile uint32_t *)0xE0001000UL;
+    volatile uint32_t * const DwtCycleCount = (volatile uint32_t *)0xE0001004UL;
+    volatile uint32_t * const DwtLockAccess = (volatile uint32_t *)0xE0001FB0UL;
+
+    /* Enable the CoreSight trace block and unlock the DWT registers. */
+    *Demcr |= (1UL << 24U);
+    *DwtLockAccess = 0xC5ACCE55UL;
+
+    *DwtCycleCount = 0U;
+    *DwtControl |= 1UL;
+#endif
+}
+
+/**
+ * @brief Read the current CPU cycle count.
+ *
+ * @return Current DWT cycle count, or zero on non-Cortex-M7 builds.
+ */
+static inline uint32_t WindowWasher_ProfileReadCycles(void)
+{
+#if defined(__ARM_ARCH_7EM__)
+    return *((volatile uint32_t *)0xE0001004UL);
+#else
+    return 0U;
+#endif
+}
+
+/**
+ * @brief Calculate elapsed CPU cycles using wrap-safe unsigned subtraction.
+ *
+ * @param StartCycles Cycle-counter value captured before the operation.
+ * @return Number of elapsed cycles, or zero on non-Cortex-M7 builds.
+ */
+static inline uint32_t WindowWasher_ProfileElapsed(uint32_t StartCycles)
+{
+#if defined(__ARM_ARCH_7EM__)
+    return WindowWasher_ProfileReadCycles() - StartCycles;
+#else
+    (void)StartCycles;
+    return 0U;
+#endif
+}
 
 static int16_t WindowWasher_Clamp(int16_t Value, int16_t Minimum, int16_t Maximum)
 {
@@ -659,39 +754,33 @@ static void WindowWasher_UpdateWindowCleaning(WindowWasher_GameTypeDef *Game, co
 
 static void WindowWasher_UpdateGame(WindowWasher_GameTypeDef *Game, WindowWasher_FigureTypeDef *Figure, const WindowWasher_PlatformTypeDef *Platform, uint32_t DeltaTimeMilliseconds)
 {
-    uint16_t BuildingSpeed = 0U;
+    uint8_t BuildingSpeedPixelsPerFrame;
 
     Game->ElapsedMilliseconds += DeltaTimeMilliseconds;
 
-    if(Game->ElapsedMilliseconds > BUILDING_GROUND_HOLD_MILLISECONDS)
+    if(Game->ElapsedMilliseconds >= SPEED_5_START_TIME_MS)
     {
-        if(Game->ElapsedMilliseconds < BUILDING_INTRO_MILLISECONDS)
-        {
-            const uint64_t RampElapsed =
-                Game->ElapsedMilliseconds - BUILDING_GROUND_HOLD_MILLISECONDS;
-            const uint64_t RampProgress =
-                (RampElapsed * 256ULL) / BUILDING_START_RAMP_MILLISECONDS;
-            const uint64_t SmoothProgress =
-                (RampProgress * RampProgress * (768ULL - (2ULL * RampProgress))) /
-                (256ULL * 256ULL);
-
-            BuildingSpeed = (uint16_t)(
-                (BUILDING_START_SPEED * SmoothProgress) / 256ULL);
-        }
-        else
-        {
-            const uint64_t GameplayElapsed =
-                Game->ElapsedMilliseconds - BUILDING_INTRO_MILLISECONDS;
-            const uint64_t RampElapsed =
-                GameplayElapsed < BUILDING_RAMP_MILLISECONDS
-                    ? GameplayElapsed
-                    : BUILDING_RAMP_MILLISECONDS;
-
-            BuildingSpeed = (uint16_t)(
-                BUILDING_START_SPEED +
-                ((RampElapsed * (BUILDING_FULL_SPEED - BUILDING_START_SPEED)) /
-                 BUILDING_RAMP_MILLISECONDS));
-        }
+        BuildingSpeedPixelsPerFrame = SPEED_5;
+    }
+    else if(Game->ElapsedMilliseconds >= SPEED_4_START_TIME_MS)
+    {
+        BuildingSpeedPixelsPerFrame = SPEED_4;
+    }
+    else if(Game->ElapsedMilliseconds >= SPEED_3_START_TIME_MS)
+    {
+        BuildingSpeedPixelsPerFrame = SPEED_3;
+    }
+    else if(Game->ElapsedMilliseconds >= SPEED_2_START_TIME_MS)
+    {
+        BuildingSpeedPixelsPerFrame = SPEED_2;
+    }
+    else if(Game->ElapsedMilliseconds >= SPEED_1_START_TIME_MS)
+    {
+        BuildingSpeedPixelsPerFrame = SPEED_1;
+    }
+    else
+    {
+        BuildingSpeedPixelsPerFrame = 0U;
     }
 
     if(Game->Crashed)
@@ -716,12 +805,7 @@ static void WindowWasher_UpdateGame(WindowWasher_GameTypeDef *Game, WindowWasher
     Figure->VelocityX = (Figure->VelocityX * 250) / 256;
     Figure->PositionX += Figure->VelocityX;
 
-    Game->BuildingSubpixel =
-        (uint16_t)(Game->BuildingSubpixel + BuildingSpeed);
-    Game->BuildingScroll +=
-        (int32_t)(Game->BuildingSubpixel / BUILDING_SPEED_SCALE);
-    Game->BuildingSubpixel =
-        (uint16_t)(Game->BuildingSubpixel % BUILDING_SPEED_SCALE);
+    Game->BuildingScroll += (int32_t)BuildingSpeedPixelsPerFrame;
 
     WindowWasher_UpdateWindowCleaning(Game, Platform, Figure);
 
@@ -1042,7 +1126,10 @@ static void WindowWasher_DrawBackground(
     Render_ResetClipRect();
 }
 
-static void WindowWasher_DrawBuilding(Render_TargetTypeDef *Target, const WindowWasher_GameTypeDef *Game)
+static void WindowWasher_DrawBuilding(
+    Render_TargetTypeDef *Target,
+    const WindowWasher_GameTypeDef *Game,
+    WindowWasher_ProfileTypeDef *Profile)
 {
     const Render_RectTypeDef Building =
     {
@@ -1081,12 +1168,15 @@ static void WindowWasher_DrawBuilding(Render_TargetTypeDef *Target, const Window
     };
     const int32_t FirstWorldRow = Game->BuildingScroll / WINDOW_STEP_Y;
     const int16_t ScrollOffset = (int16_t)(Game->BuildingScroll % WINDOW_STEP_Y);
+    uint32_t StageStartCycles;
 
+    StageStartCycles = WindowWasher_ProfileReadCycles();
     Render_FillRect(Target, &Building, COLOUR_BUILDING);
     Render_FillRect(Target, &LeftCorner, COLOUR_EMPIRE_CORNER);
     Render_FillRect(Target, &RightCorner, COLOUR_EMPIRE_CORNER);
     Render_FillRect(Target, &LeftCornerHighlight, COLOUR_EMPIRE_CORNER_HIGHLIGHT);
     Render_FillRect(Target, &RightCornerHighlight, COLOUR_EMPIRE_CORNER_HIGHLIGHT);
+    Profile->BuildingBase += WindowWasher_ProfileElapsed(StageStartCycles);
 
     for(int8_t ScreenRow = -1; ScreenRow < 9; ScreenRow++)
     {
@@ -1136,15 +1226,19 @@ static void WindowWasher_DrawBuilding(Render_TargetTypeDef *Target, const Window
                 3U
             };
 
+            StageStartCycles = WindowWasher_ProfileReadCycles();
             WindowWasher_DrawWindowBase(Target, WindowX, WindowY);
+            Profile->WindowBase += WindowWasher_ProfileElapsed(StageStartCycles);
 
             if((ScenePattern % 20U) == 0U)
             {
+                StageStartCycles = WindowWasher_ProfileReadCycles();
                 WindowWasher_DrawWindowScene(
                     Target,
                     WindowX,
                     WindowY,
                     ScenePattern);
+                Profile->WindowScene += WindowWasher_ProfileElapsed(StageStartCycles);
             }
 
             /*
@@ -1152,8 +1246,10 @@ static void WindowWasher_DrawBuilding(Render_TargetTypeDef *Target, const Window
              * decorative strips, so retaining the tiny overlap is cheaper than
              * fragmenting the base into additional rectangles.
              */
+            StageStartCycles = WindowWasher_ProfileReadCycles();
             Render_FillRect(Target, &SillShadow, COLOUR_BUILDING_SHADOW);
             Render_FillRect(Target, &Sill, COLOUR_FACADE_TRIM);
+            Profile->Sills += WindowWasher_ProfileElapsed(StageStartCycles);
 
             if(Dirty && (CleanWindow == NULL))
             {
@@ -1179,9 +1275,11 @@ static void WindowWasher_DrawBuilding(Render_TargetTypeDef *Target, const Window
                     5U
                 };
 
+                StageStartCycles = WindowWasher_ProfileReadCycles();
                 Render_FillRect(Target, &SpotOne, COLOUR_DIRT);
                 Render_FillRect(Target, &SpotTwo, COLOUR_DIRT);
                 Render_FillRect(Target, &SpotThree, COLOUR_DIRT);
+                Profile->DirtyEffects += WindowWasher_ProfileElapsed(StageStartCycles);
             }
             else if((CleanWindow != NULL) &&
                     (CleanWindow->SparkleFrameCount > 0U))
@@ -1201,13 +1299,14 @@ static void WindowWasher_DrawBuilding(Render_TargetTypeDef *Target, const Window
                     19U
                 };
 
+                StageStartCycles = WindowWasher_ProfileReadCycles();
                 Render_FillRect(Target, &HorizontalSparkle, COLOUR_SPARKLE);
                 Render_FillRect(Target, &VerticalSparkle, COLOUR_SPARKLE);
+                Profile->DirtyEffects += WindowWasher_ProfileElapsed(StageStartCycles);
             }
         }
     }
 }
-
 
 static void WindowWasher_DrawHotelEntrance(Render_TargetTypeDef *Target, const WindowWasher_GameTypeDef *Game)
 {
@@ -1676,6 +1775,8 @@ bool WindowWasher_Init(void)
         0x0079B866U
     };
 
+    WindowWasher_ProfileInit();
+
     WindowWasher_Input.LeftSlider = 0;
     WindowWasher_Input.RightSlider = 0;
     WindowWasher_Game.ElapsedMilliseconds = 0U;
@@ -1724,39 +1825,116 @@ void WindowWasher_Render(void)
     Display_FrameTypeDef *Frame;
     Render_TargetTypeDef Target;
     WindowWasher_PlatformTypeDef Platform;
+    WindowWasher_ProfileTypeDef FrameProfile = { 0U };
+    const uint32_t TotalStartCycles = WindowWasher_ProfileReadCycles();
+    uint32_t StageStartCycles;
 
     if(!WindowWasher_Initialized || WindowWasher_Paused)
     {
         return;
     }
 
+    StageStartCycles = WindowWasher_ProfileReadCycles();
     Frame = Display_AcquireFrame();
+    FrameProfile.AcquireFrame =
+        WindowWasher_ProfileElapsed(StageStartCycles);
 
     if(Frame == NULL)
     {
+        FrameProfile.TotalFrame =
+            WindowWasher_ProfileElapsed(TotalStartCycles);
+        WindowWasher_Profile = FrameProfile;
         return;
     }
 
-    Platform = WindowWasher_MakePlatform(&WindowWasher_Game, &WindowWasher_Input);
+    StageStartCycles = WindowWasher_ProfileReadCycles();
+    Platform = WindowWasher_MakePlatform(
+        &WindowWasher_Game,
+        &WindowWasher_Input);
+    FrameProfile.MakePlatform =
+        WindowWasher_ProfileElapsed(StageStartCycles);
 
     Target.Pixels = Frame->Pixels;
     Target.Width = Frame->Width;
     Target.Height = Frame->Height;
     Target.StridePixels = Frame->StridePixels;
 
-    WindowWasher_UpdateGame(&WindowWasher_Game, &WindowWasher_Figure, &Platform, WindowWasher_PendingDeltaTimeMilliseconds);
-    WindowWasher_PendingDeltaTimeMilliseconds = 0U;
+    StageStartCycles = WindowWasher_ProfileReadCycles();
+    {
+        uint32_t DeltaTimeMilliseconds =
+            WindowWasher_PendingDeltaTimeMilliseconds;
+
+        /* Prevent a long pause or debugger stop from causing a large physics step. */
+        if(DeltaTimeMilliseconds > 100U)
+        {
+            DeltaTimeMilliseconds = 100U;
+        }
+
+        WindowWasher_PendingDeltaTimeMilliseconds = 0U;
+
+        WindowWasher_UpdateGame(
+            &WindowWasher_Game,
+            &WindowWasher_Figure,
+            &Platform,
+            DeltaTimeMilliseconds);
+    }
+    FrameProfile.UpdateGame =
+        WindowWasher_ProfileElapsed(StageStartCycles);
 
     Render_ResetClipRect();
-    Render_Clear(&Target, COLOUR_SKY);
-    WindowWasher_DrawBackground(&Target, &WindowWasher_Game);
-    WindowWasher_DrawBuilding(&Target, &WindowWasher_Game);
-    WindowWasher_DrawHotelEntrance(&Target, &WindowWasher_Game);
-    WindowWasher_DrawBalconies(&Target, &WindowWasher_Game);
-    WindowWasher_DrawPlatform(&Target, &Platform);
-    WindowWasher_DrawWasher(&Target, &Platform, &WindowWasher_Figure, WindowWasher_Game.Crashed);
 
+    StageStartCycles = WindowWasher_ProfileReadCycles();
+    Render_Clear(&Target, COLOUR_SKY);
+    FrameProfile.Clear =
+        WindowWasher_ProfileElapsed(StageStartCycles);
+
+    StageStartCycles = WindowWasher_ProfileReadCycles();
+    WindowWasher_DrawBackground(&Target, &WindowWasher_Game);
+    FrameProfile.Background =
+        WindowWasher_ProfileElapsed(StageStartCycles);
+
+    StageStartCycles = WindowWasher_ProfileReadCycles();
+    WindowWasher_DrawBuilding(
+        &Target,
+        &WindowWasher_Game,
+        &FrameProfile);
+    FrameProfile.Building =
+        WindowWasher_ProfileElapsed(StageStartCycles);
+
+    StageStartCycles = WindowWasher_ProfileReadCycles();
+    WindowWasher_DrawHotelEntrance(&Target, &WindowWasher_Game);
+    FrameProfile.HotelEntrance =
+        WindowWasher_ProfileElapsed(StageStartCycles);
+
+    StageStartCycles = WindowWasher_ProfileReadCycles();
+    WindowWasher_DrawBalconies(&Target, &WindowWasher_Game);
+    FrameProfile.Balconies =
+        WindowWasher_ProfileElapsed(StageStartCycles);
+
+    StageStartCycles = WindowWasher_ProfileReadCycles();
+    WindowWasher_DrawPlatform(&Target, &Platform);
+    FrameProfile.Platform =
+        WindowWasher_ProfileElapsed(StageStartCycles);
+
+    StageStartCycles = WindowWasher_ProfileReadCycles();
+    WindowWasher_DrawWasher(
+        &Target,
+        &Platform,
+        &WindowWasher_Figure,
+        WindowWasher_Game.Crashed);
+    FrameProfile.Washer =
+        WindowWasher_ProfileElapsed(StageStartCycles);
+
+    StageStartCycles = WindowWasher_ProfileReadCycles();
     Display_PresentFrame(Frame);
+    FrameProfile.PresentFrame =
+        WindowWasher_ProfileElapsed(StageStartCycles);
+
+    FrameProfile.TotalFrame =
+        WindowWasher_ProfileElapsed(TotalStartCycles);
+
+    /* Publish one internally consistent completed-frame snapshot. */
+    WindowWasher_Profile = FrameProfile;
 }
 
 void WindowWasher_Pause(void)
