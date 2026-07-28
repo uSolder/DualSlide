@@ -41,4 +41,5 @@ target_link_libraries(dspcbr1
         stm32h7a3
         DualSlideShared
         DualSlideEmbeddedOptions
+        ds_assets
 )

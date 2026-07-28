@@ -25,6 +25,15 @@
 volatile float System_DebugAverageFps = 0.0f;
 volatile float System_DebugOnePercentLowFps = 0.0f;
 
+/*
+ * Alternates between zero and one immediately before each call to
+ * AppManager_Render(). The diagnostic game overlay can use this value to draw
+ * a different labelled box into each alternating framebuffer.
+ */
+volatile uint32_t System_DebugRenderBufferIndex = 0U;
+volatile uint32_t System_DebugBuffer0RenderCount = 0U;
+volatile uint32_t System_DebugBuffer1RenderCount = 0U;
+
 static uint32_t System_FrameTimeSamples[FPS_SAMPLE_CAPACITY];
 static uint32_t System_FrameTimeSampleIndex;
 static uint32_t System_FrameTimeSampleCount;
@@ -62,9 +71,9 @@ static void System_RecordFrameTime(uint32_t FrameTimeMilliseconds)
  * @brief Insert a frame duration into the descending slow-frame list.
  *
  * @param SlowFrameTimes Destination list sorted from largest to smallest.
- * @param StoredCount    Current number of stored entries.
- * @param Capacity       Maximum number of stored entries.
- * @param FrameTime      Frame duration to insert.
+ * @param StoredCount Current number of stored entries.
+ * @param Capacity Maximum number of stored entries.
+ * @param FrameTime Frame duration to insert.
  *
  * @return Updated number of stored entries.
  */
@@ -188,6 +197,9 @@ int System_Run(void)
     System_FrameTimeSampleCount = 0U;
     System_DebugAverageFps = 0.0f;
     System_DebugOnePercentLowFps = 0.0f;
+    System_DebugRenderBufferIndex = 0U;
+    System_DebugBuffer0RenderCount = 0U;
+    System_DebugBuffer1RenderCount = 0U;
 
     if(!Display_Init())
     {
@@ -239,7 +251,18 @@ int System_Run(void)
         }
 
         AppManager_Update(DeltaTimeMilliseconds);
+
+        if(System_DebugRenderBufferIndex == 0U)
+        {
+            System_DebugBuffer0RenderCount++;
+        }
+        else
+        {
+            System_DebugBuffer1RenderCount++;
+        }
+
         AppManager_Render();
+        System_DebugRenderBufferIndex ^= 1U;
 
         if(!SystemTasks_Process())
         {

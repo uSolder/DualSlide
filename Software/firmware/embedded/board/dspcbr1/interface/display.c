@@ -62,21 +62,28 @@ typedef struct
 /* -------------------------------------------------------------------------- */
 
 /*
- * Both buffers must be placed in SRAM accessible by LTDC.
- *
- * The buffers must not be placed in DTCM. Their 32-byte alignment also permits
- * complete Cortex-M7 data-cache clean operations.
+ * Each framebuffer is placed in a separate physical AXI SRAM bank by the
+ * linker script. Target_Init() configures AXI SRAM2 and AXI SRAM3 as
+ * non-cacheable memory, so explicit framebuffer cache maintenance is neither
+ * required nor permitted here.
  */
-static Display_PixelTypeDef Display_Framebuffers
-    [DISPLAY_FRAMEBUFFER_COUNT]
-    [DISPLAY_FRAMEBUFFER_PIXEL_COUNT]
-    __attribute__((section(".ltdc_framebuffer"), aligned(32)));
+static Display_PixelTypeDef Display_Framebuffer0[DISPLAY_FRAMEBUFFER_PIXEL_COUNT] __attribute__((section(".ltdc_framebuffer0"), aligned(128)));
+
+static Display_PixelTypeDef Display_Framebuffer1[DISPLAY_FRAMEBUFFER_PIXEL_COUNT] __attribute__((section(".ltdc_framebuffer1"), aligned(128)));
+
+static Display_PixelTypeDef * const Display_FramebufferPixels[DISPLAY_FRAMEBUFFER_COUNT] =
+{
+    Display_Framebuffer0,
+    Display_Framebuffer1
+};
+
+_Static_assert(DISPLAY_FRAMEBUFFER_SIZE_BYTES <= (384U * 1024U), "Framebuffer does not fit in one 384 KB AXI SRAM bank.");
 
 static Display_StateTypeDef Display_State;
 
 static const DisplayController_LayerConfiguration Display_Layer =
 {
-    .framebuffer = Display_Framebuffers[0],
+    .framebuffer = Display_Framebuffer0,
     .width = DISPLAY_WIDTH,
     .height = DISPLAY_HEIGHT,
     .stride_bytes = DISPLAY_WIDTH * sizeof(Display_PixelTypeDef),
@@ -90,7 +97,6 @@ static const DisplayController_LayerConfiguration Display_Layer =
 static void Display_InitializeDefaultPalette(void);
 static bool Display_ApplyPalette(void);
 static bool Display_CompletePendingSwap(void);
-static void Display_CleanFramebufferCache(const Display_FrameTypeDef *Frame);
 
 /* -------------------------------------------------------------------------- */
 /* Private functions                                                          */
@@ -108,10 +114,7 @@ static void Display_InitializeDefaultPalette(void)
     {
         component = index & 0xFFU;
 
-        Display_State.palette[index] =
-            (component << 16U) |
-            (component << 8U) |
-            component;
+        Display_State.palette[index] = (component << 16U) | (component << 8U) | component;
     }
 
     Display_State.palette_dirty = true;
@@ -132,10 +135,7 @@ static bool Display_ApplyPalette(void)
         return true;
     }
 
-    result = DisplayController_SetPalette(
-        Display_State.controller,
-        Display_State.palette,
-        DISPLAY_PALETTE_SIZE);
+    result = DisplayController_SetPalette(Display_State.controller, Display_State.palette, DISPLAY_PALETTE_SIZE);
 
     if(result != DISPLAY_CONTROLLER_RESULT_OK)
     {
@@ -174,28 +174,11 @@ static bool Display_CompletePendingSwap(void)
     }
 
     Display_State.visible_index = Display_State.pending_index;
-    Display_State.writable_index =
-        (Display_State.visible_index == 0U) ? 1U : 0U;
+    Display_State.writable_index = (Display_State.visible_index == 0U) ? 1U : 0U;
 
     Display_State.swap_pending = false;
 
     return true;
-}
-
-/**
- * @brief Make CPU framebuffer writes visible to LTDC.
- *
- * @param Frame Framebuffer description whose pixel memory must be cleaned.
- */
-static void Display_CleanFramebufferCache(const Display_FrameTypeDef *Frame)
-{
-#if defined(__DCACHE_PRESENT) && (__DCACHE_PRESENT == 1U)
-    SCB_CleanDCache_by_Addr(
-        (uint32_t *)(void *)Frame->Pixels,
-        (int32_t)DISPLAY_FRAMEBUFFER_SIZE_BYTES);
-#else
-    (void)Frame;
-#endif
 }
 
 /* -------------------------------------------------------------------------- */
@@ -219,12 +202,13 @@ bool Display_Init(void)
         return false;
     }
 
-    memset(Display_Framebuffers, 0, sizeof(Display_Framebuffers));
+    memset(Display_Framebuffer0, 0, sizeof(Display_Framebuffer0));
+    memset(Display_Framebuffer1, 0, sizeof(Display_Framebuffer1));
     memset(&Display_State.frames, 0, sizeof(Display_State.frames));
 
     for(index = 0U; index < DISPLAY_FRAMEBUFFER_COUNT; index++)
     {
-        Display_State.frames[index].Pixels = Display_Framebuffers[index];
+        Display_State.frames[index].Pixels = Display_FramebufferPixels[index];
         Display_State.frames[index].Width = DISPLAY_WIDTH;
         Display_State.frames[index].Height = DISPLAY_HEIGHT;
         Display_State.frames[index].StridePixels = DISPLAY_WIDTH;
@@ -241,9 +225,6 @@ bool Display_Init(void)
     Display_State.initialized = false;
 
     Display_InitializeDefaultPalette();
-
-    Display_CleanFramebufferCache(&Display_State.frames[0]);
-    Display_CleanFramebufferCache(&Display_State.frames[1]);
 
     result = DisplayController_ConfigureLayer(Display_State.controller, &Display_Layer);
 
@@ -290,10 +271,7 @@ bool Display_SetPalette(uint16_t FirstEntry, const Display_ColourTypeDef *Colour
         return false;
     }
 
-    memcpy(
-        &Display_State.palette[FirstEntry],
-        Colours,
-        (size_t)EntryCount * sizeof(Display_ColourTypeDef));
+    memcpy(&Display_State.palette[FirstEntry], Colours, (size_t)EntryCount * sizeof(Display_ColourTypeDef));
 
     Display_State.palette_dirty = true;
 
@@ -323,8 +301,7 @@ Display_FrameTypeDef *Display_AcquireFrame(void)
         return NULL;
     }
 
-    vertical_blank_count =
-        DisplayController_GetVerticalBlankCount(Display_State.controller);
+    vertical_blank_count = DisplayController_GetVerticalBlankCount(Display_State.controller);
 
     /*
      * Permit at most one acquisition per vertical-blank period. UINT32_MAX is
@@ -370,8 +347,6 @@ bool Display_PresentFrame(Display_FrameTypeDef *Frame)
         return false;
     }
 
-    Display_CleanFramebufferCache(Frame);
-
     result = DisplayController_SetFramebuffer(Display_State.controller, Frame->Pixels);
 
     if(result != DISPLAY_CONTROLLER_RESULT_OK)
@@ -403,8 +378,7 @@ void Display_WaitForFrame(void)
             continue;
         }
 
-        vertical_blank_count =
-            DisplayController_GetVerticalBlankCount(Display_State.controller);
+        vertical_blank_count = DisplayController_GetVerticalBlankCount(Display_State.controller);
 
         if(vertical_blank_count != Display_State.acquired_vertical_blank_count)
         {

@@ -24,6 +24,7 @@
 #define DISPLAY_CONTROLLER_MAX_PALETTE_ENTRIES         256U
 #define DISPLAY_CONTROLLER_PIXEL_CLOCK_TOLERANCE_PCT   3U
 #define DISPLAY_CONTROLLER_INTERRUPT_PRIORITY          5U
+#define DISPLAY_CONTROLLER_ERROR_INTERRUPT_PRIORITY    5U
 
 #define DISPLAY_CONTROLLER_GPIO_MODE_ALTERNATE         2U
 #define DISPLAY_CONTROLLER_GPIO_SPEED_VERY_HIGH        3U
@@ -62,6 +63,16 @@ typedef struct
 
 static DisplayController_State DisplayController_Registry[DISPLAY_CONTROLLER_REGISTRY_SIZE];
 
+/*
+ * Debugger-visible LTDC fault counters.
+ *
+ * Add these symbols to the debugger watch window. A non-zero or increasing
+ * value indicates that LTDC was unable to fetch framebuffer data in time or
+ * encountered an AXI transfer error.
+ */
+volatile uint32_t DisplayController_FifoUnderrunCount;
+volatile uint32_t DisplayController_TransferErrorCount;
+
 /* -------------------------------------------------------------------------- */
 /* Private function declarations                                              */
 /* -------------------------------------------------------------------------- */
@@ -84,8 +95,8 @@ static uint32_t DisplayController_CalculatePixelClock(const DisplayController_Ti
 static uint32_t DisplayController_GetPixelFormatEncoding(DisplayController_PixelFormat pixel_format);
 static uint32_t DisplayController_GetBytesPerPixel(DisplayController_PixelFormat pixel_format);
 static DisplayController_Result DisplayController_ReloadImmediate(void);
-static DisplayController_Result DisplayController_ReloadVerticalBlanking( DisplayController_State *state);
-static void DisplayController_ConfigureInterrupts( const DisplayController_Handle *controller);
+static DisplayController_Result DisplayController_ReloadVerticalBlanking(DisplayController_State *state);
+static void DisplayController_ConfigureInterrupts(const DisplayController_Handle *controller);
 static void DisplayController_DisableInterrupts(void);
 
 /* -------------------------------------------------------------------------- */
@@ -728,17 +739,30 @@ static DisplayController_Result DisplayController_ReloadImmediate(void)
     return DISPLAY_CONTROLLER_RESULT_OK;
 }
 
-static DisplayController_Result DisplayController_ReloadVerticalBlanking( DisplayController_State *state)
+static DisplayController_Result DisplayController_ReloadVerticalBlanking(DisplayController_State *state)
 {
     if(state == NULL)
     {
         return DISPLAY_CONTROLLER_RESULT_INVALID_ARGUMENT;
     }
 
-    state->reload_pending = true;
-    state->reload_complete = false;
+    /*
+     * Multiple shadow-register updates may be staged during one frame. If a
+     * vertical-blank reload is already pending, the existing request will commit
+     * all shadow-register writes made before the blanking interval.
+     */
+    if(state->reload_pending || ((LTDC->SRCR & LTDC_SRCR_VBR) != 0U))
+    {
+        state->reload_pending = true;
+        return DISPLAY_CONTROLLER_RESULT_OK;
+    }
 
+    state->reload_complete = false;
+    state->reload_pending = true;
+
+    __DMB();
     LTDC->SRCR = LTDC_SRCR_VBR;
+    __DSB();
 
     return DISPLAY_CONTROLLER_RESULT_OK;
 }
@@ -749,19 +773,29 @@ static DisplayController_Result DisplayController_ReloadVerticalBlanking( Displa
  * The line interrupt is placed on the first line following the active image,
  * which is the beginning of the vertical-front-porch blanking interval.
  */
-static void DisplayController_ConfigureInterrupts( const DisplayController_Handle *controller)
+static void DisplayController_ConfigureInterrupts(const DisplayController_Handle *controller)
 {
     uint32_t first_vertical_blank_line;
 
     first_vertical_blank_line = (uint32_t)controller->timing.vertical_sync_height + (uint32_t)controller->timing.vertical_back_porch + (uint32_t)controller->timing.active_height;
 
     LTDC->LIPCR = first_vertical_blank_line;
-    LTDC->ICR = LTDC_ICR_CLIF | LTDC_ICR_CRRIF;
-    LTDC->IER |= LTDC_IER_LIE | LTDC_IER_RRIE;
+
+    /*
+     * Clear all stale LTDC status before enabling either NVIC vector. Line and
+     * reload-complete events use LTDC_IRQn, while FIFO-underrun and transfer
+     * errors use the separate LTDC_ER_IRQn vector on STM32H7A3.
+     */
+    LTDC->ICR = LTDC_ICR_CLIF | LTDC_ICR_CRRIF | LTDC_ICR_CFUIF | LTDC_ICR_CTERRIF;
+    LTDC->IER |= LTDC_IER_LIE | LTDC_IER_RRIE | LTDC_IER_FUIE | LTDC_IER_TERRIE;
 
     NVIC_ClearPendingIRQ(LTDC_IRQn);
     NVIC_SetPriority(LTDC_IRQn, DISPLAY_CONTROLLER_INTERRUPT_PRIORITY);
     NVIC_EnableIRQ(LTDC_IRQn);
+
+    NVIC_ClearPendingIRQ(LTDC_ER_IRQn);
+    NVIC_SetPriority(LTDC_ER_IRQn, DISPLAY_CONTROLLER_ERROR_INTERRUPT_PRIORITY);
+    NVIC_EnableIRQ(LTDC_ER_IRQn);
 }
 
 /**
@@ -770,10 +804,16 @@ static void DisplayController_ConfigureInterrupts( const DisplayController_Handl
 static void DisplayController_DisableInterrupts(void)
 {
     NVIC_DisableIRQ(LTDC_IRQn);
-    NVIC_ClearPendingIRQ(LTDC_IRQn);
+    NVIC_DisableIRQ(LTDC_ER_IRQn);
 
-    LTDC->IER &= ~(LTDC_IER_LIE | LTDC_IER_RRIE);
-    LTDC->ICR = LTDC_ICR_CLIF | LTDC_ICR_CRRIF;
+    NVIC_ClearPendingIRQ(LTDC_IRQn);
+    NVIC_ClearPendingIRQ(LTDC_ER_IRQn);
+
+    LTDC->IER &= ~(LTDC_IER_LIE | LTDC_IER_RRIE | LTDC_IER_FUIE | LTDC_IER_TERRIE);
+    LTDC->ICR = LTDC_ICR_CLIF | LTDC_ICR_CRRIF | LTDC_ICR_CFUIF | LTDC_ICR_CTERRIF;
+
+    __DSB();
+    __ISB();
 }
 
 /* -------------------------------------------------------------------------- */
@@ -841,6 +881,10 @@ DisplayController_Result DisplayController_Init(DisplayController_Handle *contro
     state->vertical_blank_count = 0U;
     state->reload_pending = false;
     state->reload_complete = false;
+
+    DisplayController_FifoUnderrunCount = 0U;
+    DisplayController_TransferErrorCount = 0U;
+
     state->initialized = true;
     state->layer_configured = false;
     state->enabled = false;
@@ -893,33 +937,44 @@ DisplayController_Result DisplayController_ConfigureLayer(DisplayController_Hand
 DisplayController_Result DisplayController_SetFramebuffer(DisplayController_Handle *controller, void *framebuffer)
 {
     DisplayController_State *state;
+    DisplayController_Result result;
 
-    if ((controller == NULL) || (framebuffer == NULL))
+    if((controller == NULL) || (framebuffer == NULL))
     {
         return DISPLAY_CONTROLLER_RESULT_INVALID_ARGUMENT;
     }
 
     state = DisplayController_FindState(controller);
 
-    if (state == NULL)
+    if(state == NULL)
     {
         return DISPLAY_CONTROLLER_RESULT_NOT_INITIALIZED;
     }
 
-    if (!state->layer_configured)
+    if(!state->layer_configured)
     {
         return DISPLAY_CONTROLLER_RESULT_NOT_INITIALIZED;
+    }
+
+    LTDC_Layer1->CFBAR = (uint32_t)(uintptr_t)framebuffer;
+
+    if(state->enabled)
+    {
+        result = DisplayController_ReloadVerticalBlanking(state);
+    }
+    else
+    {
+        result = DisplayController_ReloadImmediate();
+    }
+
+    if(result != DISPLAY_CONTROLLER_RESULT_OK)
+    {
+        return result;
     }
 
     state->layer.framebuffer = framebuffer;
-    LTDC_Layer1->CFBAR = (uint32_t)(uintptr_t)framebuffer;
 
-    if (state->enabled)
-    {
-        return DisplayController_ReloadVerticalBlanking(state);
-    }
-
-    return DisplayController_ReloadImmediate();
+    return DISPLAY_CONTROLLER_RESULT_OK;
 }
 
 DisplayController_Result DisplayController_SetPalette(DisplayController_Handle *controller, const uint32_t *palette, size_t count)
@@ -1042,7 +1097,7 @@ DisplayController_Result DisplayController_Disable(DisplayController_Handle *con
     return DisplayController_ReloadImmediate();
 }
 
-uint32_t DisplayController_GetVerticalBlankCount( const DisplayController_Handle *controller)
+uint32_t DisplayController_GetVerticalBlankCount(const DisplayController_Handle *controller)
 {
     const DisplayController_State *state = DisplayController_FindState(controller);
 
@@ -1054,7 +1109,7 @@ uint32_t DisplayController_GetVerticalBlankCount( const DisplayController_Handle
     return state->vertical_blank_count;
 }
 
-bool DisplayController_IsReloadPending( const DisplayController_Handle *controller)
+bool DisplayController_IsReloadPending(const DisplayController_Handle *controller)
 {
     const DisplayController_State *state = DisplayController_FindState(controller);
 
@@ -1066,7 +1121,7 @@ bool DisplayController_IsReloadPending( const DisplayController_Handle *controll
     return state->reload_pending;
 }
 
-bool DisplayController_ConsumeReloadComplete( DisplayController_Handle *controller)
+bool DisplayController_ConsumeReloadComplete(DisplayController_Handle *controller)
 {
     DisplayController_State *state = DisplayController_FindState(controller);
     bool reload_complete;
@@ -1095,6 +1150,18 @@ void DisplayController_IRQHandler(void)
     size_t index;
 
     interrupt_status = LTDC->ISR;
+
+    if((interrupt_status & LTDC_ISR_FUIF) != 0U)
+    {
+        LTDC->ICR = LTDC_ICR_CFUIF;
+        DisplayController_FifoUnderrunCount++;
+    }
+
+    if((interrupt_status & LTDC_ISR_TERRIF) != 0U)
+    {
+        LTDC->ICR = LTDC_ICR_CTERRIF;
+        DisplayController_TransferErrorCount++;
+    }
 
     if((interrupt_status & LTDC_ISR_LIF) != 0U)
     {
@@ -1126,6 +1193,13 @@ void DisplayController_IRQHandler(void)
             }
         }
     }
+
+    /*
+     * Ensure interrupt-flag clears reach LTDC before exception return. This
+     * prevents immediate retriggering when this handler is entered through
+     * either LTDC_IRQn or LTDC_ER_IRQn.
+     */
+    __DSB();
 }
 
 void DisplayController_WaitForEvent(DisplayController_Handle *Controller)

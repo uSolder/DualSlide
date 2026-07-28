@@ -62,16 +62,16 @@
 /*
  * PLL2:
  *
- * HSE / 8 × 129 = 129 MHz VCO
+ * HSE / 8 × 200 = 200 MHz VCO
  *
- * P = 16.125 MHz ADC clock
+ * P = 5 MHz ADC clock
  *
- * This keeps the PLL2 reference input at 1 MHz and the VCO within the
- * permitted wide-range operating region.
+ * The 1 MHz PLL input and 200 MHz VCO use the medium VCO range. The reduced
+ * ADC clock extends the acquisition time for the 50 kΩ potentiometer inputs.
  */
 #define RCC_PLL2_M                 8U
-#define RCC_PLL2_N                 129U
-#define RCC_PLL2_P                 8U
+#define RCC_PLL2_N                 200U
+#define RCC_PLL2_P                 40U
 #define RCC_PLL2_Q                 2U
 #define RCC_PLL2_R                 2U
 #define RCC_PLL2_FRACN             0U
@@ -115,7 +115,7 @@
 #define RCC_USART234578_CLOCK_HZ   140000000UL
 #define RCC_LPUART1_CLOCK_HZ       140000000UL
 
-#define RCC_ADC_CLOCK_HZ           16125000UL
+#define RCC_ADC_CLOCK_HZ           5000000UL
 #define RCC_LTDC_CLOCK_HZ          26666667UL
 #define RCC_USB_CLOCK_HZ           48000000UL
 
@@ -424,9 +424,9 @@ static RCC_Result RCC_ConfigurePLL2(void)
     RCC_WriteField(&RCC->PLLCFGR, RCC_PLLCFGR_PLL2RGE_Msk, RCC_PLLCFGR_PLL2RGE_Pos, RCC_EncodePLLInputRange(RCC_HSE_FREQUENCY_HZ / RCC_PLL2_M));
 
     /*
-     * Select the wide VCO range.
+     * Select the medium VCO range.
      */
-    RCC->PLLCFGR &= ~RCC_PLLCFGR_PLL2VCOSEL;
+    RCC->PLLCFGR |= RCC_PLLCFGR_PLL2VCOSEL;
 
     RCC->PLLCFGR |= RCC_PLLCFGR_DIVP2EN;
     RCC->PLLCFGR |= RCC_PLLCFGR_DIVQ2EN;
@@ -503,15 +503,9 @@ static RCC_Result RCC_ConfigurePeripheralClocks(void)
      * SPI1/2/3 use PLL1-Q. SPI2 is required by this target, so this
      * configuration is mandatory.
      */
-    RCC_WriteField(
-        &RCC->CDCCIP1R,
-        RCC_CDCCIP1R_SPI123SEL_Msk,
-        RCC_CDCCIP1R_SPI123SEL_Pos,
-        RCC_SPI123_SOURCE_PLL1_Q);
+    RCC_WriteField(&RCC->CDCCIP1R, RCC_CDCCIP1R_SPI123SEL_Msk, RCC_CDCCIP1R_SPI123SEL_Pos, RCC_SPI123_SOURCE_PLL1_Q);
 
-    if ((RCC->CDCCIP1R & RCC_CDCCIP1R_SPI123SEL_Msk) !=
-        ((RCC_SPI123_SOURCE_PLL1_Q << RCC_CDCCIP1R_SPI123SEL_Pos) &
-         RCC_CDCCIP1R_SPI123SEL_Msk))
+    if ((RCC->CDCCIP1R & RCC_CDCCIP1R_SPI123SEL_Msk) != ((RCC_SPI123_SOURCE_PLL1_Q << RCC_CDCCIP1R_SPI123SEL_Pos) & RCC_CDCCIP1R_SPI123SEL_Msk))
     {
         return RCC_RESULT_CLOCK_FAILURE;
     }
@@ -685,9 +679,7 @@ uint32_t RCC_GetKernelFrequency(const void *peripheral)
      * Timer clocks run at twice PCLK when the APB prescaler is greater than
      * one.
      */
-    if ((peripheral == TIM2) || (peripheral == TIM3) || (peripheral == TIM4) || (peripheral == TIM5) ||
-        (peripheral == TIM6) || (peripheral == TIM7) || (peripheral == TIM12) || (peripheral == TIM13) ||
-        (peripheral == TIM14))
+    if ((peripheral == TIM2) || (peripheral == TIM3) || (peripheral == TIM4) || (peripheral == TIM5) || (peripheral == TIM6) || (peripheral == TIM7) || (peripheral == TIM12) || (peripheral == TIM13) || (peripheral == TIM14))
     {
         return RCC_APB1_CLOCK_HZ * 2U;
     }
@@ -695,8 +687,7 @@ uint32_t RCC_GetKernelFrequency(const void *peripheral)
     /*
      * Timers on APB2.
      */
-    if ((peripheral == TIM1) || (peripheral == TIM8) || (peripheral == TIM15) ||
-        (peripheral == TIM16) || (peripheral == TIM17))
+    if ((peripheral == TIM1) || (peripheral == TIM8) || (peripheral == TIM15) || (peripheral == TIM16) || (peripheral == TIM17))
     {
         return RCC_APB2_CLOCK_HZ * 2U;
     }
@@ -709,8 +700,7 @@ uint32_t RCC_GetKernelFrequency(const void *peripheral)
         return RCC_USART16910_CLOCK_HZ;
     }
 
-    if ((peripheral == USART2) || (peripheral == USART3) || (peripheral == UART4) ||
-        (peripheral == UART5) || (peripheral == UART7) || (peripheral == UART8))
+    if ((peripheral == USART2) || (peripheral == USART3) || (peripheral == UART4) || (peripheral == UART5) || (peripheral == UART7) || (peripheral == UART8))
     {
         return RCC_USART234578_CLOCK_HZ;
     }
@@ -725,10 +715,7 @@ uint32_t RCC_GetKernelFrequency(const void *peripheral)
     /*
      * GPIO.
      */
-    if ((peripheral == GPIOA) || (peripheral == GPIOB) || (peripheral == GPIOC) ||
-        (peripheral == GPIOD) || (peripheral == GPIOE) || (peripheral == GPIOF) ||
-        (peripheral == GPIOG) || (peripheral == GPIOH) || (peripheral == GPIOI) ||
-        (peripheral == GPIOJ) || (peripheral == GPIOK))
+    if ((peripheral == GPIOA) || (peripheral == GPIOB) || (peripheral == GPIOC) || (peripheral == GPIOD) || (peripheral == GPIOE) || (peripheral == GPIOF) || (peripheral == GPIOG) || (peripheral == GPIOH) || (peripheral == GPIOI) || (peripheral == GPIOJ) || (peripheral == GPIOK))
     {
         return RCC_AHB_CLOCK_HZ;
     }
@@ -828,6 +815,9 @@ RCC_Result RCC_EnablePeripheralClock(const void *peripheral)
     RCC_ENABLE_IF(DMA1, AHB1ENR, RCC_AHB1ENR_DMA1EN);
     RCC_ENABLE_IF(DMA2, AHB1ENR, RCC_AHB1ENR_DMA2EN);
 
+    RCC_ENABLE_IF(ADC1, AHB1ENR, RCC_AHB1ENR_ADC12EN);
+    RCC_ENABLE_IF(ADC2, AHB1ENR, RCC_AHB1ENR_ADC12EN);
+
     RCC_ENABLE_IF(DAC1, APB1LENR, RCC_APB1LENR_DAC12EN);
     RCC_ENABLE_IF(LTDC, APB3ENR, RCC_APB3ENR_LTDCEN);
 
@@ -876,6 +866,9 @@ RCC_Result RCC_DisablePeripheralClock(const void *peripheral)
     RCC_DISABLE_IF(DMA1, AHB1ENR, RCC_AHB1ENR_DMA1EN);
     RCC_DISABLE_IF(DMA2, AHB1ENR, RCC_AHB1ENR_DMA2EN);
 
+    RCC_DISABLE_IF(ADC1, AHB1ENR, RCC_AHB1ENR_ADC12EN);
+    RCC_DISABLE_IF(ADC2, AHB1ENR, RCC_AHB1ENR_ADC12EN);
+
     RCC_DISABLE_IF(DAC1, APB1LENR, RCC_APB1LENR_DAC12EN);
     RCC_DISABLE_IF(LTDC, APB3ENR, RCC_APB3ENR_LTDCEN);
 
@@ -919,6 +912,9 @@ RCC_Result RCC_ResetPeripheral(const void *peripheral)
     RCC_RESET_IF(I2C2, APB1LRSTR, RCC_APB1LRSTR_I2C2RST);
     RCC_RESET_IF(I2C3, APB1LRSTR, RCC_APB1LRSTR_I2C3RST);
     RCC_RESET_IF(I2C4, APB4RSTR, RCC_APB4RSTR_I2C4RST);
+
+    RCC_RESET_IF(ADC1, AHB1RSTR, RCC_AHB1RSTR_ADC12RST);
+    RCC_RESET_IF(ADC2, AHB1RSTR, RCC_AHB1RSTR_ADC12RST);
 
     RCC_RESET_IF(DAC1, APB1LRSTR, RCC_APB1LRSTR_DAC12RST);
     RCC_RESET_IF(LTDC, APB3RSTR, RCC_APB3RSTR_LTDCRST);

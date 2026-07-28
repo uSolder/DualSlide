@@ -5,7 +5,7 @@
 
 #include "STM32H7xx.h"
 
-//#include "STM32H7A3_DMA.h"
+#include "adc.h"
 #include "display_controller.h"
 
 /**
@@ -58,12 +58,14 @@ void PendSV_Handler(void)
 {
     IT_UnhandledInterrupt();
 }
+
 /*
 void SysTick_Handler(void)
 {
     IT_UnhandledInterrupt();
 }
 */
+
 void WWDG_IRQHandler(void)
 {
     IT_UnhandledInterrupt();
@@ -122,48 +124,48 @@ void EXTI4_IRQHandler(void)
 void DMA_STR0_IRQHandler(void)
 {
     IT_UnhandledInterrupt();
-    //DMA_IRQHandler(DMA1, 0);
+    /* DMA_IRQHandler(DMA1, 0); */
 }
 
 void DMA_STR1_IRQHandler(void)
 {
     IT_UnhandledInterrupt();
-    //MA_IRQHandler(DMA1, 1);
+    /* DMA_IRQHandler(DMA1, 1); */
 }
 
 void DMA_STR2_IRQHandler(void)
 {
     IT_UnhandledInterrupt();
-    //DMA_IRQHandler(DMA1, 2);
+    /* DMA_IRQHandler(DMA1, 2); */
 }
 
 void DMA_STR3_IRQHandler(void)
 {
     IT_UnhandledInterrupt();
-    //DMA_IRQHandler(DMA1, 3);
+    /* DMA_IRQHandler(DMA1, 3); */
 }
 
 void DMA_STR4_IRQHandler(void)
 {
     IT_UnhandledInterrupt();
-    //DMA_IRQHandler(DMA1, 4);
+    /* DMA_IRQHandler(DMA1, 4); */
 }
 
 void DMA_STR5_IRQHandler(void)
 {
     IT_UnhandledInterrupt();
-    //DMA_IRQHandler(DMA1, 5);
+    /* DMA_IRQHandler(DMA1, 5); */
 }
 
 void DMA_STR6_IRQHandler(void)
 {
     IT_UnhandledInterrupt();
-    //DMA_IRQHandler(DMA1, 6);
+    /* DMA_IRQHandler(DMA1, 6); */
 }
 
 void ADC1_2_IRQHandler(void)
 {
-    IT_UnhandledInterrupt();
+    ADC_IRQHandler();
 }
 
 void FDCAN1_IT0_IRQHandler(void)
@@ -304,7 +306,7 @@ void TIM8_CC_IRQHandler(void)
 void DMA1_STR7_IRQHandler(void)
 {
     IT_UnhandledInterrupt();
-    //DMA_IRQHandler(DMA1, 7);
+    /* DMA_IRQHandler(DMA1, 7); */
 }
 
 void FMC_IRQHandler(void)
@@ -340,31 +342,31 @@ void UART5_IRQHandler(void)
 void DMA2_STR0_IRQHandler(void)
 {
     IT_UnhandledInterrupt();
-    //DMA_IRQHandler(DMA2, 0);
+    /* DMA_IRQHandler(DMA2, 0); */
 }
 
 void DMA2_STR1_IRQHandler(void)
 {
     IT_UnhandledInterrupt();
-    //DMA_IRQHandler(DMA2, 1);
+    /* DMA_IRQHandler(DMA2, 1); */
 }
 
 void DMA2_STR2_IRQHandler(void)
 {
     IT_UnhandledInterrupt();
-    //DMA_IRQHandler(DMA2, 2);
+    /* DMA_IRQHandler(DMA2, 2); */
 }
 
 void DMA2_STR3_IRQHandler(void)
 {
     IT_UnhandledInterrupt();
-    //DMA_IRQHandler(DMA2, 3);
+    /* DMA_IRQHandler(DMA2, 3); */
 }
 
 void DMA2_STR4_IRQHandler(void)
 {
     IT_UnhandledInterrupt();
-    //DMA_IRQHandler(DMA2, 4);
+    /* DMA_IRQHandler(DMA2, 4); */
 }
 
 void ETH_IRQHandler(void)
@@ -380,19 +382,19 @@ void ETH_WKUP_IRQHandler(void)
 void DMA2_STR5_IRQHandler(void)
 {
     IT_UnhandledInterrupt();
-    //DMA_IRQHandler(DMA2, 5);
+    /* DMA_IRQHandler(DMA2, 5); */
 }
 
 void DMA2_STR6_IRQHandler(void)
 {
     IT_UnhandledInterrupt();
-    //DMA_IRQHandler(DMA2, 6);
+    /* DMA_IRQHandler(DMA2, 6); */
 }
 
 void DMA2_STR7_IRQHandler(void)
 {
     IT_UnhandledInterrupt();
-    //DMA_IRQHandler(DMA2, 7);
+    /* DMA_IRQHandler(DMA2, 7); */
 }
 
 void USART6_IRQHandler(void)
@@ -472,7 +474,7 @@ void LTDC_IRQHandler(void)
 
 void LTDC_ER_IRQHandler(void)
 {
-    IT_UnhandledInterrupt();
+    DisplayController_IRQHandler();
 }
 
 void DMA2D_IRQHandler(void)

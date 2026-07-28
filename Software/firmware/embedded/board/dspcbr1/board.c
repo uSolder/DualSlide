@@ -5,6 +5,7 @@
 
 #include "board.h"
 
+#include "adc.h"
 #include "delay.h"
 #include "display_controller.h"
 #include "gpio.h"
@@ -31,6 +32,14 @@
 #define LCD_VERTICAL_FRONT_PORCH          20U
 
 #define LCD_REFRESH_RATE_MILLIHZ          57720U
+
+/* -------------------------------------------------------------------------- */
+/* ADC inputs                                                                 */
+/* -------------------------------------------------------------------------- */
+
+#define POT_A_INPUT_INDEX                 0U
+#define POT_B_INPUT_INDEX                 1U
+#define POT_INPUT_COUNT                   2U
 
 /* -------------------------------------------------------------------------- */
 /* Private function declarations                                              */
@@ -69,14 +78,22 @@ static SPI_Device_Handle LCD_SPI =
     .frame_size = SPI_FRAME_SIZE_9_BIT
 };
 
+static const GPIO_PinTypeDef PowerEnablePin =
+{
+    .Pin = PC13
+};
+
+static const GPIO_ConfigTypeDef PowerEnableConfig =
+{
+    .Mode = GPIO_MODE_OUTPUT,
+    .OutputType = GPIO_OUTPUT_PUSH_PULL,
+    .Pull = GPIO_PULL_NONE,
+    .InitialLevel = GPIO_LEVEL_HIGH
+};
+
 static const GPIO_PinTypeDef LCD_ResetPin =
 {
     .Pin = PB12
-};
-
-static const GPIO_PinTypeDef BAT_IsetPin =
-{
-    .Pin = PC15
 };
 
 static const GPIO_ConfigTypeDef LCD_ResetConfig =
@@ -99,6 +116,31 @@ static const GPIO_ConfigTypeDef LCD_BacklightConfig =
     .Pull = GPIO_PULL_NONE,
     .InitialLevel = GPIO_LEVEL_LOW
 };
+
+static const GPIO_PinTypeDef BAT_IsetPin =
+{
+    .Pin = PC15
+};
+
+static const GPIO_ConfigTypeDef BAT_IsetConfig =
+{
+    .Mode = GPIO_MODE_OUTPUT,
+    .OutputType = GPIO_OUTPUT_PUSH_PULL,
+    .Pull = GPIO_PULL_NONE,
+    .InitialLevel = GPIO_LEVEL_LOW
+};
+
+static const ADC_InputTypeDef POT_Inputs[POT_INPUT_COUNT] =
+{
+    {
+        .Pin = PA1
+    },
+    {
+        .Pin = PA0
+    }
+};
+
+static ADC_ValueTypeDef POT_Values[POT_INPUT_COUNT];
 
 static DisplayController_Handle LCD_DisplayController =
 {
@@ -162,6 +204,10 @@ static DisplayController_Handle LCD_DisplayController =
         .refresh_rate_millihz = LCD_REFRESH_RATE_MILLIHZ
     },
 
+    /*
+     * The panel uses active-low HSYNC and VSYNC, active-high data enable, and
+     * requires an inverted LTDC pixel clock for stable RGB sampling.
+     */
     .signals =
     {
         .horizontal_sync = DISPLAY_CONTROLLER_POLARITY_ACTIVE_LOW,
@@ -210,20 +256,30 @@ DisplayController_Handle *Board_GetDisplayController(void)
     return &LCD_DisplayController;
 }
 
+const ADC_InputTypeDef *Board_GetPOTAInput(void)
+{
+    return &POT_Inputs[POT_A_INPUT_INDEX];
+}
+
+const ADC_InputTypeDef *Board_GetPOTBInput(void)
+{
+    return &POT_Inputs[POT_B_INPUT_INDEX];
+}
+
 /* -------------------------------------------------------------------------- */
 /* Private functions                                                          */
 /* -------------------------------------------------------------------------- */
 
 static void Board_SetLCDReset(bool asserted)
 {
-    GPIO_LevelTypeDef level;
+    GPIO_LevelTypeDef Level;
 
     /*
      * The ST7701S reset input is active low.
      */
-    level = asserted ? GPIO_LEVEL_LOW : GPIO_LEVEL_HIGH;
+    Level = asserted ? GPIO_LEVEL_LOW : GPIO_LEVEL_HIGH;
 
-    if (GPIO_Write(&LCD_ResetPin, level) != GPIO_RESULT_OK)
+    if(GPIO_Write(&LCD_ResetPin, Level) != GPIO_RESULT_OK)
     {
         Board_InitFailure();
     }
@@ -231,7 +287,7 @@ static void Board_SetLCDReset(bool asserted)
 
 static void Board_InitFailure(void)
 {
-    while (1)
+    for(;;)
     {
         __asm volatile ("nop");
     }
@@ -241,7 +297,7 @@ static void Board_InitTarget(void)
 {
     Target_Init();
 
-    if (Time_Init() != TIME_RESULT_OK)
+    if(Time_Init() != TIME_RESULT_OK)
     {
         Board_InitFailure();
     }
@@ -249,33 +305,47 @@ static void Board_InitTarget(void)
 
 static void Board_InitInterfaces(void)
 {
-    if (GPIO_Init(&LCD_ResetPin, &LCD_ResetConfig) != GPIO_RESULT_OK)
+    if(GPIO_Init(&PowerEnablePin, &PowerEnableConfig) != GPIO_RESULT_OK)
     {
         Board_InitFailure();
     }
 
-    if (GPIO_Init(&LCD_BacklightPin, &LCD_BacklightConfig) != GPIO_RESULT_OK)
+    if(GPIO_Init(&LCD_ResetPin, &LCD_ResetConfig) != GPIO_RESULT_OK)
     {
         Board_InitFailure();
     }
 
-    if (GPIO_Init(&BAT_IsetPin, &LCD_BacklightConfig) != GPIO_RESULT_OK)
+    if(GPIO_Init(&LCD_BacklightPin, &LCD_BacklightConfig) != GPIO_RESULT_OK)
     {
         Board_InitFailure();
     }
 
-    if (SPI_BusInit(&SPI2_Bus) != SPI_RESULT_OK)
+    if(GPIO_Init(&BAT_IsetPin, &BAT_IsetConfig) != GPIO_RESULT_OK)
     {
         Board_InitFailure();
     }
 
-    if (SPI_DeviceInit(&LCD_SPI) != SPI_RESULT_OK)
+    if(SPI_BusInit(&SPI2_Bus) != SPI_RESULT_OK)
     {
         Board_InitFailure();
     }
 
-    if (DisplayController_Init(&LCD_DisplayController) !=
-        DISPLAY_CONTROLLER_RESULT_OK)
+    if(SPI_DeviceInit(&LCD_SPI) != SPI_RESULT_OK)
+    {
+        Board_InitFailure();
+    }
+
+    if(ADC_Init(POT_Inputs, POT_Values, POT_INPUT_COUNT) != ADC_RESULT_OK)
+    {
+        Board_InitFailure();
+    }
+
+    if(ADC_Start() != ADC_RESULT_OK)
+    {
+        Board_InitFailure();
+    }
+
+    if(DisplayController_Init(&LCD_DisplayController) != DISPLAY_CONTROLLER_RESULT_OK)
     {
         Board_InitFailure();
     }
@@ -283,17 +353,17 @@ static void Board_InitInterfaces(void)
 
 static void Board_InitDevices(void)
 {
-    if (W430WVC004_A_Init(&LCD_Panel) != W430WVC004_A_RESULT_OK)
+    if(W430WVC004_A_Init(&LCD_Panel) != W430WVC004_A_RESULT_OK)
     {
         Board_InitFailure();
     }
 
-    if (GPIO_Clear(&BAT_IsetPin) != GPIO_RESULT_OK)
+    if(GPIO_Clear(&BAT_IsetPin) != GPIO_RESULT_OK)
     {
         Board_InitFailure();
     }
 
-    if (GPIO_Set(&LCD_BacklightPin) != GPIO_RESULT_OK)
+    if(GPIO_Set(&LCD_BacklightPin) != GPIO_RESULT_OK)
     {
         Board_InitFailure();
     }

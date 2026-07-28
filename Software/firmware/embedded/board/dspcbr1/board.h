@@ -7,6 +7,7 @@
 #define DSPCBR1_BOARD_H
 
 #include "display_controller.h"
+#include "adc.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -28,6 +29,20 @@ void Board_Init(void);
  * @return Pointer to the initialized display-controller handle.
  */
 DisplayController_Handle *Board_GetDisplayController(void);
+
+/**
+ * @brief Get the board-assigned ADC input for potentiometer A.
+ *
+ * @return Pointer to the potentiometer A ADC input descriptor.
+ */
+const ADC_InputTypeDef *Board_GetPOTAInput(void);
+
+/**
+ * @brief Get the board-assigned ADC input for potentiometer B.
+ *
+ * @return Pointer to the potentiometer B ADC input descriptor.
+ */
+const ADC_InputTypeDef *Board_GetPOTBInput(void);
 
 #ifdef __cplusplus
 }

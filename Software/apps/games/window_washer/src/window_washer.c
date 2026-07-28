@@ -8,6 +8,7 @@
 #include "audio.h"
 #include "display.h"
 #include "input.h"
+#include "open_sans.h"
 #include "render.h"
 
 #include <stddef.h>
@@ -38,7 +39,7 @@
 #define BUCKET_WIDTH (56U)
 #define BUCKET_HEIGHT (34U)
 #define FIGURE_FIXED_SCALE (256)
-#define FIGURE_SLIDE_GRAVITY (128)
+#define FIGURE_SLIDE_GRAVITY (240)
 #define WASHER_IMAGE_SIZE (64U)
 #define BALCONY_STEP_Y (276U)
 #define BALCONY_VERTICAL_OFFSET (84)
@@ -46,25 +47,26 @@
 #define BALCONY_BUILDING_WRAP (14U)
 #define BALCONY_CLEAR_START (2)
 /*
- * Building scroll speed is intentionally restricted to whole pixels per
- * rendered frame. Before SPEED_1_START_TIME_MS, the building remains stopped.
+ * Building scroll speed is restricted to whole pixels per rendered frame.
+ * This keeps every presented frame moving by a consistent integer amount and
+ * avoids the visible cadence caused by fractional pixel accumulation.
  *
  * Start times must be listed in ascending order.
  */
-#define SPEED_1               (2U)       /* Pixels per frame. */
-#define SPEED_1_START_TIME_MS (1000ULL)
+#define SPEED_1_PIXELS_PER_FRAME         (1U)
+#define SPEED_1_START_TIME_MS            (1000ULL)
 
-#define SPEED_2               (3U)       /* Pixels per frame. */
-#define SPEED_2_START_TIME_MS (15000ULL)
+#define SPEED_2_PIXELS_PER_FRAME         (2U)
+#define SPEED_2_START_TIME_MS            (30000ULL)
 
-#define SPEED_3               (4U)       /* Pixels per frame. */
-#define SPEED_3_START_TIME_MS (30000ULL)
+#define SPEED_3_PIXELS_PER_FRAME         (3U)
+#define SPEED_3_START_TIME_MS            (60000ULL)
 
-#define SPEED_4               (5U)       /* Pixels per frame. */
-#define SPEED_4_START_TIME_MS (60000ULL)
+#define SPEED_4_PIXELS_PER_FRAME         (4U)
+#define SPEED_4_START_TIME_MS            (120000ULL)
 
-#define SPEED_5               (6U)       /* Pixels per frame. */
-#define SPEED_5_START_TIME_MS (120000ULL)
+#define SPEED_5_PIXELS_PER_FRAME         (5U)
+#define SPEED_5_START_TIME_MS            (240000ULL)
 
 #define HOTEL_GROUND_Y         ((int16_t)RENDER_HEIGHT - 34)
 #define HOTEL_ENTRANCE_TOP_Y   ((int16_t)RENDER_HEIGHT - 218)
@@ -83,6 +85,18 @@
 #define INPUT_SLIDER_MINIMUM (0)
 #define INPUT_SLIDER_MAXIMUM (65535)
 #define INPUT_SLIDER_CENTRE  ((INPUT_SLIDER_MAXIMUM + 1) / 2)
+
+#define SCORE_PANEL_WIDTH              (174U)
+#define SCORE_PANEL_HEIGHT             (36U)
+#define SCORE_PANEL_X                  ((int16_t)((int16_t)RENDER_WIDTH - (int16_t)SCORE_PANEL_WIDTH - 10))
+#define SCORE_PANEL_Y                  ((int16_t)((int16_t)RENDER_HEIGHT - (int16_t)SCORE_PANEL_HEIGHT - 10))
+#define SCORE_CURRENT_AREA_WIDTH       (78U)
+#define SCORE_MINIMUM_DIGITS           (4U)
+#define SCORE_MAXIMUM                  (9999U)
+#define SCORE_PULSE_FRAME_COUNT        (10U)
+
+#define SCORE_POINTS_PER_FLOOR         (1U)
+#define SCORE_POINTS_PER_DIRT          (10U)
 
 enum
 {
@@ -137,7 +151,9 @@ enum
     COLOUR_BEAM_ORANGE_HIGHLIGHT = 48U,
     COLOUR_SHRUB_DARK = 49U,
     COLOUR_SHRUB_GREEN = 50U,
-    COLOUR_SHRUB_HIGHLIGHT = 51U
+    COLOUR_SHRUB_HIGHLIGHT = 51U,
+    COLOUR_SCORE_TEXT = 52U,
+    COLOUR_SCORE_SHADOW = 53U
 };
 
 typedef struct
@@ -172,42 +188,12 @@ typedef struct
 typedef struct
 {
     int32_t BuildingScroll;
-    uint16_t BuildingSubpixel;
     uint32_t LayoutSeed;
     uint64_t ElapsedMilliseconds;
+    uint32_t Score;
     bool Crashed;
     WindowWasher_CleanWindowTypeDef CleanWindows[CLEAN_WINDOW_TRACKED_COUNT];
 } WindowWasher_GameTypeDef;
-
-/**
- * @brief Per-stage CPU cycle measurements for the most recently rendered frame.
- *
- * Inspect WindowWasher_Profile in the debugger. On non-Cortex-M7 builds, the
- * measurements remain zero so the shared application continues to compile.
- */
-typedef struct
-{
-    uint32_t AcquireFrame;
-    uint32_t MakePlatform;
-    uint32_t UpdateGame;
-    uint32_t Clear;
-    uint32_t Background;
-
-    /* Complete building stage and its internal breakdown. */
-    uint32_t Building;
-    uint32_t BuildingBase;
-    uint32_t WindowBase;
-    uint32_t WindowScene;
-    uint32_t Sills;
-    uint32_t DirtyEffects;
-
-    uint32_t HotelEntrance;
-    uint32_t Balconies;
-    uint32_t Platform;
-    uint32_t Washer;
-    uint32_t PresentFrame;
-    uint32_t TotalFrame;
-} WindowWasher_ProfileTypeDef;
 
 static Render_ColourIndexTypeDef WindowWasher_WasherPixels[WASHER_IMAGE_SIZE * WASHER_IMAGE_SIZE];
 
@@ -225,59 +211,10 @@ static WindowWasher_InputTypeDef WindowWasher_Input;
 static WindowWasher_GameTypeDef WindowWasher_Game;
 static WindowWasher_FigureTypeDef WindowWasher_Figure;
 static uint32_t WindowWasher_PendingDeltaTimeMilliseconds;
+static uint32_t WindowWasher_HighScore;
+static uint8_t WindowWasher_ScorePulseFrames;
 static bool WindowWasher_Initialized;
 static bool WindowWasher_Paused;
-static volatile WindowWasher_ProfileTypeDef WindowWasher_Profile;
-
-/**
- * @brief Enable the Cortex-M7 DWT cycle counter.
- */
-static void WindowWasher_ProfileInit(void)
-{
-#if defined(__ARM_ARCH_7EM__)
-    volatile uint32_t * const Demcr = (volatile uint32_t *)0xE000EDFCUL;
-    volatile uint32_t * const DwtControl = (volatile uint32_t *)0xE0001000UL;
-    volatile uint32_t * const DwtCycleCount = (volatile uint32_t *)0xE0001004UL;
-    volatile uint32_t * const DwtLockAccess = (volatile uint32_t *)0xE0001FB0UL;
-
-    /* Enable the CoreSight trace block and unlock the DWT registers. */
-    *Demcr |= (1UL << 24U);
-    *DwtLockAccess = 0xC5ACCE55UL;
-
-    *DwtCycleCount = 0U;
-    *DwtControl |= 1UL;
-#endif
-}
-
-/**
- * @brief Read the current CPU cycle count.
- *
- * @return Current DWT cycle count, or zero on non-Cortex-M7 builds.
- */
-static inline uint32_t WindowWasher_ProfileReadCycles(void)
-{
-#if defined(__ARM_ARCH_7EM__)
-    return *((volatile uint32_t *)0xE0001004UL);
-#else
-    return 0U;
-#endif
-}
-
-/**
- * @brief Calculate elapsed CPU cycles using wrap-safe unsigned subtraction.
- *
- * @param StartCycles Cycle-counter value captured before the operation.
- * @return Number of elapsed cycles, or zero on non-Cortex-M7 builds.
- */
-static inline uint32_t WindowWasher_ProfileElapsed(uint32_t StartCycles)
-{
-#if defined(__ARM_ARCH_7EM__)
-    return WindowWasher_ProfileReadCycles() - StartCycles;
-#else
-    (void)StartCycles;
-    return 0U;
-#endif
-}
 
 static int16_t WindowWasher_Clamp(int16_t Value, int16_t Minimum, int16_t Maximum)
 {
@@ -310,23 +247,14 @@ static bool WindowWasher_RectIsVisible(const Render_RectTypeDef *Rect)
     const int32_t Right = (int32_t)Rect->X + (int32_t)Rect->Width;
     const int32_t Bottom = (int32_t)Rect->Y + (int32_t)Rect->Height;
 
-    return
-        (Rect->Width > 0U) &&
-        (Rect->Height > 0U) &&
-        (Right > 0) &&
-        (Bottom > 0) &&
-        ((int32_t)Rect->X < (int32_t)RENDER_WIDTH) &&
-        ((int32_t)Rect->Y < (int32_t)RENDER_HEIGHT);
+    return (Rect->Width > 0U) && (Rect->Height > 0U) && (Right > 0) && (Bottom > 0) && ((int32_t)Rect->X < (int32_t)RENDER_WIDTH) && ((int32_t)Rect->Y < (int32_t)RENDER_HEIGHT);
 }
 
 /**
  * @brief Draw the window recess, frame, and glass without painting over pixels
  *        that will immediately be replaced by a later layer.
  */
-static void WindowWasher_DrawWindowBase(
-    Render_TargetTypeDef *Target,
-    int16_t WindowX,
-    int16_t WindowY)
+static void WindowWasher_DrawWindowBase(Render_TargetTypeDef *Target, int16_t WindowX, int16_t WindowY)
 {
     const Render_RectTypeDef RecessTop =
     {
@@ -529,8 +457,7 @@ static void WindowWasher_PaintWasherRectangle(uint16_t X, uint16_t Y, uint16_t W
 {
     for(uint16_t Row = 0U; Row < Height; Row++)
     {
-        Render_ColourIndexTypeDef *Destination =
-            &WindowWasher_WasherPixels[((Y + Row) * WASHER_IMAGE_SIZE) + X];
+        Render_ColourIndexTypeDef *Destination = &WindowWasher_WasherPixels[((Y + Row) * WASHER_IMAGE_SIZE) + X];
 
         for(uint16_t Column = 0U; Column < Width; Column++)
         {
@@ -570,22 +497,14 @@ static void WindowWasher_BuildWasherImage(void)
     WindowWasher_PaintWasherRectangle(33U, 61U, 15U, 3U, COLOUR_TRACK_STEEL);
 }
 
-static WindowWasher_PlatformTypeDef WindowWasher_MakePlatform(
-    const WindowWasher_GameTypeDef *Game,
-    const WindowWasher_InputTypeDef *Input)
+static WindowWasher_PlatformTypeDef WindowWasher_MakePlatform(const WindowWasher_GameTypeDef *Game, const WindowWasher_InputTypeDef *Input)
 {
     WindowWasher_PlatformTypeDef Platform;
-    const int32_t CameraTravelY =
-        Game->BuildingScroll < PLATFORM_START_OFFSET_Y
-            ? Game->BuildingScroll
-            : PLATFORM_START_OFFSET_Y;
-    const int16_t StartOffsetY =
-        (int16_t)(PLATFORM_START_OFFSET_Y - CameraTravelY);
+    const int32_t CameraTravelY = Game->BuildingScroll < PLATFORM_START_OFFSET_Y ? Game->BuildingScroll : PLATFORM_START_OFFSET_Y;
+    const int16_t StartOffsetY = (int16_t)(PLATFORM_START_OFFSET_Y - CameraTravelY);
 
-    Platform.LeftY = (int16_t)(
-        PLATFORM_BASE_Y - (Input->LeftSlider / 2) - StartOffsetY);
-    Platform.RightY = (int16_t)(
-        PLATFORM_BASE_Y - (Input->RightSlider / 2) - StartOffsetY);
+    Platform.LeftY = (int16_t)(PLATFORM_BASE_Y - (Input->LeftSlider / 2) - StartOffsetY);
+    Platform.RightY = (int16_t)(PLATFORM_BASE_Y - (Input->RightSlider / 2) - StartOffsetY);
 
     return Platform;
 }
@@ -603,14 +522,48 @@ static int16_t WindowWasher_FigureY(const WindowWasher_PlatformTypeDef *Platform
     return (int16_t)(WindowWasher_PlatformYAtX(Platform, (int16_t)(Figure->PositionX / FIGURE_FIXED_SCALE)) - 22);
 }
 
+/**
+ * @brief Add points to the current score and update the session high score.
+ *
+ * @param Game Game state to update.
+ * @param Points Number of points to add.
+ * @param FlashScore True when the score display should briefly flash.
+ */
+static void WindowWasher_AddScore(WindowWasher_GameTypeDef *Game, uint32_t Points, bool FlashScore)
+{
+    if((Game == NULL) || (Points == 0U))
+    {
+        return;
+    }
+
+    if(Points >= (SCORE_MAXIMUM - Game->Score))
+    {
+        Game->Score = SCORE_MAXIMUM;
+    }
+    else
+    {
+        Game->Score += Points;
+    }
+
+    if(Game->Score > WindowWasher_HighScore)
+    {
+        WindowWasher_HighScore = Game->Score;
+    }
+
+    if(FlashScore)
+    {
+        WindowWasher_ScorePulseFrames = SCORE_PULSE_FRAME_COUNT;
+    }
+}
+
 static void WindowWasher_ResetGame(WindowWasher_GameTypeDef *Game, WindowWasher_FigureTypeDef *Figure)
 {
     static uint32_t ResetNonce = 0U;
 
     Game->BuildingScroll = 0;
-    Game->BuildingSubpixel = 0U;
     Game->LayoutSeed = WindowWasher_Hash((uint32_t)Game->ElapsedMilliseconds ^ (uint32_t)(Game->ElapsedMilliseconds >> 32U) ^ (++ResetNonce * 0xA511E9B3U));
     Game->ElapsedMilliseconds = 0U;
+    Game->Score = 0U;
     Game->Crashed = false;
 
     for(uint8_t WindowIndex = 0U; WindowIndex < CLEAN_WINDOW_TRACKED_COUNT; WindowIndex++)
@@ -689,37 +642,30 @@ static void WindowWasher_UpdateWindowCleaning(WindowWasher_GameTypeDef *Game, co
     for(int8_t ScreenRow = -1; ScreenRow < 9; ScreenRow++)
     {
         const int32_t WorldRow = FirstWorldRow - ScreenRow;
-        const int16_t WindowY =
-            (int16_t)((ScreenRow * (int16_t)WINDOW_STEP_Y) + ScrollOffset + 8);
+        const int16_t WindowY = (int16_t)((ScreenRow * (int16_t)WINDOW_STEP_Y) + ScrollOffset + 8);
 
-        if((FigureBottom <= WindowY) ||
-           (FigureY >= (int16_t)(WindowY + (int16_t)WINDOW_HEIGHT)))
+        if((FigureBottom <= WindowY) || (FigureY >= (int16_t)(WindowY + (int16_t)WINDOW_HEIGHT)))
         {
             continue;
         }
 
         for(uint8_t Column = 0U; Column < WINDOW_COLUMN_COUNT; Column++)
         {
-            const int16_t WindowX =
-                (int16_t)(WINDOW_GRID_LEFT_X + ((int16_t)Column * WINDOW_STEP_X));
+            const int16_t WindowX = (int16_t)(WINDOW_GRID_LEFT_X + ((int16_t)Column * WINDOW_STEP_X));
 
-            if((FigureRight <= WindowX) ||
-               (FigureLeft >= (int16_t)(WindowX + (int16_t)WINDOW_WIDTH)))
+            if((FigureRight <= WindowX) || (FigureLeft >= (int16_t)(WindowX + (int16_t)WINDOW_WIDTH)))
             {
                 continue;
             }
 
-            if(!WindowWasher_WindowIsDirty(Game, WorldRow, Column) ||
-               (WindowWasher_FindCleanWindow(Game, WorldRow, Column) != NULL))
+            if(!WindowWasher_WindowIsDirty(Game, WorldRow, Column) || (WindowWasher_FindCleanWindow(Game, WorldRow, Column) != NULL))
             {
                 continue;
             }
 
             WindowWasher_CleanWindowTypeDef *CleanWindow = NULL;
 
-            for(uint8_t CleanIndex = 0U;
-                CleanIndex < CLEAN_WINDOW_TRACKED_COUNT;
-                CleanIndex++)
+            for(uint8_t CleanIndex = 0U; CleanIndex < CLEAN_WINDOW_TRACKED_COUNT; CleanIndex++)
             {
                 if(!Game->CleanWindows[CleanIndex].Active)
                 {
@@ -732,12 +678,9 @@ static void WindowWasher_UpdateWindowCleaning(WindowWasher_GameTypeDef *Game, co
             {
                 CleanWindow = &Game->CleanWindows[0];
 
-                for(uint8_t CleanIndex = 1U;
-                    CleanIndex < CLEAN_WINDOW_TRACKED_COUNT;
-                    CleanIndex++)
+                for(uint8_t CleanIndex = 1U; CleanIndex < CLEAN_WINDOW_TRACKED_COUNT; CleanIndex++)
                 {
-                    if(Game->CleanWindows[CleanIndex].WorldRow <
-                       CleanWindow->WorldRow)
+                    if(Game->CleanWindows[CleanIndex].WorldRow < CleanWindow->WorldRow)
                     {
                         CleanWindow = &Game->CleanWindows[CleanIndex];
                     }
@@ -748,40 +691,50 @@ static void WindowWasher_UpdateWindowCleaning(WindowWasher_GameTypeDef *Game, co
             CleanWindow->WorldRow = WorldRow;
             CleanWindow->Column = Column;
             CleanWindow->SparkleFrameCount = CLEAN_WINDOW_SPARKLE_FRAMES;
+
+            WindowWasher_AddScore(Game, SCORE_POINTS_PER_DIRT, true);
         }
     }
+}
+
+static uint8_t WindowWasher_GetBuildingSpeed(uint64_t ElapsedMilliseconds)
+{
+    if(ElapsedMilliseconds >= SPEED_5_START_TIME_MS)
+    {
+        return SPEED_5_PIXELS_PER_FRAME;
+    }
+
+    if(ElapsedMilliseconds >= SPEED_4_START_TIME_MS)
+    {
+        return SPEED_4_PIXELS_PER_FRAME;
+    }
+
+    if(ElapsedMilliseconds >= SPEED_3_START_TIME_MS)
+    {
+        return SPEED_3_PIXELS_PER_FRAME;
+    }
+
+    if(ElapsedMilliseconds >= SPEED_2_START_TIME_MS)
+    {
+        return SPEED_2_PIXELS_PER_FRAME;
+    }
+
+    if(ElapsedMilliseconds >= SPEED_1_START_TIME_MS)
+    {
+        return SPEED_1_PIXELS_PER_FRAME;
+    }
+
+    return 0U;
 }
 
 static void WindowWasher_UpdateGame(WindowWasher_GameTypeDef *Game, WindowWasher_FigureTypeDef *Figure, const WindowWasher_PlatformTypeDef *Platform, uint32_t DeltaTimeMilliseconds)
 {
     uint8_t BuildingSpeedPixelsPerFrame;
+    uint32_t PreviousFloor;
+    uint32_t CurrentFloor;
 
     Game->ElapsedMilliseconds += DeltaTimeMilliseconds;
-
-    if(Game->ElapsedMilliseconds >= SPEED_5_START_TIME_MS)
-    {
-        BuildingSpeedPixelsPerFrame = SPEED_5;
-    }
-    else if(Game->ElapsedMilliseconds >= SPEED_4_START_TIME_MS)
-    {
-        BuildingSpeedPixelsPerFrame = SPEED_4;
-    }
-    else if(Game->ElapsedMilliseconds >= SPEED_3_START_TIME_MS)
-    {
-        BuildingSpeedPixelsPerFrame = SPEED_3;
-    }
-    else if(Game->ElapsedMilliseconds >= SPEED_2_START_TIME_MS)
-    {
-        BuildingSpeedPixelsPerFrame = SPEED_2;
-    }
-    else if(Game->ElapsedMilliseconds >= SPEED_1_START_TIME_MS)
-    {
-        BuildingSpeedPixelsPerFrame = SPEED_1;
-    }
-    else
-    {
-        BuildingSpeedPixelsPerFrame = 0U;
-    }
+    BuildingSpeedPixelsPerFrame = WindowWasher_GetBuildingSpeed(Game->ElapsedMilliseconds);
 
     if(Game->Crashed)
     {
@@ -805,7 +758,16 @@ static void WindowWasher_UpdateGame(WindowWasher_GameTypeDef *Game, WindowWasher
     Figure->VelocityX = (Figure->VelocityX * 250) / 256;
     Figure->PositionX += Figure->VelocityX;
 
+    PreviousFloor = (uint32_t)Game->BuildingScroll / WINDOW_STEP_Y;
+
     Game->BuildingScroll += (int32_t)BuildingSpeedPixelsPerFrame;
+
+    CurrentFloor = (uint32_t)Game->BuildingScroll / WINDOW_STEP_Y;
+
+    if(CurrentFloor > PreviousFloor)
+    {
+        WindowWasher_AddScore(Game, (CurrentFloor - PreviousFloor) * SCORE_POINTS_PER_FLOOR, false);
+    }
 
     WindowWasher_UpdateWindowCleaning(Game, Platform, Figure);
 
@@ -833,16 +795,15 @@ static void WindowWasher_DrawWindowScene(Render_TargetTypeDef *Target, int16_t W
 
     switch(Scene)
     {
-        case 0U: /* Blinds */
-            for(uint8_t Blind = 0U; Blind < 4U; Blind++)
-            {
-                const Render_RectTypeDef Slat = { (int16_t)(WindowX + 9), (int16_t)(WindowY + 10 + (Blind * 7U)), WINDOW_WIDTH - 18U, 2U };
+    case 0U: /* Blinds */ for(uint8_t Blind = 0U; Blind < 4U; Blind++)
+        {
+            const Render_RectTypeDef Slat = { (int16_t)(WindowX + 9), (int16_t)(WindowY + 10 + (Blind * 7U)), WINDOW_WIDTH - 18U, 2U };
 
-                Render_FillRect(Target, &Slat, COLOUR_WINDOW_SILHOUETTE);
-            }
-            break;
+            Render_FillRect(Target, &Slat, COLOUR_WINDOW_SILHOUETTE);
+        }
+        break;
 
-        case 1U: /* Desk, chair, lamp, and small plant */
+    case 1U: /* Desk, chair, lamp, and small plant */
         {
             const Render_RectTypeDef Desk = { (int16_t)(WindowX + 13), (int16_t)(WindowY + 30), 28U, 4U };
             const Render_RectTypeDef LampStand = { (int16_t)(WindowX + 20), (int16_t)(WindowY + 17), 2U, 13U };
@@ -854,7 +815,7 @@ static void WindowWasher_DrawWindowScene(Render_TargetTypeDef *Target, int16_t W
             break;
         }
 
-        case 2U: /* Employee silhouette */
+    case 2U: /* Employee silhouette */
         {
             const Render_RectTypeDef Head = { (int16_t)(WindowX + 30), (int16_t)(WindowY + 13), 9U, 9U };
             const Render_RectTypeDef Body = { (int16_t)(WindowX + 27), (int16_t)(WindowY + 22), 15U, 17U };
@@ -864,7 +825,7 @@ static void WindowWasher_DrawWindowScene(Render_TargetTypeDef *Target, int16_t W
             break;
         }
 
-        case 3U: /* Tall potted plant */
+    case 3U: /* Tall potted plant */
         {
             const Render_RectTypeDef Pot = { (int16_t)(WindowX + 29), (int16_t)(WindowY + 30), 12U, 8U };
             const Render_RectTypeDef Stem = { (int16_t)(WindowX + 34), (int16_t)(WindowY + 13), 3U, 18U };
@@ -876,7 +837,7 @@ static void WindowWasher_DrawWindowScene(Render_TargetTypeDef *Target, int16_t W
             break;
         }
 
-        case 4U: /* Floor lamp */
+    case 4U: /* Floor lamp */
         {
             const Render_RectTypeDef Shade = { (int16_t)(WindowX + 28), (int16_t)(WindowY + 12), 14U, 7U };
             const Render_RectTypeDef Stand = { (int16_t)(WindowX + 34), (int16_t)(WindowY + 19), 3U, 18U };
@@ -888,7 +849,7 @@ static void WindowWasher_DrawWindowScene(Render_TargetTypeDef *Target, int16_t W
             break;
         }
 
-        case 5U: /* Office clock */
+    case 5U: /* Office clock */
         {
             const Render_RectTypeDef Clock = { (int16_t)(WindowX + 28), (int16_t)(WindowY + 12), 15U, 15U };
             const Render_RectTypeDef HandOne = { (int16_t)(WindowX + 35), (int16_t)(WindowY + 14), 2U, 7U };
@@ -900,7 +861,7 @@ static void WindowWasher_DrawWindowScene(Render_TargetTypeDef *Target, int16_t W
             break;
         }
 
-        case 6U: /* Filing cabinet */
+    case 6U: /* Filing cabinet */
         {
             const Render_RectTypeDef Cabinet = { (int16_t)(WindowX + 24), (int16_t)(WindowY + 16), 20U, 22U };
             const Render_RectTypeDef DrawerOne = { (int16_t)(WindowX + 26), (int16_t)(WindowY + 22), 16U, 2U };
@@ -912,7 +873,7 @@ static void WindowWasher_DrawWindowScene(Render_TargetTypeDef *Target, int16_t W
             break;
         }
 
-        case 7U: /* Framed picture */
+    case 7U: /* Framed picture */
         {
             const Render_RectTypeDef Frame = { (int16_t)(WindowX + 23), (int16_t)(WindowY + 12), 24U, 17U };
             const Render_RectTypeDef Picture = { (int16_t)(WindowX + 26), (int16_t)(WindowY + 15), 18U, 11U };
@@ -922,7 +883,7 @@ static void WindowWasher_DrawWindowScene(Render_TargetTypeDef *Target, int16_t W
             break;
         }
 
-        case 8U: /* Hotel-suite couch and table lamp */
+    case 8U: /* Hotel-suite couch and table lamp */
         {
             const Render_RectTypeDef Couch = { (int16_t)(WindowX + 13), (int16_t)(WindowY + 27), 30U, 11U };
             const Render_RectTypeDef LampStand = { (int16_t)(WindowX + 49), (int16_t)(WindowY + 19), 2U, 18U };
@@ -934,7 +895,7 @@ static void WindowWasher_DrawWindowScene(Render_TargetTypeDef *Target, int16_t W
             break;
         }
 
-        case 9U: /* Maintenance closet */
+    case 9U: /* Maintenance closet */
         {
             const Render_RectTypeDef Cart = { (int16_t)(WindowX + 16), (int16_t)(WindowY + 28), 28U, 7U };
             const Render_RectTypeDef Handle = { (int16_t)(WindowX + 42), (int16_t)(WindowY + 19), 3U, 16U };
@@ -946,7 +907,7 @@ static void WindowWasher_DrawWindowScene(Render_TargetTypeDef *Target, int16_t W
             break;
         }
 
-        case 10U: /* Open window with curtains */
+    case 10U: /* Open window with curtains */
         {
             const Render_RectTypeDef LeftCurtain = { (int16_t)(WindowX + 8), (int16_t)(WindowY + 9), 13U, 28U };
             const Render_RectTypeDef RightCurtain = { (int16_t)(WindowX + 49), (int16_t)(WindowY + 9), 13U, 28U };
@@ -958,7 +919,7 @@ static void WindowWasher_DrawWindowScene(Render_TargetTypeDef *Target, int16_t W
             break;
         }
 
-        case 11U: /* Neon sign */
+    case 11U: /* Neon sign */
         {
             const Render_RectTypeDef Sign = { (int16_t)(WindowX + 15), (int16_t)(WindowY + 18), 40U, 12U };
             const Render_RectTypeDef LetterGapOne = { (int16_t)(WindowX + 27), (int16_t)(WindowY + 20), 3U, 8U };
@@ -970,7 +931,7 @@ static void WindowWasher_DrawWindowScene(Render_TargetTypeDef *Target, int16_t W
             break;
         }
 
-        case 12U: /* Cat on a sill */
+    case 12U: /* Cat on a sill */
         {
             const Render_RectTypeDef Body = { (int16_t)(WindowX + 27), (int16_t)(WindowY + 27), 16U, 9U };
             const Render_RectTypeDef Head = { (int16_t)(WindowX + 39), (int16_t)(WindowY + 22), 8U, 8U };
@@ -982,22 +943,19 @@ static void WindowWasher_DrawWindowScene(Render_TargetTypeDef *Target, int16_t W
             break;
         }
 
-        default: /* Office party silhouettes */
-            for(uint8_t Guest = 0U; Guest < 4U; Guest++)
-            {
-                const Render_RectTypeDef Head = { (int16_t)(WindowX + 13 + (Guest * 12U)), (int16_t)(WindowY + 17 + ((Guest & 1U) * 3U)), 6U, 6U };
-                const Render_RectTypeDef Body = { (int16_t)(WindowX + 11 + (Guest * 12U)), (int16_t)(WindowY + 23 + ((Guest & 1U) * 3U)), 10U, 13U };
+    default: /* Office party silhouettes */ for(uint8_t Guest = 0U; Guest < 4U; Guest++)
+        {
+            const Render_RectTypeDef Head = { (int16_t)(WindowX + 13 + (Guest * 12U)), (int16_t)(WindowY + 17 + ((Guest & 1U) * 3U)), 6U, 6U };
+            const Render_RectTypeDef Body = { (int16_t)(WindowX + 11 + (Guest * 12U)), (int16_t)(WindowY + 23 + ((Guest & 1U) * 3U)), 10U, 13U };
 
-                Render_FillRect(Target, &Head, COLOUR_WINDOW_SILHOUETTE);
-                Render_FillRect(Target, &Body, COLOUR_WINDOW_SILHOUETTE);
-            }
-            break;
+            Render_FillRect(Target, &Head, COLOUR_WINDOW_SILHOUETTE);
+            Render_FillRect(Target, &Body, COLOUR_WINDOW_SILHOUETTE);
+        }
+        break;
     }
 }
 
-static void WindowWasher_DrawBackgroundLayer(
-    Render_TargetTypeDef *Target,
-    const WindowWasher_GameTypeDef *Game)
+static void WindowWasher_DrawBackgroundLayer(Render_TargetTypeDef *Target, const WindowWasher_GameTypeDef *Game)
 {
     const int16_t CloudY = (int16_t)(145 + ((Game->BuildingScroll / 70) % 360));
     const int16_t MountainBaseY = (int16_t)((int16_t)RENDER_HEIGHT + 30 + (Game->BuildingScroll / 80));
@@ -1051,16 +1009,10 @@ static void WindowWasher_DrawBackgroundLayer(
 
     if(MountainBaseY < ((int16_t)RENDER_HEIGHT + 180))
     {
-        Render_DrawPolygon(
-            Target,
-            Mountains,
-            (uint8_t)(sizeof(Mountains) / sizeof(Mountains[0])),
-            COLOUR_BACKGROUND_MOUNTAIN);
+        Render_DrawPolygon(Target, Mountains, (uint8_t)(sizeof(Mountains) / sizeof(Mountains[0])), COLOUR_BACKGROUND_MOUNTAIN);
     }
 
-    for(uint8_t BlockIndex = 0U;
-        BlockIndex < (uint8_t)(sizeof(CityBlocks) / sizeof(CityBlocks[0]));
-        BlockIndex++)
+    for(uint8_t BlockIndex = 0U; BlockIndex < (uint8_t)(sizeof(CityBlocks) / sizeof(CityBlocks[0])); BlockIndex++)
     {
         if(!WindowWasher_RectIsVisible(&CityBlocks[BlockIndex]))
         {
@@ -1092,9 +1044,7 @@ static void WindowWasher_DrawBackgroundLayer(
     }
 }
 
-static void WindowWasher_DrawBackground(
-    Render_TargetTypeDef *Target,
-    const WindowWasher_GameTypeDef *Game)
+static void WindowWasher_DrawBackground(Render_TargetTypeDef *Target, const WindowWasher_GameTypeDef *Game)
 {
     const Render_RectTypeDef LeftVisibleStrip =
     {
@@ -1126,10 +1076,7 @@ static void WindowWasher_DrawBackground(
     Render_ResetClipRect();
 }
 
-static void WindowWasher_DrawBuilding(
-    Render_TargetTypeDef *Target,
-    const WindowWasher_GameTypeDef *Game,
-    WindowWasher_ProfileTypeDef *Profile)
+static void WindowWasher_DrawBuilding(Render_TargetTypeDef *Target, const WindowWasher_GameTypeDef *Game)
 {
     const Render_RectTypeDef Building =
     {
@@ -1168,21 +1115,16 @@ static void WindowWasher_DrawBuilding(
     };
     const int32_t FirstWorldRow = Game->BuildingScroll / WINDOW_STEP_Y;
     const int16_t ScrollOffset = (int16_t)(Game->BuildingScroll % WINDOW_STEP_Y);
-    uint32_t StageStartCycles;
-
-    StageStartCycles = WindowWasher_ProfileReadCycles();
     Render_FillRect(Target, &Building, COLOUR_BUILDING);
     Render_FillRect(Target, &LeftCorner, COLOUR_EMPIRE_CORNER);
     Render_FillRect(Target, &RightCorner, COLOUR_EMPIRE_CORNER);
     Render_FillRect(Target, &LeftCornerHighlight, COLOUR_EMPIRE_CORNER_HIGHLIGHT);
     Render_FillRect(Target, &RightCornerHighlight, COLOUR_EMPIRE_CORNER_HIGHLIGHT);
-    Profile->BuildingBase += WindowWasher_ProfileElapsed(StageStartCycles);
 
     for(int8_t ScreenRow = -1; ScreenRow < 9; ScreenRow++)
     {
         const int32_t WorldRow = FirstWorldRow - ScreenRow;
-        const int16_t WindowY =
-            (int16_t)((ScreenRow * (int16_t)WINDOW_STEP_Y) + ScrollOffset + 8);
+        const int16_t WindowY = (int16_t)((ScreenRow * (int16_t)WINDOW_STEP_Y) + ScrollOffset + 8);
         const Render_RectTypeDef RowBounds =
         {
             (int16_t)(WINDOW_GRID_LEFT_X - 3),
@@ -1198,19 +1140,10 @@ static void WindowWasher_DrawBuilding(
 
         for(uint8_t Column = 0U; Column < WINDOW_COLUMN_COUNT; Column++)
         {
-            const int16_t WindowX =
-                (int16_t)(WINDOW_GRID_LEFT_X + ((int16_t)Column * WINDOW_STEP_X));
-            const uint32_t ScenePattern =
-                WindowWasher_Hash(
-                    Game->LayoutSeed ^
-                    ((uint32_t)WorldRow * 0xD1B54A35U) ^
-                    ((uint32_t)Column * 0x94D049BBU));
-            const bool Dirty =
-                WindowWasher_WindowIsDirty(Game, WorldRow, Column);
-            const WindowWasher_CleanWindowTypeDef *CleanWindow =
-                Dirty
-                    ? WindowWasher_FindCleanWindow(Game, WorldRow, Column)
-                    : NULL;
+            const int16_t WindowX = (int16_t)(WINDOW_GRID_LEFT_X + ((int16_t)Column * WINDOW_STEP_X));
+            const uint32_t ScenePattern = WindowWasher_Hash(Game->LayoutSeed ^ ((uint32_t)WorldRow * 0xD1B54A35U) ^ ((uint32_t)Column * 0x94D049BBU));
+            const bool Dirty = WindowWasher_WindowIsDirty(Game, WorldRow, Column);
+            const WindowWasher_CleanWindowTypeDef *CleanWindow = Dirty ? WindowWasher_FindCleanWindow(Game, WorldRow, Column) : NULL;
             const Render_RectTypeDef SillShadow =
             {
                 (int16_t)(WindowX - 3),
@@ -1226,19 +1159,11 @@ static void WindowWasher_DrawBuilding(
                 3U
             };
 
-            StageStartCycles = WindowWasher_ProfileReadCycles();
             WindowWasher_DrawWindowBase(Target, WindowX, WindowY);
-            Profile->WindowBase += WindowWasher_ProfileElapsed(StageStartCycles);
 
             if((ScenePattern % 20U) == 0U)
             {
-                StageStartCycles = WindowWasher_ProfileReadCycles();
-                WindowWasher_DrawWindowScene(
-                    Target,
-                    WindowX,
-                    WindowY,
-                    ScenePattern);
-                Profile->WindowScene += WindowWasher_ProfileElapsed(StageStartCycles);
+                WindowWasher_DrawWindowScene(Target, WindowX, WindowY, ScenePattern);
             }
 
             /*
@@ -1246,10 +1171,8 @@ static void WindowWasher_DrawBuilding(
              * decorative strips, so retaining the tiny overlap is cheaper than
              * fragmenting the base into additional rectangles.
              */
-            StageStartCycles = WindowWasher_ProfileReadCycles();
             Render_FillRect(Target, &SillShadow, COLOUR_BUILDING_SHADOW);
             Render_FillRect(Target, &Sill, COLOUR_FACADE_TRIM);
-            Profile->Sills += WindowWasher_ProfileElapsed(StageStartCycles);
 
             if(Dirty && (CleanWindow == NULL))
             {
@@ -1275,14 +1198,11 @@ static void WindowWasher_DrawBuilding(
                     5U
                 };
 
-                StageStartCycles = WindowWasher_ProfileReadCycles();
                 Render_FillRect(Target, &SpotOne, COLOUR_DIRT);
                 Render_FillRect(Target, &SpotTwo, COLOUR_DIRT);
                 Render_FillRect(Target, &SpotThree, COLOUR_DIRT);
-                Profile->DirtyEffects += WindowWasher_ProfileElapsed(StageStartCycles);
             }
-            else if((CleanWindow != NULL) &&
-                    (CleanWindow->SparkleFrameCount > 0U))
+            else if((CleanWindow != NULL) && (CleanWindow->SparkleFrameCount > 0U))
             {
                 const Render_RectTypeDef HorizontalSparkle =
                 {
@@ -1299,10 +1219,8 @@ static void WindowWasher_DrawBuilding(
                     19U
                 };
 
-                StageStartCycles = WindowWasher_ProfileReadCycles();
                 Render_FillRect(Target, &HorizontalSparkle, COLOUR_SPARKLE);
                 Render_FillRect(Target, &VerticalSparkle, COLOUR_SPARKLE);
-                Profile->DirtyEffects += WindowWasher_ProfileElapsed(StageStartCycles);
             }
         }
     }
@@ -1574,14 +1492,9 @@ static void WindowWasher_DrawBalconies(Render_TargetTypeDef *Target, const Windo
     for(int8_t ScreenRow = -1; ScreenRow < 4; ScreenRow++)
     {
         const int32_t WorldRow = FirstWorldRow - ScreenRow;
-        const int16_t BalconyY =
-            (int16_t)((ScreenRow * (int16_t)BALCONY_STEP_Y) +
-                      ScrollOffset +
-                      BALCONY_VERTICAL_OFFSET);
+        const int16_t BalconyY = (int16_t)((ScreenRow * (int16_t)BALCONY_STEP_Y) + ScrollOffset + BALCONY_VERTICAL_OFFSET);
 
-        if((WorldRow < BALCONY_CLEAR_START) ||
-           ((int32_t)BalconyY + (int32_t)BALCONY_THICKNESS <= 0) ||
-           ((int32_t)BalconyY - 20 >= (int32_t)RENDER_HEIGHT))
+        if((WorldRow < BALCONY_CLEAR_START) || ((int32_t)BalconyY + (int32_t)BALCONY_THICKNESS <= 0) || ((int32_t)BalconyY - 20 >= (int32_t)RENDER_HEIGHT))
         {
             continue;
         }
@@ -1589,57 +1502,24 @@ static void WindowWasher_DrawBalconies(Render_TargetTypeDef *Target, const Windo
         const uint32_t Pattern = WindowWasher_BalconyPattern(Game, WorldRow);
         const bool FromLeft = WindowWasher_BalconyFromLeft(Pattern);
         const bool HasCentreGap = WindowWasher_BalconyHasCentreGap(Pattern);
-        const int16_t BalconyEndX =
-            WindowWasher_BalconyEndX(Pattern, FromLeft);
-        const int16_t BalconyX =
-            FromLeft ? BUILDING_LEFT_X : BalconyEndX;
-        const uint16_t BalconyWidth =
-            (uint16_t)(
-                FromLeft
-                    ? (BalconyEndX - BUILDING_LEFT_X)
-                    : (BUILDING_RIGHT_X - BalconyEndX));
-        const int16_t GapLeftX =
-            WindowWasher_BalconyGapLeftX(Pattern);
-        const int16_t GapRightX =
-            (int16_t)(GapLeftX + 160U + ((Pattern >> 8U) % 41U));
+        const int16_t BalconyEndX = WindowWasher_BalconyEndX(Pattern, FromLeft);
+        const int16_t BalconyX = FromLeft ? BUILDING_LEFT_X : BalconyEndX;
+        const uint16_t BalconyWidth = (uint16_t)(FromLeft ? (BalconyEndX - BUILDING_LEFT_X) : (BUILDING_RIGHT_X - BalconyEndX));
+        const int16_t GapLeftX = WindowWasher_BalconyGapLeftX(Pattern);
+        const int16_t GapRightX = (int16_t)(GapLeftX + 160U + ((Pattern >> 8U) % 41U));
 
         if(HasCentreGap)
         {
-            WindowWasher_DrawBalconySection(
-                Target,
-                (int16_t)(BUILDING_LEFT_X - BALCONY_BUILDING_WRAP),
-                BalconyY,
-                (uint16_t)(
-                    GapLeftX -
-                    BUILDING_LEFT_X +
-                    BALCONY_BUILDING_WRAP),
-                GapLeftX);
+            WindowWasher_DrawBalconySection(Target, (int16_t)(BUILDING_LEFT_X - BALCONY_BUILDING_WRAP), BalconyY, (uint16_t)(GapLeftX - BUILDING_LEFT_X + BALCONY_BUILDING_WRAP), GapLeftX);
 
-            WindowWasher_DrawBalconySection(
-                Target,
-                GapRightX,
-                BalconyY,
-                (uint16_t)(
-                    BUILDING_RIGHT_X -
-                    GapRightX +
-                    BALCONY_BUILDING_WRAP),
-                GapRightX);
+            WindowWasher_DrawBalconySection(Target, GapRightX, BalconyY, (uint16_t)(BUILDING_RIGHT_X - GapRightX + BALCONY_BUILDING_WRAP), GapRightX);
         }
         else
         {
-            const int16_t WrappedX =
-                FromLeft
-                    ? (int16_t)(BalconyX - BALCONY_BUILDING_WRAP)
-                    : BalconyX;
-            const uint16_t WrappedWidth =
-                (uint16_t)(BalconyWidth + BALCONY_BUILDING_WRAP);
+            const int16_t WrappedX = FromLeft ? (int16_t)(BalconyX - BALCONY_BUILDING_WRAP) : BalconyX;
+            const uint16_t WrappedWidth = (uint16_t)(BalconyWidth + BALCONY_BUILDING_WRAP);
 
-            WindowWasher_DrawBalconySection(
-                Target,
-                WrappedX,
-                BalconyY,
-                WrappedWidth,
-                BalconyEndX);
+            WindowWasher_DrawBalconySection(Target, WrappedX, BalconyY, WrappedWidth, BalconyEndX);
         }
     }
 }
@@ -1701,11 +1581,7 @@ static void WindowWasher_DrawWasher(Render_TargetTypeDef *Target, const WindowWa
     Render_FillRect(Target, &RightHanger, COLOUR_CABLE);
     Render_FillRect(Target, &BucketEdge, COLOUR_TRACK_STEEL);
     Render_FillRect(Target, &BucketInterior, COLOUR_BUCKET_METAL);
-    Render_DrawImage(
-        Target,
-        &WindowWasher_WasherImage,
-        (int16_t)(CentreX - (WASHER_IMAGE_SIZE / 2U)),
-        Crashed ? (int16_t)(Figure->PositionY / FIGURE_FIXED_SCALE) : (int16_t)(BucketY - 43));
+    Render_DrawImage(Target, &WindowWasher_WasherImage, (int16_t)(CentreX - (WASHER_IMAGE_SIZE / 2U)), Crashed ? (int16_t)(Figure->PositionY / FIGURE_FIXED_SCALE) : (int16_t)(BucketY - 43));
     Render_FillRect(Target, &BucketFront, COLOUR_BUCKET_METAL);
     Render_FillRect(Target, &BucketRim, COLOUR_BUCKET_HIGHLIGHT);
     Render_FillRect(Target, &SqueegeeHandle, COLOUR_TOOL_HANDLE);
@@ -1714,6 +1590,192 @@ static void WindowWasher_DrawWasher(Render_TargetTypeDef *Target, const WindowWa
     Render_FillRect(Target, &BrushHead, COLOUR_TOOL_BRISTLES);
     Render_FillRect(Target, &BrushBristlesOne, COLOUR_TOOL_BRISTLES);
     Render_FillRect(Target, &BrushBristlesTwo, COLOUR_TOOL_BRISTLES);
+}
+
+
+static void WindowWasher_FormatScore(uint32_t Score, char *Buffer, size_t BufferSize)
+{
+    char Digits[10];
+    size_t DigitCount = 0U;
+    size_t OutputIndex = 0U;
+
+    if((Buffer == NULL) || (BufferSize == 0U))
+    {
+        return;
+    }
+
+    do
+    {
+        Digits[DigitCount++] = (char)('0' + (Score % 10U));
+        Score /= 10U;
+    }
+    while((Score > 0U) && (DigitCount < sizeof(Digits)));
+
+    while((DigitCount < SCORE_MINIMUM_DIGITS) && (DigitCount < sizeof(Digits)))
+    {
+        Digits[DigitCount++] = '0';
+    }
+
+    while((DigitCount > 0U) && ((OutputIndex + 1U) < BufferSize))
+    {
+        Buffer[OutputIndex++] = Digits[--DigitCount];
+    }
+
+    Buffer[OutputIndex] = '\0';
+}
+
+/**
+ * @brief Measure the horizontal advance of a single-line string.
+ */
+static uint16_t WindowWasher_MeasureTextWidth(const Font *FontAsset, const char *Text)
+{
+    uint32_t Codepoint;
+    uint32_t GlyphIndex;
+    uint32_t Width = 0U;
+
+    if((FontAsset == NULL) || (FontAsset->glyphs == NULL) || (Text == NULL))
+    {
+        return 0U;
+    }
+
+    while(*Text != '\0')
+    {
+        Codepoint = (uint8_t)*Text;
+        Text++;
+
+        if((Codepoint == (uint32_t)'\n') || (Codepoint == (uint32_t)'\r'))
+        {
+            continue;
+        }
+
+        if((Codepoint < FontAsset->firstCodepoint) || ((Codepoint - FontAsset->firstCodepoint) >= (uint32_t)FontAsset->glyphCount))
+        {
+            Codepoint = (uint32_t)'?';
+
+            if((Codepoint < FontAsset->firstCodepoint) || ((Codepoint - FontAsset->firstCodepoint) >= (uint32_t)FontAsset->glyphCount))
+            {
+                continue;
+            }
+        }
+
+        GlyphIndex = Codepoint - FontAsset->firstCodepoint;
+        Width += FontAsset->glyphs[GlyphIndex].advance;
+    }
+
+    return (Width > UINT16_MAX) ? UINT16_MAX : (uint16_t)Width;
+}
+
+static void WindowWasher_DrawScore(Render_TargetTypeDef *Target, const WindowWasher_GameTypeDef *Game)
+{
+    static const char HighScorePrefix[] = "HI ";
+
+    char ScoreText[11];
+    char HighScoreText[14];
+    uint16_t ScoreWidth;
+    uint16_t HighScoreWidth;
+    int16_t ScoreX;
+    int16_t HighScoreX;
+    size_t HighScoreIndex;
+    Render_ColourIndexTypeDef ScoreColour;
+
+    const Render_RectTypeDef Shadow =
+    {
+        (int16_t)(SCORE_PANEL_X + 3),
+        (int16_t)(SCORE_PANEL_Y + 4),
+        SCORE_PANEL_WIDTH,
+        SCORE_PANEL_HEIGHT
+    };
+
+    const Render_RectTypeDef OuterFrame =
+    {
+        SCORE_PANEL_X,
+        SCORE_PANEL_Y,
+        SCORE_PANEL_WIDTH,
+        SCORE_PANEL_HEIGHT
+    };
+
+    const Render_RectTypeDef InnerPanel =
+    {
+        (int16_t)(SCORE_PANEL_X + 3),
+        (int16_t)(SCORE_PANEL_Y + 3),
+        SCORE_PANEL_WIDTH - 6U,
+        SCORE_PANEL_HEIGHT - 6U
+    };
+
+    const Render_RectTypeDef TopHighlight =
+    {
+        (int16_t)(SCORE_PANEL_X + 6),
+        (int16_t)(SCORE_PANEL_Y + 6),
+        SCORE_PANEL_WIDTH - 12U,
+        2U
+    };
+
+    const Render_RectTypeDef Divider =
+    {
+        (int16_t)(SCORE_PANEL_X + (int16_t)SCORE_CURRENT_AREA_WIDTH),
+        (int16_t)(SCORE_PANEL_Y + 7),
+        2U,
+        SCORE_PANEL_HEIGHT - 14U
+    };
+
+    const Render_RectTypeDef SparkleVertical =
+    {
+        (int16_t)(SCORE_PANEL_X + 12),
+        (int16_t)(SCORE_PANEL_Y + 10),
+        3U,
+        15U
+    };
+
+    const Render_RectTypeDef SparkleHorizontal =
+    {
+        (int16_t)(SCORE_PANEL_X + 6),
+        (int16_t)(SCORE_PANEL_Y + 16),
+        15U,
+        3U
+    };
+
+    ScoreColour = (WindowWasher_ScorePulseFrames > 0U) ? COLOUR_SPARKLE : COLOUR_SCORE_TEXT;
+
+    if(WindowWasher_ScorePulseFrames > 0U)
+    {
+        WindowWasher_ScorePulseFrames--;
+    }
+
+    WindowWasher_FormatScore(Game->Score, ScoreText, sizeof(ScoreText));
+
+    HighScoreIndex = 0U;
+
+    while((HighScorePrefix[HighScoreIndex] != '\0') && ((HighScoreIndex + 1U) < sizeof(HighScoreText)))
+    {
+        HighScoreText[HighScoreIndex] = HighScorePrefix[HighScoreIndex];
+        HighScoreIndex++;
+    }
+
+    WindowWasher_FormatScore(WindowWasher_HighScore, &HighScoreText[HighScoreIndex], sizeof(HighScoreText) - HighScoreIndex);
+
+    ScoreWidth = WindowWasher_MeasureTextWidth(&OpenSans20, ScoreText);
+    HighScoreWidth = WindowWasher_MeasureTextWidth(&OpenSans20, HighScoreText);
+
+    ScoreX = (int16_t)(SCORE_PANEL_X + 25 + (((int16_t)SCORE_CURRENT_AREA_WIDTH - 25 - (int16_t)ScoreWidth) / 2));
+
+    HighScoreX = (int16_t)(SCORE_PANEL_X + (int16_t)SCORE_CURRENT_AREA_WIDTH + (((int16_t)SCORE_PANEL_WIDTH - (int16_t)SCORE_CURRENT_AREA_WIDTH - (int16_t)HighScoreWidth) / 2));
+
+    Render_FillRect(Target, &Shadow, COLOUR_SCORE_SHADOW);
+    Render_FillRect(Target, &OuterFrame, COLOUR_SCORE_SHADOW);
+    Render_FillRect(Target, &InnerPanel, COLOUR_TRACK_STEEL);
+    Render_FillRect(Target, &TopHighlight, COLOUR_BUCKET_HIGHLIGHT);
+    Render_FillRect(Target, &Divider, COLOUR_PLATFORM_EDGE);
+
+    Render_FillRect(Target, &SparkleVertical, COLOUR_SPARKLE);
+    Render_FillRect(Target, &SparkleHorizontal, COLOUR_SPARKLE);
+
+    Render_DrawText(Target, &OpenSans20, ScoreText, (int16_t)(ScoreX + 1), (int16_t)(SCORE_PANEL_Y + 8), COLOUR_SCORE_SHADOW);
+
+    Render_DrawText(Target, &OpenSans20, ScoreText, ScoreX, (int16_t)(SCORE_PANEL_Y + 7), ScoreColour);
+
+    Render_DrawText(Target, &OpenSans20, HighScoreText, (int16_t)(HighScoreX + 1), (int16_t)(SCORE_PANEL_Y + 8), COLOUR_SCORE_SHADOW);
+
+    Render_DrawText(Target, &OpenSans20, HighScoreText, HighScoreX, (int16_t)(SCORE_PANEL_Y + 7), COLOUR_BUCKET_HIGHLIGHT);
 }
 
 
@@ -1772,15 +1834,16 @@ bool WindowWasher_Init(void)
         0x00F3A34AU,
         0x002F5D38U,
         0x004F8A4CU,
-        0x0079B866U
+        0x0079B866U,
+        0x00FFFFFFU,
+        0x00182128U
     };
-
-    WindowWasher_ProfileInit();
 
     WindowWasher_Input.LeftSlider = 0;
     WindowWasher_Input.RightSlider = 0;
     WindowWasher_Game.ElapsedMilliseconds = 0U;
     WindowWasher_PendingDeltaTimeMilliseconds = 0U;
+    WindowWasher_ScorePulseFrames = 0U;
     WindowWasher_Paused = false;
 
     WindowWasher_ResetGame(&WindowWasher_Game, &WindowWasher_Figure);
@@ -1825,46 +1888,30 @@ void WindowWasher_Render(void)
     Display_FrameTypeDef *Frame;
     Render_TargetTypeDef Target;
     WindowWasher_PlatformTypeDef Platform;
-    WindowWasher_ProfileTypeDef FrameProfile = { 0U };
-    const uint32_t TotalStartCycles = WindowWasher_ProfileReadCycles();
-    uint32_t StageStartCycles;
 
     if(!WindowWasher_Initialized || WindowWasher_Paused)
     {
         return;
     }
 
-    StageStartCycles = WindowWasher_ProfileReadCycles();
     Frame = Display_AcquireFrame();
-    FrameProfile.AcquireFrame =
-        WindowWasher_ProfileElapsed(StageStartCycles);
 
     if(Frame == NULL)
     {
-        FrameProfile.TotalFrame =
-            WindowWasher_ProfileElapsed(TotalStartCycles);
-        WindowWasher_Profile = FrameProfile;
         return;
     }
 
-    StageStartCycles = WindowWasher_ProfileReadCycles();
-    Platform = WindowWasher_MakePlatform(
-        &WindowWasher_Game,
-        &WindowWasher_Input);
-    FrameProfile.MakePlatform =
-        WindowWasher_ProfileElapsed(StageStartCycles);
+    Platform = WindowWasher_MakePlatform(&WindowWasher_Game, &WindowWasher_Input);
 
     Target.Pixels = Frame->Pixels;
     Target.Width = Frame->Width;
     Target.Height = Frame->Height;
     Target.StridePixels = Frame->StridePixels;
 
-    StageStartCycles = WindowWasher_ProfileReadCycles();
     {
-        uint32_t DeltaTimeMilliseconds =
-            WindowWasher_PendingDeltaTimeMilliseconds;
+        uint32_t DeltaTimeMilliseconds = WindowWasher_PendingDeltaTimeMilliseconds;
 
-        /* Prevent a long pause or debugger stop from causing a large physics step. */
+        /* Prevent a long pause from causing an excessive physics step. */
         if(DeltaTimeMilliseconds > 100U)
         {
             DeltaTimeMilliseconds = 100U;
@@ -1872,69 +1919,21 @@ void WindowWasher_Render(void)
 
         WindowWasher_PendingDeltaTimeMilliseconds = 0U;
 
-        WindowWasher_UpdateGame(
-            &WindowWasher_Game,
-            &WindowWasher_Figure,
-            &Platform,
-            DeltaTimeMilliseconds);
+        WindowWasher_UpdateGame(&WindowWasher_Game, &WindowWasher_Figure, &Platform, DeltaTimeMilliseconds);
     }
-    FrameProfile.UpdateGame =
-        WindowWasher_ProfileElapsed(StageStartCycles);
 
     Render_ResetClipRect();
-
-    StageStartCycles = WindowWasher_ProfileReadCycles();
     Render_Clear(&Target, COLOUR_SKY);
-    FrameProfile.Clear =
-        WindowWasher_ProfileElapsed(StageStartCycles);
 
-    StageStartCycles = WindowWasher_ProfileReadCycles();
     WindowWasher_DrawBackground(&Target, &WindowWasher_Game);
-    FrameProfile.Background =
-        WindowWasher_ProfileElapsed(StageStartCycles);
-
-    StageStartCycles = WindowWasher_ProfileReadCycles();
-    WindowWasher_DrawBuilding(
-        &Target,
-        &WindowWasher_Game,
-        &FrameProfile);
-    FrameProfile.Building =
-        WindowWasher_ProfileElapsed(StageStartCycles);
-
-    StageStartCycles = WindowWasher_ProfileReadCycles();
+    WindowWasher_DrawBuilding(&Target, &WindowWasher_Game);
     WindowWasher_DrawHotelEntrance(&Target, &WindowWasher_Game);
-    FrameProfile.HotelEntrance =
-        WindowWasher_ProfileElapsed(StageStartCycles);
-
-    StageStartCycles = WindowWasher_ProfileReadCycles();
     WindowWasher_DrawBalconies(&Target, &WindowWasher_Game);
-    FrameProfile.Balconies =
-        WindowWasher_ProfileElapsed(StageStartCycles);
-
-    StageStartCycles = WindowWasher_ProfileReadCycles();
     WindowWasher_DrawPlatform(&Target, &Platform);
-    FrameProfile.Platform =
-        WindowWasher_ProfileElapsed(StageStartCycles);
+    WindowWasher_DrawWasher(&Target, &Platform, &WindowWasher_Figure, WindowWasher_Game.Crashed);
+    WindowWasher_DrawScore(&Target, &WindowWasher_Game);
 
-    StageStartCycles = WindowWasher_ProfileReadCycles();
-    WindowWasher_DrawWasher(
-        &Target,
-        &Platform,
-        &WindowWasher_Figure,
-        WindowWasher_Game.Crashed);
-    FrameProfile.Washer =
-        WindowWasher_ProfileElapsed(StageStartCycles);
-
-    StageStartCycles = WindowWasher_ProfileReadCycles();
-    Display_PresentFrame(Frame);
-    FrameProfile.PresentFrame =
-        WindowWasher_ProfileElapsed(StageStartCycles);
-
-    FrameProfile.TotalFrame =
-        WindowWasher_ProfileElapsed(TotalStartCycles);
-
-    /* Publish one internally consistent completed-frame snapshot. */
-    WindowWasher_Profile = FrameProfile;
+    (void)Display_PresentFrame(Frame);
 }
 
 void WindowWasher_Pause(void)

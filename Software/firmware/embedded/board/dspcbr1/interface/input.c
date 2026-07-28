@@ -1,13 +1,16 @@
 /**
  * @file input.c
- * @brief Embedded stub implementation of the generic input-control contract.
+ * @brief Embedded implementation of the generic input-control contract.
  *
- * This backend exposes the same logical controls as the Windows implementation
- * but returns fixed values until the real slider, button, and battery drivers
- * are connected.
+ * This backend reads the two board-mounted analog sliders through the
+ * board-assigned ADC inputs. Button and battery inputs remain fixed until
+ * their board drivers are connected.
  */
 
 #include "input.h"
+
+#include "adc.h"
+#include "board.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -29,8 +32,6 @@
 
 #define EMBEDDED_INPUT_SLIDER_MINIMUM           (0)
 #define EMBEDDED_INPUT_SLIDER_MAXIMUM           (65535)
-#define EMBEDDED_INPUT_SLIDER_CENTRE            \
-    ((EMBEDDED_INPUT_SLIDER_MAXIMUM + 1) / 2)
 
 #define EMBEDDED_INPUT_BUTTON_RELEASED           (0)
 #define EMBEDDED_INPUT_BUTTON_PRESSED            (1)
@@ -43,6 +44,8 @@
 /* Private state                                                              */
 /* -------------------------------------------------------------------------- */
 
+static const ADC_InputTypeDef *Embedded_POTAInput;
+static const ADC_InputTypeDef *Embedded_POTBInput;
 static bool Embedded_InputInitialised;
 
 /* -------------------------------------------------------------------------- */
@@ -89,6 +92,24 @@ static const Input_InfoTypeDef Embedded_InputInfo[] =
 
 bool Input_Init(void)
 {
+    if(Embedded_InputInitialised)
+    {
+        return true;
+    }
+
+    Embedded_POTAInput = Board_GetPOTAInput();
+    Embedded_POTBInput = Board_GetPOTBInput();
+
+    if((Embedded_POTAInput == NULL) || (Embedded_POTBInput == NULL))
+    {
+        return false;
+    }
+
+    if(!ADC_IsAssigned(Embedded_POTAInput) || !ADC_IsAssigned(Embedded_POTBInput))
+    {
+        return false;
+    }
+
     Embedded_InputInitialised = true;
 
     return true;
@@ -96,14 +117,12 @@ bool Input_Init(void)
 
 uint8_t Input_Get_Count(void)
 {
-    return (uint8_t)(
-        sizeof(Embedded_InputInfo) /
-        sizeof(Embedded_InputInfo[0]));
+    return (uint8_t)(sizeof(Embedded_InputInfo) / sizeof(Embedded_InputInfo[0]));
 }
 
 bool Input_Get_Info(uint8_t Index, Input_InfoTypeDef *Info)
 {
-    if ((Info == NULL) || (Index >= Input_Get_Count()))
+    if((Info == NULL) || (Index >= Input_Get_Count()))
     {
         return false;
     }
@@ -115,16 +134,31 @@ bool Input_Get_Info(uint8_t Index, Input_InfoTypeDef *Info)
 
 bool Input_Get_Value(Input_NumberTypeDef Number, int32_t *Value)
 {
-    if (!Embedded_InputInitialised || (Value == NULL))
+    ADC_ValueTypeDef ADCValue;
+
+    if(!Embedded_InputInitialised || (Value == NULL))
     {
         return false;
     }
 
-    switch (Number)
+    switch(Number)
     {
         case EMBEDDED_INPUT_LEFT_SLIDER_NUMBER:
+            if(ADC_Read(Embedded_POTAInput, &ADCValue) != ADC_RESULT_OK)
+            {
+                return false;
+            }
+
+            *Value = (int32_t)ADCValue;
+            return true;
+
         case EMBEDDED_INPUT_RIGHT_SLIDER_NUMBER:
-            *Value = EMBEDDED_INPUT_SLIDER_CENTRE;
+            if(ADC_Read(Embedded_POTBInput, &ADCValue) != ADC_RESULT_OK)
+            {
+                return false;
+            }
+
+            *Value = (int32_t)ADCValue;
             return true;
 
         case EMBEDDED_INPUT_PRIMARY_BUTTON_NUMBER:

@@ -2,7 +2,7 @@
  * @file render.h
  * @brief Stateless 2D drawing contract for generic CLUT8 pixel targets.
  *
- * Render functions only write into the target supplied by their caller.  They
+ * Render functions only write into the target supplied by their caller. They
  * never allocate, acquire, retain, or present a framebuffer.
  */
 
@@ -12,32 +12,35 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "font.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define RENDER_WIDTH    (800U)
-#define RENDER_HEIGHT   (480U)
-#define RENDER_POLYGON_MAX_VERTEX_COUNT    (32U)
+#define RENDER_WIDTH                         (800U)
+#define RENDER_HEIGHT                        (480U)
+#define RENDER_POLYGON_MAX_VERTEX_COUNT      (32U)
+#define RENDER_ANGLE_TENTHS_PER_DEGREE       (10)
 
-/** One CLUT8 palette index. */
+/**
+ * @brief One CLUT8 palette index.
+ */
 typedef uint8_t Render_ColourIndexTypeDef;
 
 /**
  * @brief A signed clockwise rotation in tenths of a degree.
  *
- * Zero is upright.  Positive angles rotate clockwise in the render target's
+ * Zero is upright. Positive angles rotate clockwise in the render target's
  * coordinate system, where Y increases downward.
  */
 typedef int16_t Render_AngleTypeDef;
 
-#define RENDER_ANGLE_TENTHS_PER_DEGREE    (10)
-
 /**
  * @brief A writable row-major CLUT8 render target.
  *
- * Render functions require an 800 by 480 target.  StridePixels may be larger
- * than Width when the caller's backing buffer has row padding.
+ * Render functions require an 800 by 480 logical target. StridePixels may be
+ * larger than Width when the caller's backing buffer has row padding.
  */
 typedef struct
 {
@@ -47,7 +50,9 @@ typedef struct
     uint32_t StridePixels;
 } Render_TargetTypeDef;
 
-/** A logical rectangle in the 800 by 480 render space. */
+/**
+ * @brief A logical rectangle in the 800 by 480 render space.
+ */
 typedef struct
 {
     int16_t X;
@@ -56,14 +61,18 @@ typedef struct
     uint16_t Height;
 } Render_RectTypeDef;
 
-/** One logical vertex in the 800 by 480 render space. */
+/**
+ * @brief One logical vertex in the 800 by 480 render space.
+ */
 typedef struct
 {
     int16_t X;
     int16_t Y;
 } Render_PointTypeDef;
 
-/** A rectangular region within a source image. */
+/**
+ * @brief A rectangular region within a source image.
+ */
 typedef struct
 {
     uint16_t X;
@@ -75,8 +84,8 @@ typedef struct
 /**
  * @brief An upright, row-major CLUT8 image.
  *
- * Pixels are palette indices.  When HasTransparentColour is true, pixels
- * equal to TransparentColour are not written to the target frame.
+ * Pixels are palette indices. When HasTransparentColour is true, pixels equal
+ * to TransparentColour are not written to the target frame.
  */
 typedef struct
 {
@@ -89,26 +98,9 @@ typedef struct
 } Render_ImageTypeDef;
 
 /**
- * @brief A fixed-cell, one-bit source font.
- *
- * GlyphBits contains GlyphCount consecutive glyphs.  Each glyph occupies
- * GlyphStrideBytes bytes.  Rows are RowStrideBytes bytes apart and bits are
- * read most-significant-bit first, so the leftmost pixel is bit 7 of the
- * first byte.  Character codes start at FirstCharacter.
- */
-typedef struct
-{
-    const uint8_t *GlyphBits;
-    uint16_t GlyphCount;
-    uint16_t GlyphStrideBytes;
-    uint8_t FirstCharacter;
-    uint8_t GlyphWidth;
-    uint8_t GlyphHeight;
-    uint8_t RowStrideBytes;
-} Render_FontTypeDef;
-
-/**
  * @brief Restrict subsequent drawing commands to a logical rectangular area.
+ *
+ * Passing NULL restores clipping to the complete render area.
  */
 void Render_SetClipRect(const Render_RectTypeDef *Rect);
 
@@ -120,58 +112,96 @@ void Render_ResetClipRect(void);
 /**
  * @brief Fill the entire provided target with one palette index.
  *
- * @p Target must be a writable 800 by 480 CLUT8 render target.
+ * @param Target Writable CLUT8 render target.
+ * @param Colour Palette index written to every pixel.
  */
 void Render_Clear(Render_TargetTypeDef *Target, Render_ColourIndexTypeDef Colour);
 
 /**
- * @brief Fill a logical rectangle in @p Target with one palette index.
+ * @brief Fill a logical rectangle with one palette index.
  *
  * Pixels outside the current clipping region are not written.
+ *
+ * @param Target Writable CLUT8 render target.
+ * @param Rect Logical rectangle to fill.
+ * @param Colour Palette index written to the rectangle.
  */
 void Render_FillRect(Render_TargetTypeDef *Target, const Render_RectTypeDef *Rect, Render_ColourIndexTypeDef Colour);
 
 /**
  * @brief Fill a simple closed polygon with one palette index.
  *
- * @p Points must contain three to RENDER_POLYGON_MAX_VERTEX_COUNT vertices in
- * perimeter order.  Concave polygons are supported; self-intersecting
- * polygons are invalid.  Pixels outside the current clipping region are not
- * written.
+ * Points must contain between three and
+ * RENDER_POLYGON_MAX_VERTEX_COUNT vertices in perimeter order. Concave
+ * polygons are supported. Self-intersecting polygons are invalid.
+ *
+ * @param Target Writable CLUT8 render target.
+ * @param Points Polygon vertices in perimeter order.
+ * @param PointCount Number of supplied vertices.
+ * @param Colour Palette index written inside the polygon.
  *
  * @return true when the polygon arguments were accepted; otherwise false.
  */
 bool Render_DrawPolygon(Render_TargetTypeDef *Target, const Render_PointTypeDef *Points, uint8_t PointCount, Render_ColourIndexTypeDef Colour);
 
 /**
- * @brief Draw a complete image in @p Target with its top-left corner at @p X, @p Y.
+ * @brief Draw a complete image with its top-left corner at X, Y.
+ *
+ * @param Target Writable CLUT8 render target.
+ * @param Image Source CLUT8 image.
+ * @param X Logical destination X coordinate.
+ * @param Y Logical destination Y coordinate.
  */
 void Render_DrawImage(Render_TargetTypeDef *Target, const Render_ImageTypeDef *Image, int16_t X, int16_t Y);
 
 /**
- * @brief Draw an image rotated around its geometric centre.
+ * @brief Draw a rectangular region from an image at X, Y.
  *
- * The source remains upright and row-major in memory.  @p CentreX and
- * @p CentreY select the image centre in the render target.  Pixels use
- * nearest-neighbour sampling; transparent source pixels remain unwritten.
- *
- * This operation is intended for small dynamic sprites such as vehicles.  It
- * costs substantially more than an unrotated image blit and is unsuitable for
- * full-screen backgrounds.
- */
-void Render_DrawImageRotated(Render_TargetTypeDef *Target, const Render_ImageTypeDef *Image, int16_t CentreX, int16_t CentreY, Render_AngleTypeDef Angle);
-
-/**
- * @brief Draw a rectangular region from an image in @p Target at @p X, @p Y.
+ * @param Target Writable CLUT8 render target.
+ * @param Image Source CLUT8 image.
+ * @param SourceRegion Region within the source image.
+ * @param X Logical destination X coordinate.
+ * @param Y Logical destination Y coordinate.
  */
 void Render_DrawImageRegion(Render_TargetTypeDef *Target, const Render_ImageTypeDef *Image, const Render_ImageRegionTypeDef *SourceRegion, int16_t X, int16_t Y);
 
 /**
- * @brief Draw a byte string in @p Target using a fixed-cell shared font asset.
+ * @brief Draw an image rotated around its geometric centre.
  *
- * Bytes outside the font's declared character range are skipped.
+ * The source remains upright and row-major in memory. CentreX and CentreY
+ * select the image centre in the render target. Pixels use nearest-neighbour
+ * sampling, and transparent source pixels remain unwritten.
+ *
+ * This operation is intended for small dynamic sprites. It costs
+ * substantially more than an unrotated image blit and is unsuitable for
+ * full-screen backgrounds.
+ *
+ * @param Target Writable CLUT8 render target.
+ * @param Image Source CLUT8 image.
+ * @param CentreX Logical X coordinate of the image centre.
+ * @param CentreY Logical Y coordinate of the image centre.
+ * @param Angle Clockwise rotation in tenths of a degree.
  */
-void Render_DrawText(Render_TargetTypeDef *Target, const Render_FontTypeDef *Font, const char *Text, int16_t X, int16_t Y, Render_ColourIndexTypeDef Colour);
+void Render_DrawImageRotated(Render_TargetTypeDef *Target, const Render_ImageTypeDef *Image, int16_t CentreX, int16_t CentreY, Render_AngleTypeDef Angle);
+
+/**
+ * @brief Draw a string using a packed proportional 1-bit font.
+ *
+ * X and Y identify the top-left corner of the first text line. Glyph metrics
+ * are interpreted relative to the font baseline. Newline characters move the
+ * cursor to the beginning of the next line. Carriage returns are ignored.
+ *
+ * Unsupported characters are replaced with '?' when that glyph exists in the
+ * font.
+ *
+ * @param Target Writable CLUT8 render target.
+ * @param FontAsset Packed bitmap-font asset.
+ * @param Text Null-terminated byte string.
+ * @param X Logical X coordinate of the first line.
+ * @param Y Logical Y coordinate of the first line.
+ * @param Colour Palette index used for set glyph pixels.
+ */
+void Render_DrawText(Render_TargetTypeDef *Target, const Font *FontAsset, const char *Text, int16_t X, int16_t Y, Render_ColourIndexTypeDef Colour);
 
 #ifdef __cplusplus
 }
