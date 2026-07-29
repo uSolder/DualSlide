@@ -16,4 +16,5 @@ target_link_libraries(DualSlideWindowWasher
         DualSlideShared
         DualSlideEmbeddedOptions
         ds_assets
+        DualSlideAppManager
 )

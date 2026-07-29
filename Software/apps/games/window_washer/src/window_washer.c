@@ -5,6 +5,7 @@
 
 #include "window_washer.h"
 
+#include "app_manager.h"
 #include "audio.h"
 #include "display.h"
 #include "input.h"
@@ -207,10 +208,71 @@ static const Render_ImageTypeDef WindowWasher_WasherImage =
     .TransparentColour = COLOUR_SKY
 };
 
+static const Display_ColourTypeDef WindowWasher_Palette[] =
+{
+    0x00A9DDF5U,
+    0x00CBD1D0U,
+    0x0068767CU,
+    0x00AEDBE9U,
+    0x003D4C54U,
+    0x00F4CF6AU,
+    0x005F6F7AU,
+    0x00732F3EU,
+    0x002E5263U,
+    0x0049B8B2U,
+    0x002D76B3U,
+    0x00E34747U,
+    0x00F2B441U,
+    0x00F0B486U,
+    0x001B3F59U,
+    0x004C91BEU,
+    0x00C94343U,
+    0x00F37B70U,
+    0x008A5A34U,
+    0x00FFF4A3U,
+    0x00A69B8BU,
+    0x00EEE6D6U,
+    0x00B78A64U,
+    0x0055646AU,
+    0x00273743U,
+    0x004B6475U,
+    0x00F6CB71U,
+    0x002C4250U,
+    0x006F99A8U,
+    0x00EF78A9U,
+    0x00DDF1FAU,
+    0x0088B8CBU,
+    0x006E98ACU,
+    0x00BCD9E5U,
+    0x00F14A48U,
+    0x002E3C45U,
+    0x006F838DU,
+    0x00AAB4B8U,
+    0x00D4DEE0U,
+    0x00F28C36U,
+    0x00C4E9EDU,
+    0x00F2E8D5U,
+    0x00C77D60U,
+    0x0026313AU,
+    0x00D9E1E3U,
+    0x005BB6BCU,
+    0x0029343BU,
+    0x00C9652CU,
+    0x00F3A34AU,
+    0x002F5D38U,
+    0x004F8A4CU,
+    0x0079B866U,
+    0x00FFFFFFU,
+    0x00182128U
+};
+
+_Static_assert((sizeof(WindowWasher_Palette) / sizeof(WindowWasher_Palette[0])) <= APP_MANAGER_SPLASH_PALETTE_ENTRY_COUNT, "Window Washer splash palette exceeds the reserved application palette range.");
+
 static WindowWasher_InputTypeDef WindowWasher_Input;
 static WindowWasher_GameTypeDef WindowWasher_Game;
 static WindowWasher_FigureTypeDef WindowWasher_Figure;
 static uint32_t WindowWasher_PendingDeltaTimeMilliseconds;
+static uint64_t WindowWasher_SplashElapsedMilliseconds;
 static uint32_t WindowWasher_HighScore;
 static uint8_t WindowWasher_ScorePulseFrames;
 static bool WindowWasher_Initialized;
@@ -1665,6 +1727,166 @@ static uint16_t WindowWasher_MeasureTextWidth(const Font *FontAsset, const char 
     return (Width > UINT16_MAX) ? UINT16_MAX : (uint16_t)Width;
 }
 
+
+/**
+ * @brief Draw the Window Washer title on a hanging scoreboard-style plaque.
+ */
+static void WindowWasher_DrawSplashPlaque(Render_TargetTypeDef *Target, const Render_RectTypeDef *Bounds, uint64_t ElapsedMilliseconds)
+{
+    static const char Title[] = "WINDOW WASHER";
+    const uint16_t TextWidth = WindowWasher_MeasureTextWidth(&OpenSans36, Title);
+    const uint16_t PlaqueWidth = (uint16_t)(TextWidth + 62U);
+    const uint16_t PlaqueHeight = 64U;
+    const int16_t PlaqueX = (int16_t)(Bounds->X + (((int16_t)Bounds->Width - (int16_t)PlaqueWidth) / 2));
+    const int16_t PlaqueY = (int16_t)(Bounds->Y + 62);
+    const int16_t TextX = (int16_t)(PlaqueX + (((int16_t)PlaqueWidth - (int16_t)TextWidth) / 2));
+    const int16_t TextY = (int16_t)(PlaqueY + 10);
+    const int16_t LeftHangerX = (int16_t)(PlaqueX + 35);
+    const int16_t RightHangerX = (int16_t)(PlaqueX + (int16_t)PlaqueWidth - 41);
+    const int16_t HangerTopY = (int16_t)(Bounds->Y + 5);
+    const uint16_t HangerHeight = (uint16_t)(PlaqueY - HangerTopY);
+
+    const Render_RectTypeDef LeftHangerShadow =
+    {
+        (int16_t)(LeftHangerX + 2),
+        HangerTopY,
+        5U,
+        HangerHeight
+    };
+
+    const Render_RectTypeDef RightHangerShadow =
+    {
+        (int16_t)(RightHangerX + 2),
+        HangerTopY,
+        5U,
+        HangerHeight
+    };
+
+    const Render_RectTypeDef LeftHanger =
+    {
+        LeftHangerX,
+        HangerTopY,
+        4U,
+        HangerHeight
+    };
+
+    const Render_RectTypeDef RightHanger =
+    {
+        RightHangerX,
+        HangerTopY,
+        4U,
+        HangerHeight
+    };
+
+    const Render_RectTypeDef LeftMount =
+    {
+        (int16_t)(LeftHangerX - 5),
+        (int16_t)(PlaqueY - 5),
+        14U,
+        11U
+    };
+
+    const Render_RectTypeDef RightMount =
+    {
+        (int16_t)(RightHangerX - 5),
+        (int16_t)(PlaqueY - 5),
+        14U,
+        11U
+    };
+
+    const Render_RectTypeDef Shadow =
+    {
+        (int16_t)(PlaqueX + 4),
+        (int16_t)(PlaqueY + 5),
+        PlaqueWidth,
+        PlaqueHeight
+    };
+
+    const Render_RectTypeDef OuterFrame =
+    {
+        PlaqueX,
+        PlaqueY,
+        PlaqueWidth,
+        PlaqueHeight
+    };
+
+    const Render_RectTypeDef InnerPanel =
+    {
+        (int16_t)(PlaqueX + 4),
+        (int16_t)(PlaqueY + 4),
+        PlaqueWidth - 8U,
+        PlaqueHeight - 8U
+    };
+
+    const Render_RectTypeDef TopHighlight =
+    {
+        (int16_t)(PlaqueX + 8),
+        (int16_t)(PlaqueY + 7),
+        PlaqueWidth - 16U,
+        3U
+    };
+
+    const Render_RectTypeDef BottomAccent =
+    {
+        (int16_t)(PlaqueX + 12),
+        (int16_t)(PlaqueY + (int16_t)PlaqueHeight - 8),
+        PlaqueWidth - 24U,
+        2U
+    };
+
+    Render_FillRect(Target, &LeftHangerShadow, COLOUR_SCORE_SHADOW);
+    Render_FillRect(Target, &RightHangerShadow, COLOUR_SCORE_SHADOW);
+    Render_FillRect(Target, &LeftHanger, COLOUR_PLATFORM_EDGE);
+    Render_FillRect(Target, &RightHanger, COLOUR_PLATFORM_EDGE);
+
+    Render_FillRect(Target, &Shadow, COLOUR_SCORE_SHADOW);
+    Render_FillRect(Target, &OuterFrame, COLOUR_SCORE_SHADOW);
+    Render_FillRect(Target, &InnerPanel, COLOUR_TRACK_STEEL);
+    Render_FillRect(Target, &TopHighlight, COLOUR_BUCKET_HIGHLIGHT);
+    Render_FillRect(Target, &BottomAccent, COLOUR_PLATFORM_EDGE);
+
+    Render_FillRect(Target, &LeftMount, COLOUR_SCORE_SHADOW);
+    Render_FillRect(Target, &RightMount, COLOUR_SCORE_SHADOW);
+
+    {
+        const bool OddLightsOn = ((ElapsedMilliseconds / 1000ULL) & 1ULL) != 0ULL;
+
+        for(uint16_t LightIndex = 0U; LightIndex < 7U; LightIndex++)
+        {
+            const bool LightOn = ((LightIndex & 1U) != 0U) == OddLightsOn;
+            const int16_t LightX = (int16_t)(PlaqueX + 16 + ((int16_t)LightIndex * ((int16_t)(PlaqueWidth - 40U) / 6)));
+            const Render_RectTypeDef LightShadow =
+            {
+                (int16_t)(LightX + 2),
+                (int16_t)(PlaqueY + 3),
+                9U,
+                9U
+            };
+            const Render_RectTypeDef LightHousing =
+            {
+                LightX,
+                (int16_t)(PlaqueY + 1),
+                9U,
+                9U
+            };
+            const Render_RectTypeDef LightCore =
+            {
+                (int16_t)(LightX + 2),
+                (int16_t)(PlaqueY + 3),
+                5U,
+                5U
+            };
+
+            Render_FillRect(Target, &LightShadow, COLOUR_SCORE_SHADOW);
+            Render_FillRect(Target, &LightHousing, COLOUR_PLATFORM_EDGE);
+            Render_FillRect(Target, &LightCore, LightOn ? COLOUR_SPARKLE : COLOUR_TRACK_STEEL);
+        }
+    }
+
+    Render_DrawText(Target, &OpenSans36, Title, (int16_t)(TextX + 2), (int16_t)(TextY + 2), COLOUR_SCORE_SHADOW);
+    Render_DrawText(Target, &OpenSans36, Title, TextX, TextY, COLOUR_SCORE_TEXT);
+}
+
 static void WindowWasher_DrawScore(Render_TargetTypeDef *Target, const WindowWasher_GameTypeDef *Game)
 {
     static const char HighScorePrefix[] = "HI ";
@@ -1781,64 +2003,6 @@ static void WindowWasher_DrawScore(Render_TargetTypeDef *Target, const WindowWas
 
 bool WindowWasher_Init(void)
 {
-    static const Display_ColourTypeDef Palette[] =
-    {
-        0x00A9DDF5U,
-        0x00CBD1D0U,
-        0x0068767CU,
-        0x00AEDBE9U,
-        0x003D4C54U,
-        0x00F4CF6AU,
-        0x005F6F7AU,
-        0x00732F3EU,
-        0x002E5263U,
-        0x0049B8B2U,
-        0x002D76B3U,
-        0x00E34747U,
-        0x00F2B441U,
-        0x00F0B486U,
-        0x001B3F59U,
-        0x004C91BEU,
-        0x00C94343U,
-        0x00F37B70U,
-        0x008A5A34U,
-        0x00FFF4A3U,
-        0x00A69B8BU,
-        0x00EEE6D6U,
-        0x00B78A64U,
-        0x0055646AU,
-        0x00273743U,
-        0x004B6475U,
-        0x00F6CB71U,
-        0x002C4250U,
-        0x006F99A8U,
-        0x00EF78A9U,
-        0x00DDF1FAU,
-        0x0088B8CBU,
-        0x006E98ACU,
-        0x00BCD9E5U,
-        0x00F14A48U,
-        0x002E3C45U,
-        0x006F838DU,
-        0x00AAB4B8U,
-        0x00D4DEE0U,
-        0x00F28C36U,
-        0x00C4E9EDU,
-        0x00F2E8D5U,
-        0x00C77D60U,
-        0x0026313AU,
-        0x00D9E1E3U,
-        0x005BB6BCU,
-        0x0029343BU,
-        0x00C9652CU,
-        0x00F3A34AU,
-        0x002F5D38U,
-        0x004F8A4CU,
-        0x0079B866U,
-        0x00FFFFFFU,
-        0x00182128U
-    };
-
     WindowWasher_Input.LeftSlider = 0;
     WindowWasher_Input.RightSlider = 0;
     WindowWasher_Game.ElapsedMilliseconds = 0U;
@@ -1848,11 +2012,6 @@ bool WindowWasher_Init(void)
 
     WindowWasher_ResetGame(&WindowWasher_Game, &WindowWasher_Figure);
 
-    if(!Display_SetPalette(0U, Palette, (uint16_t)(sizeof(Palette) / sizeof(Palette[0]))))
-    {
-        WindowWasher_Initialized = false;
-        return false;
-    }
 
     WindowWasher_BuildWasherImage();
     WindowWasher_Initialized = true;
@@ -1881,6 +2040,74 @@ void WindowWasher_Update(uint32_t DeltaTimeMilliseconds)
     }
 
     WindowWasher_PendingDeltaTimeMilliseconds += DeltaTimeMilliseconds;
+}
+
+bool WindowWasher_GetSplashScreenPalette(Display_ColourTypeDef *Palette)
+{
+    if(Palette == NULL)
+    {
+        return false;
+    }
+
+    for(uint16_t PaletteIndex = 0U; PaletteIndex < APP_MANAGER_SPLASH_PALETTE_ENTRY_COUNT; PaletteIndex++)
+    {
+        Palette[PaletteIndex] = 0U;
+    }
+
+    for(uint16_t PaletteIndex = 0U; PaletteIndex < (uint16_t)(sizeof(WindowWasher_Palette) / sizeof(WindowWasher_Palette[0])); PaletteIndex++)
+    {
+        Palette[PaletteIndex] = WindowWasher_Palette[PaletteIndex];
+    }
+
+    return true;
+}
+
+bool WindowWasher_DrawSplashScreen(Render_TargetTypeDef *Target)
+{
+    WindowWasher_GameTypeDef SplashGame = { 0 };
+    WindowWasher_PlatformTypeDef SplashPlatform;
+    WindowWasher_FigureTypeDef SplashFigure = { 0 };
+    const Render_RectTypeDef SplashBounds =
+    {
+        APP_MANAGER_SPLASH_SCREEN_X,
+        APP_MANAGER_SPLASH_SCREEN_Y,
+        APP_MANAGER_SPLASH_SCREEN_WIDTH,
+        APP_MANAGER_SPLASH_SCREEN_HEIGHT
+    };
+
+    if((Target == NULL) || (Target->Pixels == NULL))
+    {
+        return false;
+    }
+
+    WindowWasher_SplashElapsedMilliseconds += 33ULL;
+
+    SplashGame.BuildingScroll = 184;
+    SplashGame.LayoutSeed = 0x57A5C3E1U;
+    SplashGame.ElapsedMilliseconds = WindowWasher_SplashElapsedMilliseconds;
+    SplashGame.Score = 0U;
+    SplashGame.Crashed = false;
+
+    SplashPlatform.LeftY = 318;
+    SplashPlatform.RightY = 292;
+
+    SplashFigure.PositionX = ((int32_t)RENDER_WIDTH / 2) * FIGURE_FIXED_SCALE;
+    SplashFigure.VelocityX = 0;
+    SplashFigure.PositionY = 0;
+    SplashFigure.VelocityY = 0;
+    SplashFigure.OffscreenMilliseconds = 0U;
+
+    WindowWasher_BuildWasherImage();
+
+    Render_FillRect(Target, &SplashBounds, COLOUR_SKY);
+    WindowWasher_DrawBackgroundLayer(Target, &SplashGame);
+    WindowWasher_DrawBuilding(Target, &SplashGame);
+    WindowWasher_DrawBalconies(Target, &SplashGame);
+    WindowWasher_DrawPlatform(Target, &SplashPlatform);
+    WindowWasher_DrawWasher(Target, &SplashPlatform, &SplashFigure, false);
+    WindowWasher_DrawSplashPlaque(Target, &SplashBounds, WindowWasher_SplashElapsedMilliseconds);
+
+    return true;
 }
 
 void WindowWasher_Render(void)

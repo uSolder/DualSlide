@@ -1,7 +1,7 @@
 add_library(DualSlideEmbeddedOptions INTERFACE)
 
 target_compile_options(DualSlideEmbeddedOptions INTERFACE
-    -O2
+    -O0 
     -g3
 
     -mcpu=cortex-m7
@@ -64,6 +64,9 @@ target_link_options(DualSlideFirmware PRIVATE
     -mfloat-abi=hard
 
     "-T${DS_LINKER_SCRIPT}"
+    
+    -Wl,-Map=${CMAKE_BINARY_DIR}/DualSlide.map
+    -Wl,--print-memory-usage
 
     -Wl,--gc-sections
     "-Wl,-Map=${CMAKE_CURRENT_BINARY_DIR}/DualSlideFirmware.map"
