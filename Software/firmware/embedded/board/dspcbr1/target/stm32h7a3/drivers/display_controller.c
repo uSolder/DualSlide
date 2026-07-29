@@ -96,6 +96,7 @@ static uint32_t DisplayController_GetPixelFormatEncoding(DisplayController_Pixel
 static uint32_t DisplayController_GetBytesPerPixel(DisplayController_PixelFormat pixel_format);
 static DisplayController_Result DisplayController_ReloadImmediate(void);
 static DisplayController_Result DisplayController_ReloadVerticalBlanking(DisplayController_State *state);
+static void DisplayController_WaitForVerticalBlank(const DisplayController_State *state);
 static void DisplayController_ConfigureInterrupts(const DisplayController_Handle *controller);
 static void DisplayController_DisableInterrupts(void);
 
@@ -768,6 +769,27 @@ static DisplayController_Result DisplayController_ReloadVerticalBlanking(Display
 }
 
 /**
+ * @brief Wait for the start of the next vertical-front-porch interval.
+ *
+ * LTDC palette-entry writes are not shadow-register writes. They take effect
+ * as CLUTWR is written, so performing them during active scanout can expose a
+ * partially updated palette for one scan line. The LTDC line interrupt marks
+ * the beginning of vertical blanking, which provides a safe interval for the
+ * short CLUT update sequence.
+ *
+ * @param state Controller state with an enabled LTDC instance.
+ */
+static void DisplayController_WaitForVerticalBlank(const DisplayController_State *state)
+{
+    const uint32_t observed_vertical_blank_count = state->vertical_blank_count;
+
+    while(state->vertical_blank_count == observed_vertical_blank_count)
+    {
+        __WFI();
+    }
+}
+
+/**
  * @brief Configure the LTDC line and reload interrupts.
  *
  * The line interrupt is placed on the first line following the active image,
@@ -1003,6 +1025,16 @@ DisplayController_Result DisplayController_SetPalette(DisplayController_Handle *
     if (state->layer.pixel_format != DISPLAY_CONTROLLER_PIXEL_FORMAT_INDEXED_8_BIT)
     {
         return DISPLAY_CONTROLLER_RESULT_UNSUPPORTED;
+    }
+
+    /*
+     * CLUTWR updates are immediate, unlike the framebuffer-address shadow
+     * register.  Wait for vertical blank before disabling and reprogramming
+     * the CLUT so a scanline can never see a partially updated palette.
+     */
+    if(state->enabled)
+    {
+        DisplayController_WaitForVerticalBlank(state);
     }
 
     LTDC_Layer1->CR &= ~LTDC_LxCR_CLUTEN;

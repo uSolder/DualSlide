@@ -32,7 +32,16 @@
 
 #define LAUNCHER_BAR_COUNT                      (6U)
 #define LAUNCHER_BAR_STAGGER_MS                 (140U)
-#define LAUNCHER_BAR_TRAVEL_MS                  (700U)
+#define LAUNCHER_BAR_TRAVEL_MS                  (500U)
+
+/* Palette changes occur only while the closing CRT shutters cover the preview. */
+#define LAUNCHER_PREVIEW_SHUTTER_TRAVEL_MS       (120U)
+#define LAUNCHER_PREVIEW_SHUTTER_HOLD_MS         (50U)
+
+#define LAUNCHER_SCREEN_OPENING_X                (60)
+#define LAUNCHER_SCREEN_OPENING_Y                (60)
+#define LAUNCHER_SCREEN_OPENING_WIDTH            (680U)
+#define LAUNCHER_SCREEN_OPENING_HEIGHT           (360U)
 
 #define INPUT_LEFT_SLIDER_NUMBER      ((Input_NumberTypeDef)1U)
 #define INPUT_RIGHT_SLIDER_NUMBER     ((Input_NumberTypeDef)2U)
@@ -45,20 +54,29 @@
  */
 #define LAUNCHER_SLIDER_MINIMUM                  (0)
 #define LAUNCHER_SLIDER_MAXIMUM                  (65535)
-#define LAUNCHER_SLIDER_TOP_TRIGGER              (2500)
-#define LAUNCHER_SLIDER_BOTTOM_TRIGGER           (63035)
-#define LAUNCHER_SLIDER_TOP_RELEASE              (9000)
-#define LAUNCHER_SLIDER_BOTTOM_RELEASE           (56535)
+#define LAUNCHER_SLIDER_TOP_TRIGGER              (1000)
+#define LAUNCHER_SLIDER_BOTTOM_TRIGGER           (65535-1000)
+#define LAUNCHER_SLIDER_TOP_RELEASE              (1500)
+#define LAUNCHER_SLIDER_BOTTOM_RELEASE           (65535-1500)
 
 /*
- * Vertical pixel centres of the two molded TV buttons. The slider end
- * effector travels between these points.
+ * The effector stops against the pressure plates rather than passing through
+ * them. Button-centre coordinates are separate from the travel limits so the
+ * visual mechanism remains mechanically believable.
  */
-#define SLIDER_TOP_LIMIT                         (112)
-#define SLIDER_BOTTOM_LIMIT                      (368)
+#define SLIDER_TOP_BUTTON_CENTER                 (45)
+#define SLIDER_BOTTOM_BUTTON_CENTER              (480-45)
+#define SLIDER_TOP_LIMIT                         (60)
+#define SLIDER_BOTTOM_LIMIT                      (480-60)
+
+#define LAUNCHER_SELECTOR_SLOT_TOP_Y    (20)
+#define LAUNCHER_SELECTOR_SLOT_BOTTOM_Y (480-20)
 
 #define SLIDER_BUTTON_CAP_TRAVEL                 (8)
-#define SLIDER_BUTTON_CLICK_DISTANCE             (18)
+#define SLIDER_EFFECTOR_TOP_EXTENT               (10)
+#define SLIDER_EFFECTOR_BOTTOM_EXTENT            (10)
+#define SLIDER_TOP_BUTTON_CONTACT_Y              (SLIDER_TOP_BUTTON_CENTER + 10)
+#define SLIDER_BOTTOM_BUTTON_CONTACT_Y           (SLIDER_BOTTOM_BUTTON_CENTER - 10)
 
 typedef enum
 {
@@ -69,6 +87,15 @@ typedef enum
     LAUNCHER_PHASE_MENU
 } Launcher_PhaseTypeDef;
 
+typedef enum
+{
+    LAUNCHER_PREVIEW_TRANSITION_NONE = 0,
+    LAUNCHER_PREVIEW_TRANSITION_CLOSE,
+    LAUNCHER_PREVIEW_TRANSITION_COVERED,
+    LAUNCHER_PREVIEW_TRANSITION_APPLY_PALETTE,
+    LAUNCHER_PREVIEW_TRANSITION_OPEN
+} Launcher_PreviewTransitionTypeDef;
+
 typedef struct
 {
     uint32_t ElapsedMilliseconds;
@@ -76,6 +103,8 @@ typedef struct
     int SelectedApplication;
     int16_t SliderEndEffectorY;
     int SplashPaletteApplication;
+    Launcher_PreviewTransitionTypeDef PreviewTransition;
+    uint32_t PreviewTransitionElapsedMilliseconds;
     bool LeftSliderArmed;
     bool RightSliderArmed;
 } Launcher_StateTypeDef;
@@ -94,7 +123,9 @@ enum
     COLOUR_BLUE,
     COLOUR_CYAN,
     COLOUR_MAGENTA,
-    COLOUR_YELLOW
+    COLOUR_YELLOW,
+    COLOUR_RED_DARK,
+    COLOUR_RED_LIGHT
 };
 
 static Launcher_StateTypeDef Launcher_State;
@@ -108,6 +139,8 @@ static uint32_t Launcher_ClampUnsigned(uint32_t Value, uint32_t Minimum, uint32_
 static void Launcher_DrawMenuScreen(Render_TargetTypeDef *Target);
 
 static void Launcher_UpdateMenuInput(void);
+static void Launcher_UpdatePreviewTransition(uint32_t DeltaTimeMilliseconds);
+static bool Launcher_SetSplashPalette(uint16_t ApplicationIndex);
 
 /* ------------------------------------------------------------------------- */
 /* Helpers                                                                   */
@@ -172,6 +205,8 @@ static void Launcher_Reset(void)
     Launcher_State.SelectedApplication = 0;
     Launcher_State.SliderEndEffectorY = (int16_t)((SLIDER_TOP_LIMIT + SLIDER_BOTTOM_LIMIT) / 2);
     Launcher_State.SplashPaletteApplication = -1;
+    Launcher_State.PreviewTransition = LAUNCHER_PREVIEW_TRANSITION_NONE;
+    Launcher_State.PreviewTransitionElapsedMilliseconds = 0U;
     Launcher_State.LeftSliderArmed = true;
     Launcher_State.RightSliderArmed = true;
 }
@@ -290,9 +325,11 @@ static void Launcher_UpdateMenuInput(void)
     int32_t LeftSliderValue;
     int32_t RightSliderValue;
     bool LeftSliderAvailable = false;
+    bool RightSliderAvailable = false;
     bool SelectionChanged = false;
 
-    if(Launcher_State.Phase != LAUNCHER_PHASE_MENU)
+    if((Launcher_State.Phase != LAUNCHER_PHASE_BARS_FALL) &&
+       (Launcher_State.Phase != LAUNCHER_PHASE_MENU))
     {
         return;
     }
@@ -300,14 +337,40 @@ static void Launcher_UpdateMenuInput(void)
     if(Input_Get_Value(INPUT_LEFT_SLIDER_NUMBER, &LeftSliderValue))
     {
         LeftSliderAvailable = true;
-
-        SelectionChanged = Launcher_ProcessSliderHardStops(LeftSliderValue, &Launcher_State.LeftSliderArmed);
     }
 
     if(Input_Get_Value(INPUT_RIGHT_SLIDER_NUMBER, &RightSliderValue))
     {
+        RightSliderAvailable = true;
         Launcher_State.SliderEndEffectorY = Launcher_MapSliderToEndEffectorY(RightSliderValue);
+    }
+    else if(LeftSliderAvailable)
+    {
+        Launcher_State.SliderEndEffectorY = Launcher_MapSliderToEndEffectorY(LeftSliderValue);
+    }
 
+    /* The falling bars reveal a live launcher, but selection starts at rest. */
+    if(Launcher_State.Phase != LAUNCHER_PHASE_MENU)
+    {
+        return;
+    }
+
+    /*
+     * The selected preview is protected from repeated selection changes while
+     * its shutters are moving, but the physical slider remains responsive.
+     */
+    if(Launcher_State.PreviewTransition != LAUNCHER_PREVIEW_TRANSITION_NONE)
+    {
+        return;
+    }
+
+    if(LeftSliderAvailable)
+    {
+        SelectionChanged = Launcher_ProcessSliderHardStops(LeftSliderValue, &Launcher_State.LeftSliderArmed);
+    }
+
+    if(RightSliderAvailable)
+    {
         if(SelectionChanged)
         {
             if(!Launcher_State.RightSliderArmed && (RightSliderValue >= LAUNCHER_SLIDER_TOP_RELEASE) && (RightSliderValue <= LAUNCHER_SLIDER_BOTTOM_RELEASE))
@@ -317,12 +380,50 @@ static void Launcher_UpdateMenuInput(void)
         }
         else
         {
-            (void)Launcher_ProcessSliderHardStops(RightSliderValue, &Launcher_State.RightSliderArmed);
+            SelectionChanged = Launcher_ProcessSliderHardStops(
+                RightSliderValue,
+                &Launcher_State.RightSliderArmed);
         }
     }
-    else if(LeftSliderAvailable)
+
+    if(SelectionChanged)
     {
-        Launcher_State.SliderEndEffectorY = Launcher_MapSliderToEndEffectorY(LeftSliderValue);
+        Launcher_State.PreviewTransition = LAUNCHER_PREVIEW_TRANSITION_CLOSE;
+        Launcher_State.PreviewTransitionElapsedMilliseconds = 0U;
+    }
+}
+
+static void Launcher_UpdatePreviewTransition(uint32_t DeltaTimeMilliseconds)
+{
+    if(Launcher_State.PreviewTransition == LAUNCHER_PREVIEW_TRANSITION_CLOSE)
+    {
+        Launcher_State.PreviewTransitionElapsedMilliseconds += DeltaTimeMilliseconds;
+
+        if(Launcher_State.PreviewTransitionElapsedMilliseconds >= LAUNCHER_PREVIEW_SHUTTER_TRAVEL_MS)
+        {
+            Launcher_State.PreviewTransition = LAUNCHER_PREVIEW_TRANSITION_COVERED;
+            Launcher_State.PreviewTransitionElapsedMilliseconds = 0U;
+        }
+    }
+    else if(Launcher_State.PreviewTransition == LAUNCHER_PREVIEW_TRANSITION_COVERED)
+    {
+        Launcher_State.PreviewTransitionElapsedMilliseconds += DeltaTimeMilliseconds;
+
+        if(Launcher_State.PreviewTransitionElapsedMilliseconds >= LAUNCHER_PREVIEW_SHUTTER_HOLD_MS)
+        {
+            Launcher_State.PreviewTransition = LAUNCHER_PREVIEW_TRANSITION_APPLY_PALETTE;
+            Launcher_State.PreviewTransitionElapsedMilliseconds = 0U;
+        }
+    }
+    else if(Launcher_State.PreviewTransition == LAUNCHER_PREVIEW_TRANSITION_OPEN)
+    {
+        Launcher_State.PreviewTransitionElapsedMilliseconds += DeltaTimeMilliseconds;
+
+        if(Launcher_State.PreviewTransitionElapsedMilliseconds >= LAUNCHER_PREVIEW_SHUTTER_TRAVEL_MS)
+        {
+            Launcher_State.PreviewTransition = LAUNCHER_PREVIEW_TRANSITION_NONE;
+            Launcher_State.PreviewTransitionElapsedMilliseconds = 0U;
+        }
     }
 }
 
@@ -340,6 +441,7 @@ static void Launcher_UpdateSimulation(uint32_t DeltaTimeMilliseconds)
 
     Launcher_UpdatePhase();
     Launcher_UpdateMenuInput();
+    Launcher_UpdatePreviewTransition(DeltaTimeMilliseconds);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -443,40 +545,104 @@ static void Launcher_DrawColourBars(Render_TargetTypeDef *Target, bool Rising, b
 /* Launcher screen                                                           */
 /* ------------------------------------------------------------------------- */
 
+static bool Launcher_SetSplashPalette(uint16_t ApplicationIndex)
+{
+    if(NUM_APPS == 0U)
+    {
+        return false;
+    }
+
+    if(!AppManager_GetAppSplashScreenPalette(ApplicationIndex, &Launcher_Palette[0U]))
+    {
+        return false;
+    }
+
+    if(!Display_SetPalette(0U, &Launcher_Palette[0U], 128U))
+    {
+        return false;
+    }
+
+    Launcher_State.SplashPaletteApplication = (int)ApplicationIndex;
+
+    return true;
+}
+
 static void Launcher_DrawSelectedApplicationSplash(Render_TargetTypeDef *Target)
 {
-    const uint16_t ApplicationIndex = (uint16_t)Launcher_State.SelectedApplication;
+    uint16_t ApplicationIndex;
 
     if((Target == NULL) || (Target->Pixels == NULL) || (NUM_APPS == 0U))
     {
         return;
     }
 
-    if(Launcher_State.SplashPaletteApplication != Launcher_State.SelectedApplication)
+    /* The first preview is not replacing visible app-owned pixels. */
+    if(Launcher_State.SplashPaletteApplication < 0)
     {
-        if(!AppManager_GetAppSplashScreenPalette(ApplicationIndex, &Launcher_Palette[0U]))
+        if(!Launcher_SetSplashPalette((uint16_t)Launcher_State.SelectedApplication))
         {
             return;
         }
-
-        if(!Display_SetPalette(0U, &Launcher_Palette[0U], 128U))
-        {
-            return;
-        }
-
-        Launcher_State.SplashPaletteApplication = Launcher_State.SelectedApplication;
     }
 
+    /* Keep the outgoing splash intact until the shutters fully cover it. */
+    ApplicationIndex = (uint16_t)Launcher_State.SplashPaletteApplication;
+
     (void)AppManager_DrawAppSplashScreen(ApplicationIndex, Target);
+}
+
+static void Launcher_DrawPreviewTransition(Render_TargetTypeDef *Target)
+{
+    Render_RectTypeDef TopShutter = {
+        LAUNCHER_SCREEN_OPENING_X,
+        LAUNCHER_SCREEN_OPENING_Y,
+        LAUNCHER_SCREEN_OPENING_WIDTH,
+        0U
+    };
+    Render_RectTypeDef BottomShutter = TopShutter;
+    uint16_t ShutterHeight;
+
+    switch(Launcher_State.PreviewTransition)
+    {
+        case LAUNCHER_PREVIEW_TRANSITION_CLOSE:
+            ShutterHeight = (uint16_t)Launcher_EaseInOut(
+                Launcher_State.PreviewTransitionElapsedMilliseconds,
+                LAUNCHER_PREVIEW_SHUTTER_TRAVEL_MS,
+                LAUNCHER_SCREEN_OPENING_HEIGHT / 2U);
+            break;
+
+        case LAUNCHER_PREVIEW_TRANSITION_COVERED:
+        case LAUNCHER_PREVIEW_TRANSITION_APPLY_PALETTE:
+            ShutterHeight = LAUNCHER_SCREEN_OPENING_HEIGHT / 2U;
+            break;
+
+        case LAUNCHER_PREVIEW_TRANSITION_OPEN:
+            ShutterHeight = (uint16_t)((LAUNCHER_SCREEN_OPENING_HEIGHT / 2U) - Launcher_EaseInOut(
+                Launcher_State.PreviewTransitionElapsedMilliseconds,
+                LAUNCHER_PREVIEW_SHUTTER_TRAVEL_MS,
+                LAUNCHER_SCREEN_OPENING_HEIGHT / 2U));
+            break;
+
+        case LAUNCHER_PREVIEW_TRANSITION_NONE:
+        default:
+            return;
+    }
+
+    BottomShutter.Y = (int16_t)(LAUNCHER_SCREEN_OPENING_Y + LAUNCHER_SCREEN_OPENING_HEIGHT - ShutterHeight);
+    TopShutter.Height = ShutterHeight;
+    BottomShutter.Height = ShutterHeight;
+
+    Render_FillRect(Target, &TopShutter, COLOUR_NEAR_BLACK);
+    Render_FillRect(Target, &BottomShutter, COLOUR_NEAR_BLACK);
 }
 
 static void Launcher_DrawMenuScreen(Render_TargetTypeDef *Target)
 {
     const Render_RectTypeDef ScreenOpening = {
-        60,
-        60,
-        680U,
-        360U
+        LAUNCHER_SCREEN_OPENING_X,
+        LAUNCHER_SCREEN_OPENING_Y,
+        LAUNCHER_SCREEN_OPENING_WIDTH,
+        LAUNCHER_SCREEN_OPENING_HEIGHT
     };
 
     const Render_RectTypeDef Housing = {
@@ -581,6 +747,11 @@ static void Launcher_DrawMenuScreen(Render_TargetTypeDef *Target)
     Render_FillRect(Target, &RecessBottom, COLOUR_BEZEL_LIGHT);
     Render_FillRect(Target, &RecessRight, COLOUR_BEZEL_LIGHT);
 
+    if(Launcher_State.PreviewTransition == LAUNCHER_PREVIEW_TRANSITION_APPLY_PALETTE)
+    {
+        (void)Launcher_SetSplashPalette((uint16_t)Launcher_State.SelectedApplication);
+    }
+
     /*
      * Render the selected application's splash screen only within the CRT
      * opening. Splash-screen callbacks must preserve the active clip region.
@@ -631,80 +802,78 @@ static void Launcher_DrawMenuScreen(Render_TargetTypeDef *Target)
     {
         const int16_t EndEffectorY = Launcher_State.SliderEndEffectorY;
 
-        int16_t UpperDistance = (int16_t)(EndEffectorY - SLIDER_TOP_LIMIT);
-        int16_t LowerDistance = (int16_t)(SLIDER_BOTTOM_LIMIT - EndEffectorY);
-
         int16_t UpperCapPress = 0;
         int16_t LowerCapPress = 0;
 
-        if(UpperDistance < 0)
+        /* Move a plate only after the effector's edge reaches its face. */
+        if((EndEffectorY - SLIDER_EFFECTOR_TOP_EXTENT) < SLIDER_TOP_BUTTON_CONTACT_Y)
         {
-            UpperDistance = 0;
+            UpperCapPress = (int16_t)(SLIDER_TOP_BUTTON_CONTACT_Y - (EndEffectorY - SLIDER_EFFECTOR_TOP_EXTENT));
         }
 
-        if(LowerDistance < 0)
+        if((EndEffectorY + SLIDER_EFFECTOR_BOTTOM_EXTENT) > SLIDER_BOTTOM_BUTTON_CONTACT_Y)
         {
-            LowerDistance = 0;
+            LowerCapPress = (int16_t)((EndEffectorY + SLIDER_EFFECTOR_BOTTOM_EXTENT) - SLIDER_BOTTOM_BUTTON_CONTACT_Y);
         }
 
-        if(UpperDistance < SLIDER_BUTTON_CLICK_DISTANCE)
+        if(UpperCapPress > SLIDER_BUTTON_CAP_TRAVEL)
         {
-            UpperCapPress = (int16_t)(((SLIDER_BUTTON_CLICK_DISTANCE - UpperDistance) * SLIDER_BUTTON_CAP_TRAVEL) / SLIDER_BUTTON_CLICK_DISTANCE);
+            UpperCapPress = SLIDER_BUTTON_CAP_TRAVEL;
         }
 
-        if(LowerDistance < SLIDER_BUTTON_CLICK_DISTANCE)
+        if(LowerCapPress > SLIDER_BUTTON_CAP_TRAVEL)
         {
-            LowerCapPress = (int16_t)(((SLIDER_BUTTON_CLICK_DISTANCE - LowerDistance) * SLIDER_BUTTON_CAP_TRAVEL) / SLIDER_BUTTON_CLICK_DISTANCE);
+            LowerCapPress = SLIDER_BUTTON_CAP_TRAVEL;
         }
 
         {
             const Render_RectTypeDef ChannelTopShadow = {
-                744,
-                76,
-                44U,
-                5U
+                758,
+                LAUNCHER_SELECTOR_SLOT_TOP_Y,
+                22U,
+                3U
             };
 
             const Render_RectTypeDef ChannelLeftShadow = {
-                744,
-                76,
-                5U,
-                328U
+                758,
+                LAUNCHER_SELECTOR_SLOT_TOP_Y,
+                3U,
+                (uint16_t)(LAUNCHER_SELECTOR_SLOT_BOTTOM_Y - LAUNCHER_SELECTOR_SLOT_TOP_Y)
             };
 
             const Render_RectTypeDef ChannelInterior = {
-                749,
-                81,
-                34U,
-                318U
+                761,
+                (int16_t)(LAUNCHER_SELECTOR_SLOT_TOP_Y + 3),
+                16U,
+                (uint16_t)(LAUNCHER_SELECTOR_SLOT_BOTTOM_Y - LAUNCHER_SELECTOR_SLOT_TOP_Y - 6)
             };
 
             const Render_RectTypeDef ChannelBottomHighlight = {
-                744,
-                399,
-                44U,
-                5U
+                758,
+                (int16_t)(LAUNCHER_SELECTOR_SLOT_BOTTOM_Y - 3),
+                22U,
+                3U
             };
 
             const Render_RectTypeDef ChannelRightHighlight = {
-                783,
-                76,
-                5U,
-                328U
+                777,
+                LAUNCHER_SELECTOR_SLOT_TOP_Y,
+                3U,
+                (uint16_t)(LAUNCHER_SELECTOR_SLOT_BOTTOM_Y - LAUNCHER_SELECTOR_SLOT_TOP_Y)
             };
 
             const Render_RectTypeDef UpperBlend = {
-                749,
-                72,
-                34U,
-                4U
+                761,
+                (int16_t)(LAUNCHER_SELECTOR_SLOT_TOP_Y - 3),
+                16U,
+                3U
             };
 
             const Render_RectTypeDef LowerBlend = {
-                749,
-                404,
-                34U,
-                4U
+                761,
+                LAUNCHER_SELECTOR_SLOT_BOTTOM_Y,
+                16U,
+                3U
             };
 
             Render_FillRect(Target, &ChannelInterior, COLOUR_BEZEL_DARK);
@@ -718,31 +887,31 @@ static void Launcher_DrawMenuScreen(Render_TargetTypeDef *Target)
 
         {
             const Render_RectTypeDef UpperSocket = {
-                751,
-                (int16_t)(SLIDER_TOP_LIMIT - 24),
-                26U,
-                28U
+                762,
+                (int16_t)(SLIDER_TOP_BUTTON_CENTER - 22),
+                14U,
+                24U
             };
 
             const Render_RectTypeDef UpperSocketShadow = {
-                751,
-                (int16_t)(SLIDER_TOP_LIMIT - 24),
-                26U,
-                5U
+                762,
+                (int16_t)(SLIDER_TOP_BUTTON_CENTER - 22),
+                14U,
+                3U
             };
 
             const Render_RectTypeDef LowerSocket = {
-                751,
-                (int16_t)(SLIDER_BOTTOM_LIMIT - 4),
-                26U,
-                28U
+                762,
+                (int16_t)(SLIDER_BOTTOM_BUTTON_CENTER - 2),
+                14U,
+                24U
             };
 
             const Render_RectTypeDef LowerSocketShadow = {
-                751,
-                (int16_t)(SLIDER_BOTTOM_LIMIT - 4),
-                26U,
-                5U
+                762,
+                (int16_t)(SLIDER_BOTTOM_BUTTON_CENTER - 2),
+                14U,
+                3U
             };
 
             Render_FillRect(Target, &UpperSocket, COLOUR_NEAR_BLACK);
@@ -753,43 +922,43 @@ static void Launcher_DrawMenuScreen(Render_TargetTypeDef *Target)
 
         {
             const Render_RectTypeDef EffectorStick = {
-                772,
+                779,
                 (int16_t)(EndEffectorY - 3),
-                28U,
+                21U,
                 6U
             };
 
             const Render_RectTypeDef EffectorBallCentre = {
-                754,
-                (int16_t)(EndEffectorY - 7),
-                20U,
-                14U
+                760,
+                (int16_t)(EndEffectorY - (SLIDER_EFFECTOR_TOP_EXTENT - 2)),
+                18U,
+                16U
             };
 
             const Render_RectTypeDef EffectorBallTop = {
-                758,
-                (int16_t)(EndEffectorY - 10),
+                763,
+                (int16_t)(EndEffectorY - SLIDER_EFFECTOR_TOP_EXTENT),
                 12U,
                 3U
             };
 
             const Render_RectTypeDef EffectorBallBottom = {
-                758,
-                (int16_t)(EndEffectorY + 7),
+                763,
+                (int16_t)(EndEffectorY + (SLIDER_EFFECTOR_BOTTOM_EXTENT - 3)),
                 12U,
                 3U
             };
 
             const Render_RectTypeDef EffectorBallUpperSide = {
-                756,
-                (int16_t)(EndEffectorY - 9),
+                761,
+                (int16_t)(EndEffectorY - (SLIDER_EFFECTOR_TOP_EXTENT - 1)),
                 16U,
                 2U
             };
 
             const Render_RectTypeDef EffectorBallLowerSide = {
-                756,
-                (int16_t)(EndEffectorY + 7),
+                761,
+                (int16_t)(EndEffectorY + (SLIDER_EFFECTOR_BOTTOM_EXTENT - 3)),
                 16U,
                 2U
             };
@@ -804,54 +973,70 @@ static void Launcher_DrawMenuScreen(Render_TargetTypeDef *Target)
 
         {
             const Render_RectTypeDef UpperCapShadow = {
-                752,
-                (int16_t)(SLIDER_TOP_LIMIT - 9 - UpperCapPress),
-                24U,
-                18U
+                762,
+                (int16_t)(SLIDER_TOP_BUTTON_CENTER - 10 - UpperCapPress),
+                16U,
+                24U
             };
 
-            const Render_RectTypeDef UpperCap = {
-                750,
-                (int16_t)(SLIDER_TOP_LIMIT - 11 - UpperCapPress),
-                24U,
-                18U
+            const Render_RectTypeDef UpperCapMiddle = {
+                761,
+                (int16_t)(SLIDER_TOP_BUTTON_CENTER - 12 - UpperCapPress),
+                16U,
+                22U
+            };
+
+            const Render_RectTypeDef UpperCapFace = {
+                763,
+                (int16_t)(SLIDER_TOP_BUTTON_CENTER - 9 - UpperCapPress),
+                12U,
+                17U
             };
 
             const Render_RectTypeDef UpperCapHighlight = {
-                754,
-                (int16_t)(SLIDER_TOP_LIMIT - 7 - UpperCapPress),
-                16U,
-                3U
+                764,
+                (int16_t)(SLIDER_TOP_BUTTON_CENTER - 8 - UpperCapPress),
+                10U,
+                2U
             };
 
             const Render_RectTypeDef LowerCapShadow = {
-                752,
-                (int16_t)(SLIDER_BOTTOM_LIMIT - 9 + LowerCapPress),
-                24U,
-                18U
+                762,
+                (int16_t)(SLIDER_BOTTOM_BUTTON_CENTER - 10 + LowerCapPress),
+                16U,
+                24U
             };
 
-            const Render_RectTypeDef LowerCap = {
-                750,
-                (int16_t)(SLIDER_BOTTOM_LIMIT - 11 + LowerCapPress),
-                24U,
-                18U
+            const Render_RectTypeDef LowerCapMiddle = {
+                761,
+                (int16_t)(SLIDER_BOTTOM_BUTTON_CENTER - 12 + LowerCapPress),
+                16U,
+                22U
+            };
+
+            const Render_RectTypeDef LowerCapFace = {
+                763,
+                (int16_t)(SLIDER_BOTTOM_BUTTON_CENTER - 9 + LowerCapPress),
+                12U,
+                17U
             };
 
             const Render_RectTypeDef LowerCapHighlight = {
-                754,
-                (int16_t)(SLIDER_BOTTOM_LIMIT - 7 + LowerCapPress),
-                16U,
-                3U
+                764,
+                (int16_t)(SLIDER_BOTTOM_BUTTON_CENTER - 8 + LowerCapPress),
+                10U,
+                2U
             };
 
             Render_FillRect(Target, &UpperCapShadow, COLOUR_BEZEL_DARK);
-            Render_FillRect(Target, &UpperCap, COLOUR_RED);
-            Render_FillRect(Target, &UpperCapHighlight, COLOUR_WHITE);
+            Render_FillRect(Target, &UpperCapMiddle, COLOUR_RED_DARK);
+            Render_FillRect(Target, &UpperCapFace, COLOUR_RED);
+            Render_FillRect(Target, &UpperCapHighlight, COLOUR_RED_LIGHT);
 
             Render_FillRect(Target, &LowerCapShadow, COLOUR_BEZEL_DARK);
-            Render_FillRect(Target, &LowerCap, COLOUR_RED);
-            Render_FillRect(Target, &LowerCapHighlight, COLOUR_WHITE);
+            Render_FillRect(Target, &LowerCapMiddle, COLOUR_RED_DARK);
+            Render_FillRect(Target, &LowerCapFace, COLOUR_RED);
+            Render_FillRect(Target, &LowerCapHighlight, COLOUR_RED_LIGHT);
         }
     }
 
@@ -868,6 +1053,8 @@ static void Launcher_DrawMenuScreen(Render_TargetTypeDef *Target)
 
         Render_FillRect(Target, &Scanline, COLOUR_NEAR_BLACK);
     }
+
+    Launcher_DrawPreviewTransition(Target);
 
     Render_ResetClipRect();
 }
@@ -891,7 +1078,9 @@ bool Launcher_Init(void)
         0x003D5CDEU, /* Blue. */
         0x003BD5D5U, /* Cyan. */
         0x00D44CCBU, /* Magenta. */
-        0x00F0D93CU  /* Yellow. */
+        0x00F0D93CU, /* Yellow. */
+        0x009E2028U, /* Dark button red. */
+        0x00FF6363U  /* Button red highlight. */
     };
 
     for(uint16_t PaletteIndex = 0U; PaletteIndex < 256U; PaletteIndex++)
@@ -985,7 +1174,14 @@ void Launcher_Render(void)
             break;
     }
 
-    (void)Display_PresentFrame(Frame);
+    if(Display_PresentFrame(Frame))
+    {
+        if(Launcher_State.PreviewTransition == LAUNCHER_PREVIEW_TRANSITION_APPLY_PALETTE)
+        {
+            Launcher_State.PreviewTransition = LAUNCHER_PREVIEW_TRANSITION_OPEN;
+            Launcher_State.PreviewTransitionElapsedMilliseconds = 0U;
+        }
+    }
 }
 
 void Launcher_Pause(void)

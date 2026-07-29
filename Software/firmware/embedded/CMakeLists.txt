@@ -1,7 +1,7 @@
 add_library(DualSlideEmbeddedOptions INTERFACE)
 
 target_compile_options(DualSlideEmbeddedOptions INTERFACE
-    -O0 
+    -O2 
     -g3
 
     -mcpu=cortex-m7
