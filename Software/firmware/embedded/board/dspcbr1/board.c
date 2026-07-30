@@ -130,6 +130,28 @@ static const GPIO_ConfigTypeDef BAT_IsetConfig =
     .InitialLevel = GPIO_LEVEL_LOW
 };
 
+static const GPIO_PinTypeDef PrimaryButtonPin =
+{
+    .Pin = PC12
+};
+
+static const GPIO_PinTypeDef SecondaryButtonPin =
+{
+    .Pin = PB2
+};
+
+/*
+ * Both buttons pull the input low when pressed. The GPIO contract ignores
+ * OutputType and InitialLevel while a pin is configured as an input.
+ */
+static const GPIO_ConfigTypeDef ButtonInputConfig =
+{
+    .Mode = GPIO_MODE_INPUT,
+    .OutputType = GPIO_OUTPUT_PUSH_PULL,
+    .Pull = GPIO_PULL_NONE,
+    .InitialLevel = GPIO_LEVEL_HIGH
+};
+
 static const ADC_InputTypeDef POT_Inputs[POT_INPUT_COUNT] =
 {
     {
@@ -266,6 +288,16 @@ const ADC_InputTypeDef *Board_GetPOTBInput(void)
     return &POT_Inputs[POT_B_INPUT_INDEX];
 }
 
+const GPIO_PinTypeDef *Board_GetPrimaryButtonInput(void)
+{
+    return &PrimaryButtonPin;
+}
+
+const GPIO_PinTypeDef *Board_GetSecondaryButtonInput(void)
+{
+    return &SecondaryButtonPin;
+}
+
 /* -------------------------------------------------------------------------- */
 /* Private functions                                                          */
 /* -------------------------------------------------------------------------- */
@@ -321,6 +353,16 @@ static void Board_InitInterfaces(void)
     }
 
     if(GPIO_Init(&BAT_IsetPin, &BAT_IsetConfig) != GPIO_RESULT_OK)
+    {
+        Board_InitFailure();
+    }
+
+    if(GPIO_Init(&PrimaryButtonPin, &ButtonInputConfig) != GPIO_RESULT_OK)
+    {
+        Board_InitFailure();
+    }
+
+    if(GPIO_Init(&SecondaryButtonPin, &ButtonInputConfig) != GPIO_RESULT_OK)
     {
         Board_InitFailure();
     }

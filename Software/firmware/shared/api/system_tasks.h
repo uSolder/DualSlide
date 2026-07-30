@@ -22,4 +22,12 @@
  */
 bool SystemTasks_Process(void);
 
+/**
+ * @brief Request an orderly target-specific power-off operation.
+ *
+ * On Windows, this normally ends the application. On embedded hardware, the
+ * implementation can disable the power latch after any required shutdown work.
+ */
+void SystemTasks_PowerOff(void);
+
 #endif

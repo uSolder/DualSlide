@@ -8,6 +8,7 @@
 
 #include "display_controller.h"
 #include "adc.h"
+#include "gpio.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -43,6 +44,20 @@ const ADC_InputTypeDef *Board_GetPOTAInput(void);
  * @return Pointer to the potentiometer B ADC input descriptor.
  */
 const ADC_InputTypeDef *Board_GetPOTBInput(void);
+
+/**
+ * @brief Get the board-assigned GPIO input for the primary button.
+ *
+ * @return Pointer to the primary button GPIO descriptor.
+ */
+const GPIO_PinTypeDef *Board_GetPrimaryButtonInput(void);
+
+/**
+ * @brief Get the board-assigned GPIO input for the secondary button.
+ *
+ * @return Pointer to the secondary button GPIO descriptor.
+ */
+const GPIO_PinTypeDef *Board_GetSecondaryButtonInput(void);
 
 #ifdef __cplusplus
 }

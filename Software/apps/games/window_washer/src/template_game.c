@@ -226,10 +226,11 @@ void TemplateGame_Render(void)
     Target.Height = Frame->Height;
     Target.StridePixels = Frame->StridePixels;
 
+    
     ScreenBounds.X = 0;
     ScreenBounds.Y = 0;
-    ScreenBounds.Width = Target.Width;
-    ScreenBounds.Height = Target.Height;
+    ScreenBounds.Width = RENDER_WIDTH;
+    ScreenBounds.Height = RENDER_HEIGHT;
 
     /*
      * Reset clipping before drawing a complete frame. A previous renderer may

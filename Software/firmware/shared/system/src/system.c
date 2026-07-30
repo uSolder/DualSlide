@@ -18,6 +18,17 @@
 #define FPS_UPDATE_INTERVAL_MS        (1000ULL)
 #define FPS_SLOW_SAMPLE_CAPACITY      ((FPS_SAMPLE_CAPACITY + 99U) / 100U)
 
+#define INPUT_PRIMARY_BUTTON_NUMBER   ((Input_NumberTypeDef)3U)
+#define INPUT_SECONDARY_BUTTON_NUMBER ((Input_NumberTypeDef)4U)
+#define SYSTEM_BUTTON_HOLD_TIME_MS    (1500ULL)
+
+typedef struct
+{
+    bool Pressed;
+    bool HoldDetected;
+    uint64_t PressStartTimeMilliseconds;
+} System_ButtonHoldStateTypeDef;
+
 /*
  * These variables are intentionally global and volatile so they can be added
  * directly to the debugger watch list.
@@ -37,6 +48,68 @@ volatile uint32_t System_DebugBuffer1RenderCount = 0U;
 static uint32_t System_FrameTimeSamples[FPS_SAMPLE_CAPACITY];
 static uint32_t System_FrameTimeSampleIndex;
 static uint32_t System_FrameTimeSampleCount;
+static System_ButtonHoldStateTypeDef System_PrimaryButtonHoldState;
+static System_ButtonHoldStateTypeDef System_SecondaryButtonHoldState;
+
+/**
+ * @brief Update one button hold state.
+ *
+ * A hold is reported exactly once for each uninterrupted button press. A
+ * failed input read clears the state so that stale input cannot cause an
+ * action when the input backend later recovers.
+ *
+ * @param State Button hold state to update.
+ * @param ButtonNumber Input number assigned to the button.
+ * @param TimeMilliseconds Current system time in milliseconds.
+ *
+ * @return true when the button has just reached the hold duration.
+ */
+static bool System_UpdateButtonHold(System_ButtonHoldStateTypeDef *State, Input_NumberTypeDef ButtonNumber, uint64_t TimeMilliseconds)
+{
+    int32_t Value;
+
+    if(State == NULL)
+    {
+        return false;
+    }
+
+    if(!Input_Get_Value(ButtonNumber, &Value))
+    {
+        State->Pressed = false;
+        State->HoldDetected = false;
+        State->PressStartTimeMilliseconds = 0ULL;
+
+        return false;
+    }
+
+    if(Value == 0)
+    {
+        State->Pressed = false;
+        State->HoldDetected = false;
+        State->PressStartTimeMilliseconds = 0ULL;
+
+        return false;
+    }
+
+    if(!State->Pressed)
+    {
+        State->Pressed = true;
+        State->HoldDetected = false;
+        State->PressStartTimeMilliseconds = TimeMilliseconds;
+
+        return false;
+    }
+
+    if(!State->HoldDetected &&
+       ((TimeMilliseconds - State->PressStartTimeMilliseconds) >= SYSTEM_BUTTON_HOLD_TIME_MS))
+    {
+        State->HoldDetected = true;
+
+        return true;
+    }
+
+    return false;
+}
 
 /**
  * @brief Store one complete frame duration in the rolling sample buffer.
@@ -200,6 +273,8 @@ int System_Run(void)
     System_DebugRenderBufferIndex = 0U;
     System_DebugBuffer0RenderCount = 0U;
     System_DebugBuffer1RenderCount = 0U;
+    System_PrimaryButtonHoldState = (System_ButtonHoldStateTypeDef){0};
+    System_SecondaryButtonHoldState = (System_ButtonHoldStateTypeDef){0};
 
     if(!Display_Init())
     {
@@ -248,6 +323,16 @@ int System_Run(void)
         {
             System_UpdateFpsStatistics();
             PreviousStatisticsTimeMilliseconds = FrameStartTimeMilliseconds;
+        }
+
+        if(System_UpdateButtonHold(&System_PrimaryButtonHoldState, INPUT_PRIMARY_BUTTON_NUMBER, FrameStartTimeMilliseconds))
+        {
+            SystemTasks_PowerOff();
+        }
+
+        if(System_UpdateButtonHold(&System_SecondaryButtonHoldState, INPUT_SECONDARY_BUTTON_NUMBER, FrameStartTimeMilliseconds))
+        {
+            AppManager_OpenLauncher();
         }
 
         AppManager_Update(DeltaTimeMilliseconds);

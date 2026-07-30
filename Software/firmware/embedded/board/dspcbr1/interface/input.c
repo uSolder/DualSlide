@@ -2,15 +2,15 @@
  * @file input.c
  * @brief Embedded implementation of the generic input-control contract.
  *
- * This backend reads the two board-mounted analog sliders through the
- * board-assigned ADC inputs. Button and battery inputs remain fixed until
- * their board drivers are connected.
+ * This backend reads the board-mounted analog sliders through the assigned
+ * ADC inputs and the two buttons through the assigned GPIO inputs.
  */
 
 #include "input.h"
 
 #include "adc.h"
 #include "board.h"
+#include "gpio.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -46,6 +46,8 @@
 
 static const ADC_InputTypeDef *Embedded_POTAInput;
 static const ADC_InputTypeDef *Embedded_POTBInput;
+static const GPIO_PinTypeDef *Embedded_PrimaryButtonInput;
+static const GPIO_PinTypeDef *Embedded_SecondaryButtonInput;
 static bool Embedded_InputInitialised;
 
 /* -------------------------------------------------------------------------- */
@@ -99,13 +101,21 @@ bool Input_Init(void)
 
     Embedded_POTAInput = Board_GetPOTAInput();
     Embedded_POTBInput = Board_GetPOTBInput();
+    Embedded_PrimaryButtonInput = Board_GetPrimaryButtonInput();
+    Embedded_SecondaryButtonInput = Board_GetSecondaryButtonInput();
 
-    if((Embedded_POTAInput == NULL) || (Embedded_POTBInput == NULL))
+    if( (Embedded_POTAInput == NULL) ||
+        (Embedded_POTBInput == NULL) ||
+        (Embedded_PrimaryButtonInput == NULL) ||
+        (Embedded_SecondaryButtonInput == NULL))
     {
         return false;
     }
 
-    if(!ADC_IsAssigned(Embedded_POTAInput) || !ADC_IsAssigned(Embedded_POTBInput))
+    if( !ADC_IsAssigned(Embedded_POTAInput) ||
+        !ADC_IsAssigned(Embedded_POTBInput) ||
+        !GPIO_IsAssigned(Embedded_PrimaryButtonInput) ||
+        !GPIO_IsAssigned(Embedded_SecondaryButtonInput))
     {
         return false;
     }
@@ -135,6 +145,7 @@ bool Input_Get_Info(uint8_t Index, Input_InfoTypeDef *Info)
 bool Input_Get_Value(Input_NumberTypeDef Number, int32_t *Value)
 {
     ADC_ValueTypeDef ADCValue;
+    GPIO_LevelTypeDef GPIOLevel;
 
     if(!Embedded_InputInitialised || (Value == NULL))
     {
@@ -162,8 +173,21 @@ bool Input_Get_Value(Input_NumberTypeDef Number, int32_t *Value)
             return true;
 
         case EMBEDDED_INPUT_PRIMARY_BUTTON_NUMBER:
+            if(GPIO_Read(Embedded_PrimaryButtonInput, &GPIOLevel) != GPIO_RESULT_OK)
+            {
+                return false;
+            }
+
+            *Value = (GPIOLevel == GPIO_LEVEL_HIGH) ? EMBEDDED_INPUT_BUTTON_PRESSED : EMBEDDED_INPUT_BUTTON_RELEASED;
+            return true;
+
         case EMBEDDED_INPUT_SECONDARY_BUTTON_NUMBER:
-            *Value = EMBEDDED_INPUT_BUTTON_RELEASED;
+            if(GPIO_Read(Embedded_SecondaryButtonInput, &GPIOLevel) != GPIO_RESULT_OK)
+            {
+                return false;
+            }
+
+            *Value = (GPIOLevel == GPIO_LEVEL_HIGH) ? EMBEDDED_INPUT_BUTTON_PRESSED : EMBEDDED_INPUT_BUTTON_RELEASED;
             return true;
 
         case EMBEDDED_INPUT_BATTERY_NUMBER:

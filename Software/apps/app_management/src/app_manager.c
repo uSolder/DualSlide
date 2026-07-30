@@ -106,7 +106,7 @@ static bool AppManager_StartLauncher(void)
     return true;
 }
 
-static bool AppManager_StartApplication(uint16_t ApplicationIndex)
+bool AppManager_StartApplication(uint16_t ApplicationIndex)
 {
     const AppManager_ApplicationInterfaceTypeDef *Application = AppManager_GetApplication(ApplicationIndex);
 
@@ -118,6 +118,11 @@ static bool AppManager_StartApplication(uint16_t ApplicationIndex)
     if(!Application->Init())
     {
         return false;
+    }
+
+    if(AppManager_LauncherInterface.Pause != NULL)
+    {
+        AppManager_LauncherInterface.Pause();
     }
 
     AppManager_ActiveApplicationIndex = ApplicationIndex;
@@ -310,6 +315,31 @@ void AppManager_Resume(void)
     }
 
     AppManager_Paused = false;
+}
+
+void AppManager_OpenLauncher(void)
+{
+    const AppManager_ApplicationInterfaceTypeDef *Application;
+
+    if(!AppManager_Initialized || (AppManager_State == APP_MANAGER_STATE_LAUNCHER))
+    {
+        return;
+    }
+
+    Application = AppManager_GetApplication(AppManager_ActiveApplicationIndex);
+
+    if((Application != NULL) && (Application->Shutdown != NULL))
+    {
+        Application->Shutdown();
+    }
+
+    AppManager_State = APP_MANAGER_STATE_LAUNCHER;
+    AppManager_ActiveApplicationIndex = 0U;
+
+    if(!AppManager_Paused && (AppManager_LauncherInterface.Resume != NULL))
+    {
+        AppManager_LauncherInterface.Resume();
+    }
 }
 
 void AppManager_Shutdown(void)

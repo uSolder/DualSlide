@@ -14,3 +14,8 @@ bool SystemTasks_Process(void)
 {
     return true;
 }
+
+void SystemTasks_PowerOff(void)
+{
+    for(;;);
+}

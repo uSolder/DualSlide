@@ -123,6 +123,17 @@ bool AppManager_GetAppSplashScreenPalette(uint16_t ApplicationIndex, Display_Col
 bool AppManager_DrawAppSplashScreen(uint16_t ApplicationIndex, Render_TargetTypeDef *Target);
 
 /**
+ * @brief Start an application registered with the application manager.
+ *
+ * The launcher is paused while the selected application is active.
+ *
+ * @param ApplicationIndex Zero-based index of the application to start.
+ *
+ * @return true if the application started successfully; otherwise false.
+ */
+bool AppManager_StartApplication(uint16_t ApplicationIndex);
+
+/**
  * @brief Pauses the currently active runtime component.
  */
 void AppManager_Pause(void);
@@ -131,6 +142,15 @@ void AppManager_Pause(void);
  * @brief Resumes the currently active runtime component.
  */
 void AppManager_Resume(void);
+
+/**
+ * @brief Return to the launcher from the active application.
+ *
+ * The active application is shut down and the existing launcher instance is
+ * resumed. This has no effect when the launcher is already active or the
+ * application manager has not been initialized.
+ */
+void AppManager_OpenLauncher(void);
 
 /**
  * @brief Shuts down the application manager and active runtime component.
