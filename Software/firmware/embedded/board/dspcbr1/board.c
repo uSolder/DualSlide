@@ -40,7 +40,23 @@
 
 #define POT_A_INPUT_INDEX                 0U
 #define POT_B_INPUT_INDEX                 1U
-#define POT_INPUT_COUNT                   2U
+#define USB_CC1_INPUT_INDEX                2U
+#define USB_CC2_INPUT_INDEX                3U
+#define ADC_INPUT_COUNT                    4U
+
+/*
+ * A Type-C source advertising its default current produces less than 0.66 V
+ * on a 5.1-kOhm Rd. Sources advertising 1.5 A or 3.0 A exceed this level.
+ * ADC1 uses its full 16-bit range with a 3.3-V analog supply.
+ */
+#define USB_CC_FAST_CURRENT_THRESHOLD      13107U
+
+/* -------------------------------------------------------------------------- */
+/* Charge indicator                                                           */
+/* -------------------------------------------------------------------------- */
+
+#define CHARGE_LED_MINIMUM_DUTY_PERMILLE   500U
+#define CHARGE_LED_MAXIMUM_DUTY_PERMILLE   1000U
 
 /* -------------------------------------------------------------------------- */
 /* Private function declarations                                              */
@@ -55,6 +71,8 @@ static void Board_InitDevices(void);
 static Board_WakeReasonTypeDef Board_DetectWakeReason(void);
 static void Board_BatteryChargeInterrupt(void *Context);
 static void Board_UpdateOrangeLED(void *Context);
+static bool Board_IsFastUSBCurrentAvailable(void);
+static void Board_UpdateBatteryChargeCurrentLimit(bool fast_current_available);
 
 /* -------------------------------------------------------------------------- */
 /* Board interface declarations                                               */
@@ -132,7 +150,7 @@ static const GPIO_ConfigTypeDef BAT_IsetConfig =
     .Mode = GPIO_MODE_OUTPUT,
     .OutputType = GPIO_OUTPUT_PUSH_PULL,
     .Pull = GPIO_PULL_NONE,
-    .InitialLevel = GPIO_LEVEL_LOW
+    .InitialLevel = GPIO_LEVEL_HIGH
 };
 
 static const GPIO_PinTypeDef BatteryChargePin =
@@ -179,7 +197,7 @@ static const GPIO_PinTypeDef SecondaryButtonPin =
 };
 
 /*
- * Both buttons pull the input low when pressed. The GPIO contract ignores
+ * Both buttons drive the input high when pressed. The GPIO contract ignores
  * OutputType and InitialLevel while a pin is configured as an input.
  */
 static const GPIO_ConfigTypeDef ButtonInputConfig =
@@ -190,20 +208,30 @@ static const GPIO_ConfigTypeDef ButtonInputConfig =
     .InitialLevel = GPIO_LEVEL_HIGH
 };
 
-static const ADC_InputTypeDef POT_Inputs[POT_INPUT_COUNT] =
+static const ADC_InputTypeDef ADC_Inputs[ADC_INPUT_COUNT] =
 {
     {
         .Pin = PA1
     },
     {
         .Pin = PA0
+    },
+    {
+        .Pin = PA2
+    },
+    {
+        .Pin = PA3
     }
 };
 
-static ADC_ValueTypeDef POT_Values[POT_INPUT_COUNT];
+static ADC_ValueTypeDef ADC_Values[ADC_INPUT_COUNT];
 
 static Board_WakeReasonTypeDef WakeReason;
 static volatile bool Board_IsCharging;
+static uint16_t OrangeLEDDutyPermille = CHARGE_LED_MINIMUM_DUTY_PERMILLE;
+static bool OrangeLEDDutyIncreasing = true;
+static bool OrangeLEDSlowUpdateToggle;
+static bool Board_IsFastUSBCurrent;
 
 static Timer_Handle OrangeLEDTimer =
 {
@@ -219,7 +247,7 @@ static Timer_PWMChannel_Handle OrangeLEDChannel =
     .output = TIM4_CH2,
     .pin = PB7,
     .polarity = TIMER_PWM_POLARITY_ACTIVE_HIGH,
-    .duty_permille = 500U
+    .duty_permille = CHARGE_LED_MINIMUM_DUTY_PERMILLE
 };
 
 static DisplayController_Handle LCD_DisplayController =
@@ -357,12 +385,12 @@ DisplayController_Handle *Board_GetDisplayController(void)
 
 const ADC_InputTypeDef *Board_GetPOTAInput(void)
 {
-    return &POT_Inputs[POT_A_INPUT_INDEX];
+    return &ADC_Inputs[POT_A_INPUT_INDEX];
 }
 
 const ADC_InputTypeDef *Board_GetPOTBInput(void)
 {
-    return &POT_Inputs[POT_B_INPUT_INDEX];
+    return &ADC_Inputs[POT_B_INPUT_INDEX];
 }
 
 const GPIO_PinTypeDef *Board_GetPrimaryButtonInput(void)
@@ -424,6 +452,12 @@ static void Board_InitCriticalInterfaces(void)
         Board_InitFailure();
     }
 
+    /* High selects the charger IC's 500-mA input-current limit. */
+    if(GPIO_Init(&BAT_IsetPin, &BAT_IsetConfig) != GPIO_RESULT_OK)
+    {
+        Board_InitFailure();
+    }
+
     if(GPIO_Init(&BatteryChargePin, &BatteryChargeConfig) != GPIO_RESULT_OK)
     {
         Board_InitFailure();
@@ -432,6 +466,21 @@ static void Board_InitCriticalInterfaces(void)
     Board_IsCharging = GPIO_IsLow(&BatteryChargePin);
 
     if(GPIO_RegisterInterrupt(&BatteryChargePin, &BatteryChargeInterruptConfig) != GPIO_RESULT_OK)
+    {
+        Board_InitFailure();
+    }
+
+    /*
+     * The ADC has a fixed conversion list. Initialize all board inputs here
+     * so CC current advertisement is available while the device is charging
+     * with its main power rail disabled.
+     */
+    if(ADC_Init(ADC_Inputs, ADC_Values, ADC_INPUT_COUNT) != ADC_RESULT_OK)
+    {
+        Board_InitFailure();
+    }
+
+    if(ADC_Start() != ADC_RESULT_OK)
     {
         Board_InitFailure();
     }
@@ -454,8 +503,8 @@ static void Board_InitCriticalInterfaces(void)
 
 static Board_WakeReasonTypeDef Board_DetectWakeReason(void)
 {
-    /* The power button pulls its input high while it is held. */
-    return !GPIO_IsHigh(&PrimaryButtonPin) ?  BOARD_WAKE_REASON_EXTERNAL_POWER : BOARD_WAKE_REASON_POWER_BUTTON;
+    /* The power button drives its input high while it is held. */
+    return !GPIO_IsHigh(&PrimaryButtonPin) ? BOARD_WAKE_REASON_EXTERNAL_POWER : BOARD_WAKE_REASON_POWER_BUTTON;
 }
 
 static void Board_BatteryChargeInterrupt(void *Context)
@@ -467,16 +516,92 @@ static void Board_BatteryChargeInterrupt(void *Context)
 
 static void Board_UpdateOrangeLED(void *Context)
 {
+    bool FastUSBCurrentAvailable;
+    bool UpdateDuty;
+
     (void)Context;
 
-    if(Board_IsCharging)
+    FastUSBCurrentAvailable = Board_IsFastUSBCurrentAvailable();
+    Board_UpdateBatteryChargeCurrentLimit(FastUSBCurrentAvailable);
+
+    if(!Board_IsCharging)
     {
-        (void)Timer_OutputEnable(&OrangeLEDChannel);
+        (void)Timer_OutputDisable(&OrangeLEDChannel);
+        return;
+    }
+
+    (void)Timer_OutputEnable(&OrangeLEDChannel);
+
+    /*
+     * TIM4 calls this callback every millisecond. One duty step per callback
+     * gives a 1-Hz triangle wave. Updating every second callback gives 0.5 Hz.
+     */
+    UpdateDuty = FastUSBCurrentAvailable;
+
+    if(!UpdateDuty)
+    {
+        OrangeLEDSlowUpdateToggle = !OrangeLEDSlowUpdateToggle;
+        UpdateDuty = OrangeLEDSlowUpdateToggle;
+    }
+
+    if(!UpdateDuty)
+    {
+        return;
+    }
+
+    if(OrangeLEDDutyIncreasing)
+    {
+        OrangeLEDDutyPermille++;
+
+        if(OrangeLEDDutyPermille >= CHARGE_LED_MAXIMUM_DUTY_PERMILLE)
+        {
+            OrangeLEDDutyPermille = CHARGE_LED_MAXIMUM_DUTY_PERMILLE;
+            OrangeLEDDutyIncreasing = false;
+        }
     }
     else
     {
-        (void)Timer_OutputDisable(&OrangeLEDChannel);
+        OrangeLEDDutyPermille--;
+
+        if(OrangeLEDDutyPermille <= CHARGE_LED_MINIMUM_DUTY_PERMILLE)
+        {
+            OrangeLEDDutyPermille = CHARGE_LED_MINIMUM_DUTY_PERMILLE;
+            OrangeLEDDutyIncreasing = true;
+        }
     }
+
+    (void)Timer_SetPWMDutyPermille(&OrangeLEDChannel, OrangeLEDDutyPermille);
+}
+
+static bool Board_IsFastUSBCurrentAvailable(void)
+{
+    ADC_ValueTypeDef CC1Voltage;
+    ADC_ValueTypeDef CC2Voltage;
+
+    CC1Voltage = ADC_GetValue(&ADC_Inputs[USB_CC1_INPUT_INDEX]);
+    CC2Voltage = ADC_GetValue(&ADC_Inputs[USB_CC2_INPUT_INDEX]);
+
+    return (CC1Voltage >= USB_CC_FAST_CURRENT_THRESHOLD) ||  (CC2Voltage >= USB_CC_FAST_CURRENT_THRESHOLD);
+}
+
+static void Board_UpdateBatteryChargeCurrentLimit(bool fast_current_available)
+{
+    if(fast_current_available == Board_IsFastUSBCurrent)
+    {
+        return;
+    }
+
+    /* Low selects 1 A; high selects the default 500-mA limit. */
+    if(fast_current_available)
+    {
+        (void)GPIO_Clear(&BAT_IsetPin);
+    }
+    else
+    {
+        (void)GPIO_Set(&BAT_IsetPin);
+    }
+
+    Board_IsFastUSBCurrent = fast_current_available;
 }
 
 static void Board_InitInterfaces(void)
@@ -496,11 +621,6 @@ static void Board_InitInterfaces(void)
         Board_InitFailure();
     }
 
-    if(GPIO_Init(&BAT_IsetPin, &BAT_IsetConfig) != GPIO_RESULT_OK)
-    {
-        Board_InitFailure();
-    }
-
     if(GPIO_Init(&SecondaryButtonPin, &ButtonInputConfig) != GPIO_RESULT_OK)
     {
         Board_InitFailure();
@@ -516,16 +636,6 @@ static void Board_InitInterfaces(void)
         Board_InitFailure();
     }
 
-    if(ADC_Init(POT_Inputs, POT_Values, POT_INPUT_COUNT) != ADC_RESULT_OK)
-    {
-        Board_InitFailure();
-    }
-
-    if(ADC_Start() != ADC_RESULT_OK)
-    {
-        Board_InitFailure();
-    }
-
     if(DisplayController_Init(&LCD_DisplayController) != DISPLAY_CONTROLLER_RESULT_OK)
     {
         Board_InitFailure();
@@ -535,11 +645,6 @@ static void Board_InitInterfaces(void)
 static void Board_InitDevices(void)
 {
     if(W430WVC004_A_Init(&LCD_Panel) != W430WVC004_A_RESULT_OK)
-    {
-        Board_InitFailure();
-    }
-
-    if(GPIO_Clear(&BAT_IsetPin) != GPIO_RESULT_OK)
     {
         Board_InitFailure();
     }
