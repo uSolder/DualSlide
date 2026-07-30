@@ -3,7 +3,7 @@
  * @brief STM32H7A3 digital GPIO implementation.
  *
  * This driver implements the hardware-independent digital GPIO contract using
- * the STM32H7A3 GPIO peripherals.
+ * the STM32H7A3 GPIO and EXTI peripherals.
  */
 
 #include "gpio.h"
@@ -27,6 +27,7 @@
 #define GPIO_PORT_INDEX_MASK             0x0FU
 
 #define GPIO_REGISTER_FIELD_MASK         0x03UL
+#define GPIO_EXTICR_FIELD_MASK           0x0FUL
 
 #define GPIO_MODER_INPUT                 0x00UL
 #define GPIO_MODER_OUTPUT                0x01UL
@@ -50,6 +51,19 @@
  */
 static uint16_t GPIO_InitializedPins[GPIO_PORT_COUNT];
 
+/**
+ * @brief Registered interrupt configuration for each STM32 EXTI line.
+ *
+ * STM32 EXTI line n is shared by GPIO pin n across all ports. Therefore,
+ * only one GPIO interrupt can be registered for each line.
+ */
+static GPIO_InterruptConfigTypeDef GPIO_InterruptConfigurations[GPIO_PIN_COUNT_PER_PORT];
+
+/**
+ * @brief Registration state for each STM32 EXTI line.
+ */
+static bool GPIO_InterruptRegistered[GPIO_PIN_COUNT_PER_PORT];
+
 /* -------------------------------------------------------------------------- */
 /* Private function declarations                                              */
 /* -------------------------------------------------------------------------- */
@@ -59,9 +73,12 @@ static uint32_t GPIO_GetPortIndex(GPIO_PinIdTypeDef pin_id);
 static uint32_t GPIO_GetPinNumber(GPIO_PinIdTypeDef pin_id);
 static GPIO_ResultTypeDef GPIO_ValidatePin(const GPIO_PinTypeDef *pin);
 static GPIO_ResultTypeDef GPIO_ValidateConfiguration(const GPIO_ConfigTypeDef *config);
+static GPIO_ResultTypeDef GPIO_ValidateInterruptConfiguration(const GPIO_InterruptConfigTypeDef *config);
 static bool GPIO_IsInitializedInternal(const GPIO_PinTypeDef *pin);
+static bool GPIO_IsInputInternal(const GPIO_PinTypeDef *pin);
 static bool GPIO_IsOutputInternal(const GPIO_PinTypeDef *pin);
 static void GPIO_SetInitialized(const GPIO_PinTypeDef *pin, bool initialized);
+static IRQn_Type GPIO_GetInterruptNumber(uint32_t pin_number);
 
 /* -------------------------------------------------------------------------- */
 /* Pin decoding                                                               */
@@ -192,6 +209,28 @@ static GPIO_ResultTypeDef GPIO_ValidateConfiguration(const GPIO_ConfigTypeDef *c
     return GPIO_RESULT_OK;
 }
 
+static GPIO_ResultTypeDef GPIO_ValidateInterruptConfiguration(const GPIO_InterruptConfigTypeDef *config)
+{
+    if (config == NULL)
+    {
+        return GPIO_RESULT_INVALID_ARGUMENT;
+    }
+
+    if (config->Callback == NULL)
+    {
+        return GPIO_RESULT_INVALID_ARGUMENT;
+    }
+
+    if ((config->Mode != GPIO_INTERRUPT_RISING_EDGE)
+        && (config->Mode != GPIO_INTERRUPT_FALLING_EDGE)
+        && (config->Mode != GPIO_INTERRUPT_BOTH_EDGES))
+    {
+        return GPIO_RESULT_INVALID_ARGUMENT;
+    }
+
+    return GPIO_RESULT_OK;
+}
+
 /* -------------------------------------------------------------------------- */
 /* State helpers                                                              */
 /* -------------------------------------------------------------------------- */
@@ -207,6 +246,21 @@ static bool GPIO_IsInitializedInternal(const GPIO_PinTypeDef *pin)
     return (GPIO_InitializedPins[port_index] & (uint16_t)(1UL << pin_number)) != 0U;
 }
 
+static bool GPIO_IsInputInternal(const GPIO_PinTypeDef *pin)
+{
+    GPIO_TypeDef *port;
+    uint32_t pin_number;
+    uint32_t position;
+    uint32_t mode;
+
+    port = GPIO_GetPort(pin->Pin);
+    pin_number = GPIO_GetPinNumber(pin->Pin);
+    position = pin_number * 2U;
+    mode = (port->MODER >> position) & GPIO_REGISTER_FIELD_MASK;
+
+    return mode == GPIO_MODER_INPUT;
+}
+
 static bool GPIO_IsOutputInternal(const GPIO_PinTypeDef *pin)
 {
     GPIO_TypeDef *port;
@@ -217,7 +271,6 @@ static bool GPIO_IsOutputInternal(const GPIO_PinTypeDef *pin)
     port = GPIO_GetPort(pin->Pin);
     pin_number = GPIO_GetPinNumber(pin->Pin);
     position = pin_number * 2U;
-
     mode = (port->MODER >> position) & GPIO_REGISTER_FIELD_MASK;
 
     return mode == GPIO_MODER_OUTPUT;
@@ -240,6 +293,37 @@ static void GPIO_SetInitialized(const GPIO_PinTypeDef *pin, bool initialized)
     else
     {
         GPIO_InitializedPins[port_index] &= (uint16_t)~pin_mask;
+    }
+}
+
+static IRQn_Type GPIO_GetInterruptNumber(uint32_t pin_number)
+{
+    switch (pin_number)
+    {
+        case 0U:
+            return EXTI0_IRQn;
+
+        case 1U:
+            return EXTI1_IRQn;
+
+        case 2U:
+            return EXTI2_IRQn;
+
+        case 3U:
+            return EXTI3_IRQn;
+
+        case 4U:
+            return EXTI4_IRQn;
+
+        case 5U:
+        case 6U:
+        case 7U:
+        case 8U:
+        case 9U:
+            return EXTI9_5_IRQn;
+
+        default:
+            return EXTI15_10_IRQn;
     }
 }
 
@@ -279,10 +363,6 @@ GPIO_ResultTypeDef GPIO_Init(const GPIO_PinTypeDef *pin, const GPIO_ConfigTypeDe
         return GPIO_RESULT_HARDWARE_ERROR;
     }
 
-    /*
-     * Apply the initial output level before switching the pin into output
-     * mode. This avoids an unintended pulse during initialization.
-     */
     if (config->Mode == GPIO_MODE_OUTPUT)
     {
         if (config->InitialLevel == GPIO_LEVEL_HIGH)
@@ -327,31 +407,14 @@ GPIO_ResultTypeDef GPIO_Init(const GPIO_PinTypeDef *pin, const GPIO_ConfigTypeDe
             return GPIO_RESULT_INVALID_ARGUMENT;
     }
 
-    /*
-     * Configure the electrical output type.
-     *
-     * This value is harmless for input pins and remains ready if the pin is
-     * later changed to output mode.
-     */
     port->OTYPER &= ~(1UL << pin_number);
     port->OTYPER |= output_type << pin_number;
 
-    /*
-     * Use low-speed GPIO operation for generic board-level digital signals.
-     * High-speed and alternate-function signals are configured by their
-     * target-specific peripheral drivers.
-     */
     port->OSPEEDR &= ~(GPIO_REGISTER_FIELD_MASK << position);
 
-    /*
-     * Configure the internal pull resistor.
-     */
     port->PUPDR &= ~(GPIO_REGISTER_FIELD_MASK << position);
     port->PUPDR |= pull << position;
 
-    /*
-     * Configure the digital operating mode last.
-     */
     port->MODER &= ~(GPIO_REGISTER_FIELD_MASK << position);
 
     if (config->Mode == GPIO_MODE_OUTPUT)
@@ -384,6 +447,8 @@ GPIO_ResultTypeDef GPIO_Deinit(const GPIO_PinTypeDef *pin)
         return result;
     }
 
+    (void)GPIO_UnregisterInterrupt(pin);
+
     port = GPIO_GetPort(pin->Pin);
     pin_number = GPIO_GetPinNumber(pin->Pin);
     position = pin_number * 2U;
@@ -395,21 +460,162 @@ GPIO_ResultTypeDef GPIO_Deinit(const GPIO_PinTypeDef *pin)
         return GPIO_RESULT_HARDWARE_ERROR;
     }
 
-    /*
-     * Restore the pin to the STM32 reset-style analog configuration.
-     */
     port->MODER &= ~(GPIO_REGISTER_FIELD_MASK << position);
     port->MODER |= GPIO_MODER_ANALOG << position;
 
     port->OTYPER &= ~(1UL << pin_number);
     port->OSPEEDR &= ~(GPIO_REGISTER_FIELD_MASK << position);
     port->PUPDR &= ~(GPIO_REGISTER_FIELD_MASK << position);
-
     port->AFR[afr_index] &= ~(0xFUL << afr_position);
 
     GPIO_SetInitialized(pin, false);
 
     return GPIO_RESULT_OK;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Interrupts                                                                 */
+/* -------------------------------------------------------------------------- */
+
+GPIO_ResultTypeDef GPIO_RegisterInterrupt(const GPIO_PinTypeDef *pin, const GPIO_InterruptConfigTypeDef *config)
+{
+    GPIO_ResultTypeDef result;
+    uint32_t port_index;
+    uint32_t pin_number;
+    uint32_t exticr_index;
+    uint32_t exticr_position;
+    uint32_t pin_mask;
+    IRQn_Type interrupt_number;
+
+    result = GPIO_ValidatePin(pin);
+
+    if (result != GPIO_RESULT_OK)
+    {
+        return result;
+    }
+
+    result = GPIO_ValidateInterruptConfiguration(config);
+
+    if (result != GPIO_RESULT_OK)
+    {
+        return result;
+    }
+
+    if (!GPIO_IsInitializedInternal(pin) || !GPIO_IsInputInternal(pin))
+    {
+        return GPIO_RESULT_NOT_INITIALIZED;
+    }
+
+    pin_number = GPIO_GetPinNumber(pin->Pin);
+
+    if (GPIO_InterruptRegistered[pin_number])
+    {
+        return GPIO_RESULT_BUSY;
+    }
+
+    port_index = GPIO_GetPortIndex(pin->Pin);
+    exticr_index = pin_number / 4U;
+    exticr_position = (pin_number % 4U) * 4U;
+    pin_mask = 1UL << pin_number;
+    interrupt_number = GPIO_GetInterruptNumber(pin_number);
+
+    if (RCC_EnablePeripheralClock(SYSCFG) != RCC_RESULT_OK)
+    {
+        return GPIO_RESULT_HARDWARE_ERROR;
+    }
+
+    EXTI->IMR1 &= ~pin_mask;
+
+    SYSCFG->EXTICR[exticr_index] &= ~(GPIO_EXTICR_FIELD_MASK << exticr_position);
+    SYSCFG->EXTICR[exticr_index] |= port_index << exticr_position;
+
+    EXTI->RTSR1 &= ~pin_mask;
+    EXTI->FTSR1 &= ~pin_mask;
+
+    if ((config->Mode == GPIO_INTERRUPT_RISING_EDGE) || (config->Mode == GPIO_INTERRUPT_BOTH_EDGES))
+    {
+        EXTI->RTSR1 |= pin_mask;
+    }
+
+    if ((config->Mode == GPIO_INTERRUPT_FALLING_EDGE) || (config->Mode == GPIO_INTERRUPT_BOTH_EDGES))
+    {
+        EXTI->FTSR1 |= pin_mask;
+    }
+
+    EXTI->PR1 = pin_mask;
+
+    GPIO_InterruptConfigurations[pin_number] = *config;
+    GPIO_InterruptRegistered[pin_number] = true;
+
+    EXTI->IMR1 |= pin_mask;
+
+    NVIC_ClearPendingIRQ(interrupt_number);
+    NVIC_EnableIRQ(interrupt_number);
+
+    return GPIO_RESULT_OK;
+}
+
+GPIO_ResultTypeDef GPIO_UnregisterInterrupt(const GPIO_PinTypeDef *pin)
+{
+    GPIO_ResultTypeDef result;
+    uint32_t pin_number;
+    uint32_t pin_mask;
+
+    result = GPIO_ValidatePin(pin);
+
+    if (result != GPIO_RESULT_OK)
+    {
+        return result;
+    }
+
+    pin_number = GPIO_GetPinNumber(pin->Pin);
+    pin_mask = 1UL << pin_number;
+
+    EXTI->IMR1 &= ~pin_mask;
+    EXTI->RTSR1 &= ~pin_mask;
+    EXTI->FTSR1 &= ~pin_mask;
+
+    EXTI->PR1 = pin_mask;
+
+    GPIO_InterruptConfigurations[pin_number].Callback = NULL;
+    GPIO_InterruptConfigurations[pin_number].Context = NULL;
+    GPIO_InterruptRegistered[pin_number] = false;
+
+    return GPIO_RESULT_OK;
+}
+
+void GPIO_InterruptHandler(uint32_t line)
+{
+    GPIO_InterruptCallbackTypeDef callback;
+    void *context;
+    uint32_t line_mask;
+
+    if (line >= GPIO_PIN_COUNT_PER_PORT)
+    {
+        return;
+    }
+
+    line_mask = 1UL << line;
+
+    if ((EXTI->PR1 & line_mask) == 0U)
+    {
+        return;
+    }
+
+    EXTI->PR1 = line_mask;
+
+    if (!GPIO_InterruptRegistered[line])
+    {
+        return;
+    }
+
+    callback = GPIO_InterruptConfigurations[line].Callback;
+    context = GPIO_InterruptConfigurations[line].Context;
+
+    if (callback != NULL)
+    {
+        callback(context);
+    }
 }
 
 /* -------------------------------------------------------------------------- */

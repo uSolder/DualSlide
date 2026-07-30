@@ -14,13 +14,23 @@
 extern "C" {
 #endif
 
+
+typedef enum
+{
+    BOARD_WAKE_REASON_POWER_BUTTON,
+    BOARD_WAKE_REASON_EXTERNAL_POWER
+} Board_WakeReasonTypeDef;
+
+Board_WakeReasonTypeDef Board_GetWakeReason(void);
+
 /**
- * @brief Initialize the DSPCBR1 board.
+ * @brief Initialize the board's hardware.
  *
- * Initializes the selected MCU target and all board-level hardware required
- * before the shared firmware system starts.
+ * Initializes the selected MCU target, peripherals, devices, and interfaces needed for
+ * system operation to begin.
  */
 void Board_Init(void);
+
 
 /**
  * @brief Get the board display-controller handle.
@@ -58,6 +68,13 @@ const GPIO_PinTypeDef *Board_GetPrimaryButtonInput(void);
  * @return Pointer to the secondary button GPIO descriptor.
  */
 const GPIO_PinTypeDef *Board_GetSecondaryButtonInput(void);
+
+
+/**
+ * @brief Command to power off the board
+ *
+ */
+void Board_PowerOff(void);
 
 #ifdef __cplusplus
 }

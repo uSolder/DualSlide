@@ -18,6 +18,8 @@ extern "C" {
  */
 void Target_Init(void);
 
+void Target_PowerOff();
+
 #ifdef __cplusplus
 }
 #endif

@@ -14,6 +14,7 @@
 #include "stm32h7a3_defs.h"
 #include "target.h"
 #include "time.h"
+#include "timer.h"
 #include "w430wvc004_a.h"
 
 #include <stdbool.h>
@@ -48,8 +49,12 @@
 static void Board_SetLCDReset(bool asserted);
 static void Board_InitFailure(void);
 static void Board_InitTarget(void);
+static void Board_InitCriticalInterfaces(void);
 static void Board_InitInterfaces(void);
 static void Board_InitDevices(void);
+static Board_WakeReasonTypeDef Board_DetectWakeReason(void);
+static void Board_BatteryChargeInterrupt(void *Context);
+static void Board_UpdateOrangeLED(void *Context);
 
 /* -------------------------------------------------------------------------- */
 /* Board interface declarations                                               */
@@ -88,7 +93,7 @@ static const GPIO_ConfigTypeDef PowerEnableConfig =
     .Mode = GPIO_MODE_OUTPUT,
     .OutputType = GPIO_OUTPUT_PUSH_PULL,
     .Pull = GPIO_PULL_NONE,
-    .InitialLevel = GPIO_LEVEL_HIGH
+    .InitialLevel = GPIO_LEVEL_LOW
 };
 
 static const GPIO_PinTypeDef LCD_ResetPin =
@@ -130,6 +135,39 @@ static const GPIO_ConfigTypeDef BAT_IsetConfig =
     .InitialLevel = GPIO_LEVEL_LOW
 };
 
+static const GPIO_PinTypeDef BatteryChargePin =
+{
+    .Pin = PC14
+};
+
+static const GPIO_ConfigTypeDef BatteryChargeConfig =
+{
+    .Mode = GPIO_MODE_INPUT,
+    .OutputType = GPIO_OUTPUT_PUSH_PULL,
+    .Pull = GPIO_PULL_UP,
+    .InitialLevel = GPIO_LEVEL_LOW
+};
+
+static const GPIO_InterruptConfigTypeDef BatteryChargeInterruptConfig =
+{
+    .Mode = GPIO_INTERRUPT_BOTH_EDGES,
+    .Callback = Board_BatteryChargeInterrupt,
+    .Context = NULL
+};
+
+static const GPIO_PinTypeDef RedLED_Pin =
+{
+    .Pin = PB6
+};
+
+static const GPIO_ConfigTypeDef LED_Config =
+{
+    .Mode = GPIO_MODE_OUTPUT,
+    .OutputType = GPIO_OUTPUT_PUSH_PULL,
+    .Pull = GPIO_PULL_NONE,
+    .InitialLevel = GPIO_LEVEL_LOW
+};
+
 static const GPIO_PinTypeDef PrimaryButtonPin =
 {
     .Pin = PC12
@@ -163,6 +201,26 @@ static const ADC_InputTypeDef POT_Inputs[POT_INPUT_COUNT] =
 };
 
 static ADC_ValueTypeDef POT_Values[POT_INPUT_COUNT];
+
+static Board_WakeReasonTypeDef WakeReason;
+static volatile bool Board_IsCharging;
+
+static Timer_Handle OrangeLEDTimer =
+{
+    .timer = TIM4_CH2,
+    .frequency_hz = 1000U,
+    .update_callback = Board_UpdateOrangeLED,
+    .callback_context = NULL
+};
+
+static Timer_PWMChannel_Handle OrangeLEDChannel =
+{
+    .timer = &OrangeLEDTimer,
+    .output = TIM4_CH2,
+    .pin = PB7,
+    .polarity = TIMER_PWM_POLARITY_ACTIVE_HIGH,
+    .duty_permille = 500U
+};
 
 static DisplayController_Handle LCD_DisplayController =
 {
@@ -269,8 +327,27 @@ static W430WVC004_A_Handle LCD_Panel =
 void Board_Init(void)
 {
     Board_InitTarget();
+    Board_InitCriticalInterfaces();
+    Board_IsCharging = GPIO_IsLow(&BatteryChargePin);
+    WakeReason = Board_DetectWakeReason();
+
+    if(WakeReason == BOARD_WAKE_REASON_EXTERNAL_POWER)
+    {
+        while(GPIO_IsLow(&PrimaryButtonPin));
+    }
+
+    if(GPIO_Set(&PowerEnablePin) != GPIO_RESULT_OK)
+    {
+        Board_InitFailure();
+    }
+
     Board_InitInterfaces();
     Board_InitDevices();
+}
+
+Board_WakeReasonTypeDef Board_GetWakeReason(void)
+{
+    return WakeReason;
 }
 
 DisplayController_Handle *Board_GetDisplayController(void)
@@ -335,9 +412,76 @@ static void Board_InitTarget(void)
     }
 }
 
-static void Board_InitInterfaces(void)
+static void Board_InitCriticalInterfaces(void)
 {
     if(GPIO_Init(&PowerEnablePin, &PowerEnableConfig) != GPIO_RESULT_OK)
+    {
+        Board_InitFailure();
+    }
+
+    if(GPIO_Init(&PrimaryButtonPin, &ButtonInputConfig) != GPIO_RESULT_OK)
+    {
+        Board_InitFailure();
+    }
+
+    if(GPIO_Init(&BatteryChargePin, &BatteryChargeConfig) != GPIO_RESULT_OK)
+    {
+        Board_InitFailure();
+    }
+
+    Board_IsCharging = GPIO_IsLow(&BatteryChargePin);
+
+    if(GPIO_RegisterInterrupt(&BatteryChargePin, &BatteryChargeInterruptConfig) != GPIO_RESULT_OK)
+    {
+        Board_InitFailure();
+    }
+
+    if(Timer_Init(&OrangeLEDTimer) != TIMER_RESULT_OK)
+    {
+        Board_InitFailure();
+    }
+
+    if(Timer_PWMChannelInit(&OrangeLEDChannel) != TIMER_RESULT_OK)
+    {
+        Board_InitFailure();
+    }
+
+    if(Timer_Start(&OrangeLEDTimer) != TIMER_RESULT_OK)
+    {
+        Board_InitFailure();
+    }
+}
+
+static Board_WakeReasonTypeDef Board_DetectWakeReason(void)
+{
+    /* The power button pulls its input high while it is held. */
+    return !GPIO_IsHigh(&PrimaryButtonPin) ?  BOARD_WAKE_REASON_EXTERNAL_POWER : BOARD_WAKE_REASON_POWER_BUTTON;
+}
+
+static void Board_BatteryChargeInterrupt(void *Context)
+{
+    (void)Context;
+
+    Board_IsCharging = GPIO_IsLow(&BatteryChargePin);
+}
+
+static void Board_UpdateOrangeLED(void *Context)
+{
+    (void)Context;
+
+    if(Board_IsCharging)
+    {
+        (void)Timer_OutputEnable(&OrangeLEDChannel);
+    }
+    else
+    {
+        (void)Timer_OutputDisable(&OrangeLEDChannel);
+    }
+}
+
+static void Board_InitInterfaces(void)
+{
+    if(GPIO_Init(&RedLED_Pin, &LED_Config) != GPIO_RESULT_OK)
     {
         Board_InitFailure();
     }
@@ -353,11 +497,6 @@ static void Board_InitInterfaces(void)
     }
 
     if(GPIO_Init(&BAT_IsetPin, &BAT_IsetConfig) != GPIO_RESULT_OK)
-    {
-        Board_InitFailure();
-    }
-
-    if(GPIO_Init(&PrimaryButtonPin, &ButtonInputConfig) != GPIO_RESULT_OK)
     {
         Board_InitFailure();
     }
@@ -409,4 +548,13 @@ static void Board_InitDevices(void)
     {
         Board_InitFailure();
     }
+}
+
+void Board_PowerOff(void)
+{
+    GPIO_Clear(&PowerEnablePin);
+    GPIO_Clear(&LCD_BacklightPin);
+    while(GPIO_IsHigh(&PrimaryButtonPin));
+    Delay_ms(500);
+    Target_PowerOff();
 }

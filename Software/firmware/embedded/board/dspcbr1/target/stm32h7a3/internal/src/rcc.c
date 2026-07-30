@@ -779,6 +779,7 @@ RCC_Result RCC_EnablePeripheralClock(const void *peripheral)
         }                                         \
     } while (0)
 
+    RCC_ENABLE_IF(SYSCFG, APB4ENR, RCC_APB4ENR_SYSCFGEN);
     RCC_ENABLE_IF(GPIOA, AHB4ENR, RCC_AHB4ENR_GPIOAEN);
     RCC_ENABLE_IF(GPIOB, AHB4ENR, RCC_AHB4ENR_GPIOBEN);
     RCC_ENABLE_IF(GPIOC, AHB4ENR, RCC_AHB4ENR_GPIOCEN);

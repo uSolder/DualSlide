@@ -328,6 +328,7 @@ int System_Run(void)
         if(System_UpdateButtonHold(&System_PrimaryButtonHoldState, INPUT_PRIMARY_BUTTON_NUMBER, FrameStartTimeMilliseconds))
         {
             SystemTasks_PowerOff();
+            Running = false;
         }
 
         if(System_UpdateButtonHold(&System_SecondaryButtonHoldState, INPUT_SECONDARY_BUTTON_NUMBER, FrameStartTimeMilliseconds))

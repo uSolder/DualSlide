@@ -7,6 +7,10 @@
 
 #include "adc.h"
 #include "display_controller.h"
+#include "gpio.h"
+#include "timer.h"
+
+#include "STM32H7A3_Defs.h"
 
 /**
  * @brief Halt execution when an unexpected interrupt occurs.
@@ -98,27 +102,27 @@ void RCC_IRQHandler(void)
 
 void EXTI0_IRQHandler(void)
 {
-    IT_UnhandledInterrupt();
+    GPIO_InterruptHandler(0);
 }
 
 void EXTI1_IRQHandler(void)
 {
-    IT_UnhandledInterrupt();
+    GPIO_InterruptHandler(1);
 }
 
 void EXTI2_IRQHandler(void)
 {
-    IT_UnhandledInterrupt();
+    GPIO_InterruptHandler(2);
 }
 
 void EXTI3_IRQHandler(void)
 {
-    IT_UnhandledInterrupt();
+    GPIO_InterruptHandler(3);
 }
 
 void EXTI4_IRQHandler(void)
 {
-    IT_UnhandledInterrupt();
+    GPIO_InterruptHandler(4);
 }
 
 void DMA_STR0_IRQHandler(void)
@@ -190,7 +194,11 @@ void FDCAN2_IT1_IRQHandler(void)
 
 void EXTI9_5_IRQHandler(void)
 {
-    IT_UnhandledInterrupt();
+    GPIO_InterruptHandler(5U);
+    GPIO_InterruptHandler(6U);
+    GPIO_InterruptHandler(7U);
+    GPIO_InterruptHandler(8U);
+    GPIO_InterruptHandler(9U);
 }
 
 void TIM1_BRK_IRQHandler(void)
@@ -200,7 +208,7 @@ void TIM1_BRK_IRQHandler(void)
 
 void TIM1_UP_IRQHandler(void)
 {
-    IT_UnhandledInterrupt();
+    Timer_IRQHandler(TIM1_CH1);
 }
 
 void TIM1_TRG_COM_IRQHandler(void)
@@ -215,17 +223,17 @@ void TIM1_CC_IRQHandler(void)
 
 void TIM2_IRQHandler(void)
 {
-    IT_UnhandledInterrupt();
+    Timer_IRQHandler(TIM2_CH1);
 }
 
 void TIM3_IRQHandler(void)
 {
-    IT_UnhandledInterrupt();
+    Timer_IRQHandler(TIM3_CH1);
 }
 
 void TIM4_IRQHandler(void)
 {
-    IT_UnhandledInterrupt();
+    Timer_IRQHandler(TIM4_CH1);
 }
 
 void I2C1_EV_IRQHandler(void)
@@ -275,7 +283,12 @@ void USART3_IRQHandler(void)
 
 void EXTI15_10_IRQHandler(void)
 {
-    IT_UnhandledInterrupt();
+    GPIO_InterruptHandler(10U);
+    GPIO_InterruptHandler(11U);
+    GPIO_InterruptHandler(12U);
+    GPIO_InterruptHandler(13U);
+    GPIO_InterruptHandler(14U);
+    GPIO_InterruptHandler(15U);
 }
 
 void RTC_ALARM_IRQHandler(void)
@@ -285,17 +298,18 @@ void RTC_ALARM_IRQHandler(void)
 
 void TIM8_BRK_TIM12_IRQHandler(void)
 {
-    IT_UnhandledInterrupt();
+    Timer_IRQHandler(TIM12_CH1);
 }
 
 void TIM8_UP_TIM13_IRQHandler(void)
 {
-    IT_UnhandledInterrupt();
+    Timer_IRQHandler(TIM8_CH1);
+    Timer_IRQHandler(TIM13_CH1);
 }
 
 void TIM8_TRG_COM_TIM14_IRQHandler(void)
 {
-    IT_UnhandledInterrupt();
+    Timer_IRQHandler(TIM14_CH1);
 }
 
 void TIM8_CC_IRQHandler(void)
@@ -321,7 +335,17 @@ void SDMMC1_IRQHandler(void)
 
 void TIM5_IRQHandler(void)
 {
-    IT_UnhandledInterrupt();
+    Timer_IRQHandler(TIM5_CH1);
+}
+
+void TIM6_DAC_IRQHandler(void)
+{
+    Timer_IRQHandler(TIM6_UPDATE);
+}
+
+void TIM7_IRQHandler(void)
+{
+    Timer_IRQHandler(TIM7_UPDATE);
 }
 
 void SPI3_IRQHandler(void)
@@ -544,17 +568,17 @@ void SWPMI1_IRQHandler(void)
 
 void TIM15_IRQHandler(void)
 {
-    IT_UnhandledInterrupt();
+    Timer_IRQHandler(TIM15_CH1);
 }
 
 void TIM16_IRQHandler(void)
 {
-    IT_UnhandledInterrupt();
+    Timer_IRQHandler(TIM16_CH1);
 }
 
 void TIM17_IRQHandler(void)
 {
-    IT_UnhandledInterrupt();
+    Timer_IRQHandler(TIM17_CH1);
 }
 
 void MDIOS_WKUP_IRQHandler(void)

@@ -206,3 +206,49 @@
 #define SPI_PORT_4 4U
 #define SPI_PORT_5 5U
 #define SPI_PORT_6 6U
+
+/* -------------------------------------------------------------------------- */
+/* TIMER peripheral identifiers                                                 */
+/* -------------------------------------------------------------------------- */
+
+#define TIM1_CH1     0x11U
+#define TIM1_CH2     0x12U
+#define TIM1_CH3     0x13U
+#define TIM1_CH4     0x14U
+
+#define TIM2_CH1     0x21U
+#define TIM2_CH2     0x22U
+#define TIM2_CH3     0x23U
+#define TIM2_CH4     0x24U
+
+#define TIM3_CH1     0x31U
+#define TIM3_CH2     0x32U
+#define TIM3_CH3     0x33U
+#define TIM3_CH4     0x34U
+
+#define TIM4_CH1     0x41U
+#define TIM4_CH2     0x42U
+#define TIM4_CH3     0x43U
+#define TIM4_CH4     0x44U
+
+#define TIM5_CH1     0x51U
+#define TIM5_CH2     0x52U
+#define TIM5_CH3     0x53U
+#define TIM5_CH4     0x54U
+
+#define TIM8_CH1     0x81U
+#define TIM8_CH2     0x82U
+#define TIM8_CH4     0x84U
+
+#define TIM12_CH1    0xC1U
+#define TIM12_CH2    0xC2U
+#define TIM13_CH1    0xD1U
+#define TIM14_CH1    0xE1U
+#define TIM15_CH1    0xF1U
+#define TIM15_CH2    0xF2U
+
+#define TIM16_CH1    0x0101U
+#define TIM17_CH1    0x0111U
+
+#define TIM6_UPDATE    0x60U
+#define TIM7_UPDATE    0x70U

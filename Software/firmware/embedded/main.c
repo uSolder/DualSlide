@@ -11,6 +11,7 @@ int main(void)
     Board_Init();
     System_Run();
 
+    Board_PowerOff();
     for (;;)
     {
     }

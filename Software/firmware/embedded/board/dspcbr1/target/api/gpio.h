@@ -2,8 +2,8 @@
  * @file gpio.h
  * @brief Hardware-independent digital GPIO interface.
  *
- * This interface provides configuration and logical control of board-level
- * digital GPIO signals.
+ * This interface provides configuration, logical control, and interrupt
+ * registration for board-level digital GPIO signals.
  *
  * It intentionally does not expose alternate functions, analog modes, drive
  * strength, slew rate, or other target-specific configuration.
@@ -122,6 +122,37 @@ typedef struct
 } GPIO_ConfigTypeDef;
 
 /**
+ * @brief GPIO interrupt edge selection.
+ */
+typedef enum
+{
+    GPIO_INTERRUPT_RISING_EDGE = 0,
+    GPIO_INTERRUPT_FALLING_EDGE,
+    GPIO_INTERRUPT_BOTH_EDGES
+} GPIO_InterruptModeTypeDef;
+
+/**
+ * @brief GPIO interrupt callback.
+ *
+ * The callback executes in interrupt context. It must be short, must not
+ * block, and must not call functions that wait for an interrupt or otherwise
+ * depend on normal application scheduling.
+ *
+ * @param Context Caller-provided context supplied during registration.
+ */
+typedef void (*GPIO_InterruptCallbackTypeDef)(void *Context);
+
+/**
+ * @brief GPIO interrupt registration parameters.
+ */
+typedef struct
+{
+    GPIO_InterruptModeTypeDef Mode;
+    GPIO_InterruptCallbackTypeDef Callback;
+    void *Context;
+} GPIO_InterruptConfigTypeDef;
+
+/**
  * @brief Result returned by GPIO operations.
  */
 typedef enum
@@ -130,6 +161,7 @@ typedef enum
     GPIO_RESULT_INVALID_ARGUMENT,
     GPIO_RESULT_INVALID_PIN,
     GPIO_RESULT_NOT_INITIALIZED,
+    GPIO_RESULT_BUSY,
     GPIO_RESULT_UNSUPPORTED,
     GPIO_RESULT_HARDWARE_ERROR
 } GPIO_ResultTypeDef;
@@ -156,11 +188,50 @@ GPIO_ResultTypeDef GPIO_Init(const GPIO_PinTypeDef *Pin, const GPIO_ConfigTypeDe
 /**
  * @brief Return a GPIO pin to its target-defined reset configuration.
  *
+ * Any interrupt registered for the pin is unregistered before the pin is
+ * deinitialized.
+ *
  * @param Pin GPIO pin descriptor.
  *
  * @return GPIO_RESULT_OK on success.
  */
 GPIO_ResultTypeDef GPIO_Deinit(const GPIO_PinTypeDef *Pin);
+
+/* -------------------------------------------------------------------------- */
+/* Interrupts                                                                 */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * @brief Register a GPIO interrupt callback.
+ *
+ * The pin must already be configured as a digital input. The target
+ * implementation configures the required interrupt routing and enables the
+ * interrupt source.
+ *
+ * Only one callback may be registered for a pin at a time. Calling this
+ * function for an already-registered pin returns GPIO_RESULT_BUSY.
+ *
+ * The target implementation clears any pending interrupt condition before
+ * enabling the interrupt.
+ *
+ * @param Pin    GPIO pin descriptor.
+ * @param Config Interrupt edge and callback configuration.
+ *
+ * @return GPIO_RESULT_OK on success.
+ */
+GPIO_ResultTypeDef GPIO_RegisterInterrupt(const GPIO_PinTypeDef *Pin, const GPIO_InterruptConfigTypeDef *Config);
+
+/**
+ * @brief Disable and unregister a GPIO interrupt callback.
+ *
+ * This function disables interrupt generation for the pin, clears any pending
+ * interrupt condition, and discards the registered callback and context.
+ *
+ * @param Pin GPIO pin descriptor.
+ *
+ * @return GPIO_RESULT_OK on success.
+ */
+GPIO_ResultTypeDef GPIO_UnregisterInterrupt(const GPIO_PinTypeDef *Pin);
 
 /* -------------------------------------------------------------------------- */
 /* Digital output                                                             */
@@ -241,7 +312,7 @@ bool GPIO_IsHigh(const GPIO_PinTypeDef *Pin);
  *
  * @param Pin GPIO pin descriptor.
  *
- * @return true when the pin is logically low.
+ * @return true when the descriptor contains an assigned pin.
  */
 bool GPIO_IsLow(const GPIO_PinTypeDef *Pin);
 
@@ -261,6 +332,8 @@ bool GPIO_IsLow(const GPIO_PinTypeDef *Pin);
  * @return true when the descriptor contains an assigned pin.
  */
 bool GPIO_IsAssigned(const GPIO_PinTypeDef *Pin);
+
+void GPIO_InterruptHandler(uint32_t Line);
 
 #ifdef __cplusplus
 }

@@ -7,7 +7,6 @@
  */
 
 #include "system_tasks.h"
-
 #include <stdbool.h>
 
 bool SystemTasks_Process(void)
@@ -16,6 +15,6 @@ bool SystemTasks_Process(void)
 }
 
 void SystemTasks_PowerOff(void)
-{
-    for(;;);
+{  
+    // nothing to be done here
 }

@@ -99,3 +99,8 @@ void Target_Init(void)
     RCC_Init();
     SystemCoreClockUpdate();
 }
+
+void Target_PowerOff(void)
+{
+    NVIC_SystemReset();
+}
