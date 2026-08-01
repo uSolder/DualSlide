@@ -27,6 +27,7 @@ extern "C" {
  * @brief Value representing an unassigned ADC input pin.
  */
 #define ADC_PIN_NONE UINT32_MAX
+#define ADC_PIN_VREFINT (UINT32_MAX - 1U)
 
 /* -------------------------------------------------------------------------- */
 /* ADC input types                                                            */

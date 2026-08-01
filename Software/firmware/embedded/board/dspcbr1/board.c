@@ -9,6 +9,7 @@
 #include "delay.h"
 #include "display_controller.h"
 #include "gpio.h"
+#include "power.h"
 #include "spi.h"
 #include "st7701s.h"
 #include "stm32h7a3_defs.h"
@@ -20,47 +21,26 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/* -------------------------------------------------------------------------- */
-/* LCD timing                                                                 */
-/* -------------------------------------------------------------------------- */
+#define LCD_HORIZONTAL_SYNC_WIDTH                     10U
+#define LCD_HORIZONTAL_BACK_PORCH                     20U
+#define LCD_HORIZONTAL_FRONT_PORCH                    40U
+#define LCD_VERTICAL_SYNC_HEIGHT                       2U
+#define LCD_VERTICAL_BACK_PORCH                       18U
+#define LCD_VERTICAL_FRONT_PORCH                      20U
+#define LCD_REFRESH_RATE_MILLIHZ                   57720U
 
-#define LCD_HORIZONTAL_SYNC_WIDTH         10U
-#define LCD_HORIZONTAL_BACK_PORCH         20U
-#define LCD_HORIZONTAL_FRONT_PORCH        40U
+#define POT_A_INPUT_INDEX                              0U
+#define POT_B_INPUT_INDEX                              1U
+#define USB_CC1_INPUT_INDEX                            2U
+#define USB_CC2_INPUT_INDEX                            3U
+#define BATTERY_VOLTAGE_INPUT_INDEX                    4U
+#define VREFINT_INPUT_INDEX                            5U
+#define ADC_INPUT_COUNT                                6U
 
-#define LCD_VERTICAL_SYNC_HEIGHT          2U
-#define LCD_VERTICAL_BACK_PORCH           18U
-#define LCD_VERTICAL_FRONT_PORCH          20U
-
-#define LCD_REFRESH_RATE_MILLIHZ          57720U
-
-/* -------------------------------------------------------------------------- */
-/* ADC inputs                                                                 */
-/* -------------------------------------------------------------------------- */
-
-#define POT_A_INPUT_INDEX                 0U
-#define POT_B_INPUT_INDEX                 1U
-#define USB_CC1_INPUT_INDEX                2U
-#define USB_CC2_INPUT_INDEX                3U
-#define ADC_INPUT_COUNT                    4U
-
-/*
- * A Type-C source advertising its default current produces less than 0.66 V
- * on a 5.1-kOhm Rd. Sources advertising 1.5 A or 3.0 A exceed this level.
- * ADC1 uses its full 16-bit range with a 3.3-V analog supply.
- */
-#define USB_CC_FAST_CURRENT_THRESHOLD      13107U
-
-/* -------------------------------------------------------------------------- */
-/* Charge indicator                                                           */
-/* -------------------------------------------------------------------------- */
-
-#define CHARGE_LED_MINIMUM_DUTY_PERMILLE   500U
-#define CHARGE_LED_MAXIMUM_DUTY_PERMILLE   1000U
-
-/* -------------------------------------------------------------------------- */
-/* Private function declarations                                              */
-/* -------------------------------------------------------------------------- */
+#define ADC_FULL_SCALE_VALUE                       65535U
+#define VREFINT_CALIBRATION_ADDRESS          0x08FFF810UL
+#define VREFINT_CALIBRATION_MILLIVOLTS            3300U
+#define BATTERY_VOLTAGE_DIVIDER_RATIO                 2U
 
 static void Board_SetLCDReset(bool asserted);
 static void Board_InitFailure(void);
@@ -68,15 +48,12 @@ static void Board_InitTarget(void);
 static void Board_InitCriticalInterfaces(void);
 static void Board_InitInterfaces(void);
 static void Board_InitDevices(void);
+static void Board_InitPower(void);
 static Board_WakeReasonTypeDef Board_DetectWakeReason(void);
-static void Board_BatteryChargeInterrupt(void *Context);
-static void Board_UpdateOrangeLED(void *Context);
-static bool Board_IsFastUSBCurrentAvailable(void);
-static void Board_UpdateBatteryChargeCurrentLimit(bool fast_current_available);
-
-/* -------------------------------------------------------------------------- */
-/* Board interface declarations                                               */
-/* -------------------------------------------------------------------------- */
+static uint16_t Board_GetADCInputMillivolts(const ADC_InputTypeDef *input);
+static uint16_t Board_GetCC1Millivolts(void);
+static uint16_t Board_GetCC2Millivolts(void);
+static uint16_t Board_GetBatteryMillivolts(void);
 
 static SPI_Bus_Handle SPI2_Bus =
 {
@@ -89,13 +66,10 @@ static SPI_Bus_Handle SPI2_Bus =
 static SPI_Device_Handle LCD_SPI =
 {
     .bus = &SPI2_Bus,
-
     .chip_select_pin = PA10,
     .chip_select_polarity = SPI_CHIP_SELECT_ACTIVE_LOW,
-
     .frequency_hz = 1000000U,
     .timeout_ms = 1000U,
-
     .mode = SPI_MODE_0,
     .bit_order = SPI_BIT_ORDER_MSB_FIRST,
     .frame_size = SPI_FRAME_SIZE_9_BIT
@@ -112,6 +86,49 @@ static const GPIO_ConfigTypeDef PowerEnableConfig =
     .OutputType = GPIO_OUTPUT_PUSH_PULL,
     .Pull = GPIO_PULL_NONE,
     .InitialLevel = GPIO_LEVEL_LOW
+};
+
+static const GPIO_PinTypeDef ChargerCurrentLimitPin =
+{
+    .Pin = PC15
+};
+
+static const GPIO_ConfigTypeDef ChargerCurrentLimitConfig =
+{
+    .Mode = GPIO_MODE_OUTPUT,
+    .OutputType = GPIO_OUTPUT_PUSH_PULL,
+    .Pull = GPIO_PULL_NONE,
+    .InitialLevel = GPIO_LEVEL_HIGH
+};
+
+static const GPIO_PinTypeDef ChargerStatusPin =
+{
+    .Pin = PC14
+};
+
+static const GPIO_ConfigTypeDef ChargerStatusConfig =
+{
+    .Mode = GPIO_MODE_INPUT,
+    .OutputType = GPIO_OUTPUT_PUSH_PULL,
+    .Pull = GPIO_PULL_UP,
+    .InitialLevel = GPIO_LEVEL_LOW
+};
+
+static Timer_Handle ChargeLEDTimer =
+{
+    .timer = TIM4_CH2,
+    .frequency_hz = 1000U,
+    .update_callback = Power_TimerUpdate,
+    .callback_context = NULL
+};
+
+static Timer_PWMChannel_Handle ChargeLEDChannel =
+{
+    .timer = &ChargeLEDTimer,
+    .output = TIM4_CH2,
+    .pin = PB7,
+    .polarity = TIMER_PWM_POLARITY_ACTIVE_HIGH,
+    .duty_permille = 500U
 };
 
 static const GPIO_PinTypeDef LCD_ResetPin =
@@ -140,39 +157,6 @@ static const GPIO_ConfigTypeDef LCD_BacklightConfig =
     .InitialLevel = GPIO_LEVEL_LOW
 };
 
-static const GPIO_PinTypeDef BAT_IsetPin =
-{
-    .Pin = PC15
-};
-
-static const GPIO_ConfigTypeDef BAT_IsetConfig =
-{
-    .Mode = GPIO_MODE_OUTPUT,
-    .OutputType = GPIO_OUTPUT_PUSH_PULL,
-    .Pull = GPIO_PULL_NONE,
-    .InitialLevel = GPIO_LEVEL_HIGH
-};
-
-static const GPIO_PinTypeDef BatteryChargePin =
-{
-    .Pin = PC14
-};
-
-static const GPIO_ConfigTypeDef BatteryChargeConfig =
-{
-    .Mode = GPIO_MODE_INPUT,
-    .OutputType = GPIO_OUTPUT_PUSH_PULL,
-    .Pull = GPIO_PULL_UP,
-    .InitialLevel = GPIO_LEVEL_LOW
-};
-
-static const GPIO_InterruptConfigTypeDef BatteryChargeInterruptConfig =
-{
-    .Mode = GPIO_INTERRUPT_BOTH_EDGES,
-    .Callback = Board_BatteryChargeInterrupt,
-    .Context = NULL
-};
-
 static const GPIO_PinTypeDef RedLED_Pin =
 {
     .Pin = PB6
@@ -189,6 +173,11 @@ static const GPIO_ConfigTypeDef LED_Config =
 static const GPIO_PinTypeDef PrimaryButtonPin =
 {
     .Pin = PC12
+};
+
+static const GPIO_PinTypeDef USBPowerDetectPin =
+{
+    .Pin = PA9
 };
 
 static const GPIO_PinTypeDef SecondaryButtonPin =
@@ -208,6 +197,10 @@ static const GPIO_ConfigTypeDef ButtonInputConfig =
     .InitialLevel = GPIO_LEVEL_HIGH
 };
 
+/*
+ * VREFINT is routed through ADC2 by the STM32H7A3 ADC driver. All external
+ * board inputs remain on ADC1.
+ */
 static const ADC_InputTypeDef ADC_Inputs[ADC_INPUT_COUNT] =
 {
     {
@@ -221,34 +214,28 @@ static const ADC_InputTypeDef ADC_Inputs[ADC_INPUT_COUNT] =
     },
     {
         .Pin = PA3
+    },
+    {
+        .Pin = PC2
+    },
+    {
+        .Pin = ADC_PIN_VREFINT
     }
 };
 
 static ADC_ValueTypeDef ADC_Values[ADC_INPUT_COUNT];
 
+static Power_Handle BoardPowerHandle =
+{
+    .charger_current_limit_pin = &ChargerCurrentLimitPin,
+    .charger_status_pin = &ChargerStatusPin,
+    .charge_led_channel = &ChargeLEDChannel,
+    .get_cc1_millivolts = Board_GetCC1Millivolts,
+    .get_cc2_millivolts = Board_GetCC2Millivolts,
+    .get_battery_millivolts = Board_GetBatteryMillivolts
+};
+
 static Board_WakeReasonTypeDef WakeReason;
-static volatile bool Board_IsCharging;
-static uint16_t OrangeLEDDutyPermille = CHARGE_LED_MINIMUM_DUTY_PERMILLE;
-static bool OrangeLEDDutyIncreasing = true;
-static bool OrangeLEDSlowUpdateToggle;
-static bool Board_IsFastUSBCurrent;
-
-static Timer_Handle OrangeLEDTimer =
-{
-    .timer = TIM4_CH2,
-    .frequency_hz = 1000U,
-    .update_callback = Board_UpdateOrangeLED,
-    .callback_context = NULL
-};
-
-static Timer_PWMChannel_Handle OrangeLEDChannel =
-{
-    .timer = &OrangeLEDTimer,
-    .output = TIM4_CH2,
-    .pin = PB7,
-    .polarity = TIMER_PWM_POLARITY_ACTIVE_HIGH,
-    .duty_permille = CHARGE_LED_MINIMUM_DUTY_PERMILLE
-};
 
 static DisplayController_Handle LCD_DisplayController =
 {
@@ -258,64 +245,52 @@ static DisplayController_Handle LCD_DisplayController =
         .vertical_sync_pin = PA7,
         .data_enable_pin = PC5,
         .pixel_clock_pin = PB14,
-
         .red_pins =
         {
-            DISPLAY_CONTROLLER_PIN_UNUSED, /* R0 */
-            DISPLAY_CONTROLLER_PIN_UNUSED, /* R1 */
-            PC10,                           /* R2 */
-            PB0,                            /* R3 */
-            PA5,                            /* R4 */
-            PC0,                            /* R5 */
-            PB1,                            /* R6 */
-            PC4                             /* R7 */
+            DISPLAY_CONTROLLER_PIN_UNUSED,
+            DISPLAY_CONTROLLER_PIN_UNUSED,
+            PC10,
+            PB0,
+            PA5,
+            PC0,
+            PB1,
+            PC4
         },
-
         .green_pins =
         {
-            DISPLAY_CONTROLLER_PIN_UNUSED, /* G0 */
-            DISPLAY_CONTROLLER_PIN_UNUSED, /* G1 */
-            PA6,                            /* G2 */
-            PC9,                            /* G3 */
-            PB10,                           /* G4 */
-            PC1,                            /* G5 */
-            PC7,                            /* G6 */
-            PB15                            /* G7 */
+            DISPLAY_CONTROLLER_PIN_UNUSED,
+            DISPLAY_CONTROLLER_PIN_UNUSED,
+            PA6,
+            PC9,
+            PB10,
+            PC1,
+            PC7,
+            PB15
         },
-
         .blue_pins =
         {
-            DISPLAY_CONTROLLER_PIN_UNUSED, /* B0 */
-            DISPLAY_CONTROLLER_PIN_UNUSED, /* B1 */
-            PD2,                            /* B2 */
-            PA8,                            /* B3 */
-            PC11,                           /* B4 */
-            PB5,                            /* B5 */
-            PB8,                            /* B6 */
-            PB9                             /* B7 */
+            DISPLAY_CONTROLLER_PIN_UNUSED,
+            DISPLAY_CONTROLLER_PIN_UNUSED,
+            PD2,
+            PA8,
+            PC11,
+            PB5,
+            PB8,
+            PB9
         }
     },
-
     .timing =
     {
         .active_width = W430WVC004_A_WIDTH,
         .active_height = W430WVC004_A_HEIGHT,
-
         .horizontal_sync_width = LCD_HORIZONTAL_SYNC_WIDTH,
         .horizontal_back_porch = LCD_HORIZONTAL_BACK_PORCH,
         .horizontal_front_porch = LCD_HORIZONTAL_FRONT_PORCH,
-
         .vertical_sync_height = LCD_VERTICAL_SYNC_HEIGHT,
         .vertical_back_porch = LCD_VERTICAL_BACK_PORCH,
         .vertical_front_porch = LCD_VERTICAL_FRONT_PORCH,
-
         .refresh_rate_millihz = LCD_REFRESH_RATE_MILLIHZ
     },
-
-    /*
-     * The panel uses active-low HSYNC and VSYNC, active-high data enable, and
-     * requires an inverted LTDC pixel clock for stable RGB sampling.
-     */
     .signals =
     {
         .horizontal_sync = DISPLAY_CONTROLLER_POLARITY_ACTIVE_LOW,
@@ -323,7 +298,6 @@ static DisplayController_Handle LCD_DisplayController =
         .data_enable = DISPLAY_CONTROLLER_POLARITY_ACTIVE_LOW,
         .pixel_clock_edge = DISPLAY_CONTROLLER_PIXEL_CLOCK_RISING_EDGE
     },
-
     .background_color =
     {
         .red = 0U,
@@ -331,10 +305,6 @@ static DisplayController_Handle LCD_DisplayController =
         .blue = 0U
     }
 };
-
-/* -------------------------------------------------------------------------- */
-/* Board device declarations                                                  */
-/* -------------------------------------------------------------------------- */
 
 static ST7701S_Handle LCD_Controller =
 {
@@ -348,15 +318,10 @@ static W430WVC004_A_Handle LCD_Panel =
     .controller = &LCD_Controller
 };
 
-/* -------------------------------------------------------------------------- */
-/* Public functions                                                           */
-/* -------------------------------------------------------------------------- */
-
 void Board_Init(void)
 {
     Board_InitTarget();
     Board_InitCriticalInterfaces();
-    Board_IsCharging = GPIO_IsLow(&BatteryChargePin);
     WakeReason = Board_DetectWakeReason();
 
     if(WakeReason == BOARD_WAKE_REASON_EXTERNAL_POWER)
@@ -393,6 +358,11 @@ const ADC_InputTypeDef *Board_GetPOTBInput(void)
     return &ADC_Inputs[POT_B_INPUT_INDEX];
 }
 
+const GPIO_PinTypeDef *Board_GetUSBPowerInput(void)
+{
+    return &USBPowerDetectPin;
+}
+
 const GPIO_PinTypeDef *Board_GetPrimaryButtonInput(void)
 {
     return &PrimaryButtonPin;
@@ -403,20 +373,24 @@ const GPIO_PinTypeDef *Board_GetSecondaryButtonInput(void)
     return &SecondaryButtonPin;
 }
 
-/* -------------------------------------------------------------------------- */
-/* Private functions                                                          */
-/* -------------------------------------------------------------------------- */
+void Board_PowerOff(void)
+{
+    GPIO_Clear(&PowerEnablePin);
+    GPIO_Clear(&LCD_BacklightPin);
+
+    while(GPIO_IsHigh(&PrimaryButtonPin));
+
+    Delay_ms(500U);
+    Target_PowerOff();
+}
 
 static void Board_SetLCDReset(bool asserted)
 {
-    GPIO_LevelTypeDef Level;
+    GPIO_LevelTypeDef level;
 
-    /*
-     * The ST7701S reset input is active low.
-     */
-    Level = asserted ? GPIO_LEVEL_LOW : GPIO_LEVEL_HIGH;
+    level = asserted ? GPIO_LEVEL_LOW : GPIO_LEVEL_HIGH;
 
-    if(GPIO_Write(&LCD_ResetPin, Level) != GPIO_RESULT_OK)
+    if(GPIO_Write(&LCD_ResetPin, level) != GPIO_RESULT_OK)
     {
         Board_InitFailure();
     }
@@ -452,29 +426,11 @@ static void Board_InitCriticalInterfaces(void)
         Board_InitFailure();
     }
 
-    /* High selects the charger IC's 500-mA input-current limit. */
-    if(GPIO_Init(&BAT_IsetPin, &BAT_IsetConfig) != GPIO_RESULT_OK)
+    if(GPIO_Init(&USBPowerDetectPin, &ButtonInputConfig) != GPIO_RESULT_OK)
     {
         Board_InitFailure();
     }
 
-    if(GPIO_Init(&BatteryChargePin, &BatteryChargeConfig) != GPIO_RESULT_OK)
-    {
-        Board_InitFailure();
-    }
-
-    Board_IsCharging = GPIO_IsLow(&BatteryChargePin);
-
-    if(GPIO_RegisterInterrupt(&BatteryChargePin, &BatteryChargeInterruptConfig) != GPIO_RESULT_OK)
-    {
-        Board_InitFailure();
-    }
-
-    /*
-     * The ADC has a fixed conversion list. Initialize all board inputs here
-     * so CC current advertisement is available while the device is charging
-     * with its main power rail disabled.
-     */
     if(ADC_Init(ADC_Inputs, ADC_Values, ADC_INPUT_COUNT) != ADC_RESULT_OK)
     {
         Board_InitFailure();
@@ -485,17 +441,37 @@ static void Board_InitCriticalInterfaces(void)
         Board_InitFailure();
     }
 
-    if(Timer_Init(&OrangeLEDTimer) != TIMER_RESULT_OK)
+    Board_InitPower();
+}
+
+static void Board_InitPower(void)
+{
+    if(GPIO_Init(&ChargerCurrentLimitPin, &ChargerCurrentLimitConfig) != GPIO_RESULT_OK)
     {
         Board_InitFailure();
     }
 
-    if(Timer_PWMChannelInit(&OrangeLEDChannel) != TIMER_RESULT_OK)
+    if(GPIO_Init(&ChargerStatusPin, &ChargerStatusConfig) != GPIO_RESULT_OK)
     {
         Board_InitFailure();
     }
 
-    if(Timer_Start(&OrangeLEDTimer) != TIMER_RESULT_OK)
+    if(Timer_Init(&ChargeLEDTimer) != TIMER_RESULT_OK)
+    {
+        Board_InitFailure();
+    }
+
+    if(Timer_PWMChannelInit(&ChargeLEDChannel) != TIMER_RESULT_OK)
+    {
+        Board_InitFailure();
+    }
+
+    if(Power_Init(&BoardPowerHandle) != POWER_RESULT_OK)
+    {
+        Board_InitFailure();
+    }
+
+    if(Timer_Start(&ChargeLEDTimer) != TIMER_RESULT_OK)
     {
         Board_InitFailure();
     }
@@ -503,105 +479,7 @@ static void Board_InitCriticalInterfaces(void)
 
 static Board_WakeReasonTypeDef Board_DetectWakeReason(void)
 {
-    /* The power button drives its input high while it is held. */
     return !GPIO_IsHigh(&PrimaryButtonPin) ? BOARD_WAKE_REASON_EXTERNAL_POWER : BOARD_WAKE_REASON_POWER_BUTTON;
-}
-
-static void Board_BatteryChargeInterrupt(void *Context)
-{
-    (void)Context;
-
-    Board_IsCharging = GPIO_IsLow(&BatteryChargePin);
-}
-
-static void Board_UpdateOrangeLED(void *Context)
-{
-    bool FastUSBCurrentAvailable;
-    bool UpdateDuty;
-
-    (void)Context;
-
-    FastUSBCurrentAvailable = Board_IsFastUSBCurrentAvailable();
-    Board_UpdateBatteryChargeCurrentLimit(FastUSBCurrentAvailable);
-
-    if(!Board_IsCharging)
-    {
-        (void)Timer_OutputDisable(&OrangeLEDChannel);
-        return;
-    }
-
-    (void)Timer_OutputEnable(&OrangeLEDChannel);
-
-    /*
-     * TIM4 calls this callback every millisecond. One duty step per callback
-     * gives a 1-Hz triangle wave. Updating every second callback gives 0.5 Hz.
-     */
-    UpdateDuty = FastUSBCurrentAvailable;
-
-    if(!UpdateDuty)
-    {
-        OrangeLEDSlowUpdateToggle = !OrangeLEDSlowUpdateToggle;
-        UpdateDuty = OrangeLEDSlowUpdateToggle;
-    }
-
-    if(!UpdateDuty)
-    {
-        return;
-    }
-
-    if(OrangeLEDDutyIncreasing)
-    {
-        OrangeLEDDutyPermille++;
-
-        if(OrangeLEDDutyPermille >= CHARGE_LED_MAXIMUM_DUTY_PERMILLE)
-        {
-            OrangeLEDDutyPermille = CHARGE_LED_MAXIMUM_DUTY_PERMILLE;
-            OrangeLEDDutyIncreasing = false;
-        }
-    }
-    else
-    {
-        OrangeLEDDutyPermille--;
-
-        if(OrangeLEDDutyPermille <= CHARGE_LED_MINIMUM_DUTY_PERMILLE)
-        {
-            OrangeLEDDutyPermille = CHARGE_LED_MINIMUM_DUTY_PERMILLE;
-            OrangeLEDDutyIncreasing = true;
-        }
-    }
-
-    (void)Timer_SetPWMDutyPermille(&OrangeLEDChannel, OrangeLEDDutyPermille);
-}
-
-static bool Board_IsFastUSBCurrentAvailable(void)
-{
-    ADC_ValueTypeDef CC1Voltage;
-    ADC_ValueTypeDef CC2Voltage;
-
-    CC1Voltage = ADC_GetValue(&ADC_Inputs[USB_CC1_INPUT_INDEX]);
-    CC2Voltage = ADC_GetValue(&ADC_Inputs[USB_CC2_INPUT_INDEX]);
-
-    return (CC1Voltage >= USB_CC_FAST_CURRENT_THRESHOLD) ||  (CC2Voltage >= USB_CC_FAST_CURRENT_THRESHOLD);
-}
-
-static void Board_UpdateBatteryChargeCurrentLimit(bool fast_current_available)
-{
-    if(fast_current_available == Board_IsFastUSBCurrent)
-    {
-        return;
-    }
-
-    /* Low selects 1 A; high selects the default 500-mA limit. */
-    if(fast_current_available)
-    {
-        (void)GPIO_Clear(&BAT_IsetPin);
-    }
-    else
-    {
-        (void)GPIO_Set(&BAT_IsetPin);
-    }
-
-    Board_IsFastUSBCurrent = fast_current_available;
 }
 
 static void Board_InitInterfaces(void)
@@ -655,11 +533,38 @@ static void Board_InitDevices(void)
     }
 }
 
-void Board_PowerOff(void)
+static uint16_t Board_GetADCInputMillivolts(const ADC_InputTypeDef *input)
 {
-    GPIO_Clear(&PowerEnablePin);
-    GPIO_Clear(&LCD_BacklightPin);
-    while(GPIO_IsHigh(&PrimaryButtonPin));
-    Delay_ms(500);
-    Target_PowerOff();
+    ADC_ValueTypeDef reference_value;
+    ADC_ValueTypeDef input_value;
+    uint16_t reference_calibration;
+    uint32_t supply_millivolts;
+
+    reference_value = ADC_GetValue(&ADC_Inputs[VREFINT_INPUT_INDEX]);
+
+    if(reference_value == 0U)
+    {
+        return 0U;
+    }
+
+    reference_calibration = *((const uint16_t *)VREFINT_CALIBRATION_ADDRESS);
+    supply_millivolts = ((uint32_t)VREFINT_CALIBRATION_MILLIVOLTS * reference_calibration) / reference_value;
+    input_value = ADC_GetValue(input);
+
+    return (uint16_t)(((uint32_t)input_value * supply_millivolts) / ADC_FULL_SCALE_VALUE);
+}
+
+static uint16_t Board_GetCC1Millivolts(void)
+{
+    return Board_GetADCInputMillivolts(&ADC_Inputs[USB_CC1_INPUT_INDEX]);
+}
+
+static uint16_t Board_GetCC2Millivolts(void)
+{
+    return Board_GetADCInputMillivolts(&ADC_Inputs[USB_CC2_INPUT_INDEX]);
+}
+
+static uint16_t Board_GetBatteryMillivolts(void)
+{
+    return (uint16_t)(Board_GetADCInputMillivolts(&ADC_Inputs[BATTERY_VOLTAGE_INPUT_INDEX]) * BATTERY_VOLTAGE_DIVIDER_RATIO);
 }

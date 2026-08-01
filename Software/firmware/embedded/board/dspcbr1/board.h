@@ -6,14 +6,13 @@
 #ifndef DSPCBR1_BOARD_H
 #define DSPCBR1_BOARD_H
 
-#include "display_controller.h"
 #include "adc.h"
+#include "display_controller.h"
 #include "gpio.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-
 
 typedef enum
 {
@@ -21,58 +20,48 @@ typedef enum
     BOARD_WAKE_REASON_EXTERNAL_POWER
 } Board_WakeReasonTypeDef;
 
-Board_WakeReasonTypeDef Board_GetWakeReason(void);
-
 /**
- * @brief Initialize the board's hardware.
- *
- * Initializes the selected MCU target, peripherals, devices, and interfaces needed for
- * system operation to begin.
+ * @brief Initializes the board hardware required for system operation.
  */
 void Board_Init(void);
 
+/**
+ * @brief Returns the reason that caused the board to wake.
+ */
+Board_WakeReasonTypeDef Board_GetWakeReason(void);
 
 /**
- * @brief Get the board display-controller handle.
- *
- * The returned handle remains owned by the board implementation.
- *
- * @return Pointer to the initialized display-controller handle.
+ * @brief Returns the initialized board display-controller handle.
  */
 DisplayController_Handle *Board_GetDisplayController(void);
 
 /**
- * @brief Get the board-assigned ADC input for potentiometer A.
- *
- * @return Pointer to the potentiometer A ADC input descriptor.
+ * @brief Returns the board-assigned ADC input for potentiometer A.
  */
 const ADC_InputTypeDef *Board_GetPOTAInput(void);
 
 /**
- * @brief Get the board-assigned ADC input for potentiometer B.
- *
- * @return Pointer to the potentiometer B ADC input descriptor.
+ * @brief Returns the board-assigned ADC input for potentiometer B.
  */
 const ADC_InputTypeDef *Board_GetPOTBInput(void);
 
 /**
- * @brief Get the board-assigned GPIO input for the primary button.
- *
- * @return Pointer to the primary button GPIO descriptor.
+ * @brief Returns the board-assigned GPIO input for the primary button.
  */
 const GPIO_PinTypeDef *Board_GetPrimaryButtonInput(void);
 
 /**
- * @brief Get the board-assigned GPIO input for the secondary button.
- *
- * @return Pointer to the secondary button GPIO descriptor.
+ * @brief Returns the board-assigned GPIO input for the secondary button.
  */
 const GPIO_PinTypeDef *Board_GetSecondaryButtonInput(void);
 
+/**
+ * @brief Returns the board-assigned GPIO input for 5V input.
+ */
+const GPIO_PinTypeDef *Board_GetUSBPowerInput(void);
 
 /**
- * @brief Command to power off the board
- *
+ * @brief Commands the board to turn off its main power rail.
  */
 void Board_PowerOff(void);
 
@@ -80,4 +69,4 @@ void Board_PowerOff(void);
 }
 #endif
 
-#endif /* DSPCBR1_BOARD_H */
+#endif

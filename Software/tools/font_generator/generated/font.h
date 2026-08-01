@@ -8,6 +8,7 @@
 #ifndef FONT_H
 #define FONT_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 /**
@@ -41,6 +42,7 @@ typedef struct
 {
     const uint8_t *bitmap;
     const FontGlyph *glyphs;
+    const uint32_t *glyphCodepoints;
 
     uint32_t firstCodepoint;
     uint16_t glyphCount;
@@ -50,5 +52,38 @@ typedef struct
     uint8_t ascent;
     uint8_t descent;
 } Font;
+
+/**
+ * @brief Returns the glyph for a Unicode codepoint, or NULL if it is absent.
+ *
+ * Fonts generated from a range leave glyphCodepoints as NULL, allowing the
+ * usual direct firstCodepoint-relative lookup. Sparse character-list fonts
+ * use the generated codepoint table.
+ */
+static inline const FontGlyph *Font_GetGlyph(const Font *font, uint32_t codepoint)
+{
+    uint32_t glyphIndex;
+
+    if (font->glyphCodepoints != NULL)
+    {
+        for (glyphIndex = 0U; glyphIndex < font->glyphCount; ++glyphIndex)
+        {
+            if (font->glyphCodepoints[glyphIndex] == codepoint)
+            {
+                return &font->glyphs[glyphIndex];
+            }
+        }
+
+        return NULL;
+    }
+
+    if ((codepoint < font->firstCodepoint) ||
+        ((codepoint - font->firstCodepoint) >= font->glyphCount))
+    {
+        return NULL;
+    }
+
+    return &font->glyphs[codepoint - font->firstCodepoint];
+}
 
 #endif /* FONT_H */

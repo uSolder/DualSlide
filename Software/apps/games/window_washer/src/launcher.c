@@ -3,10 +3,9 @@
  * @brief DualSlide startup animation and application launcher.
  *
  * Sequence:
- *  1. Blank white screen.
- *  2. Six colour bars rise from the bottom.
- *  3. The bars descend and directly reveal the launcher.
- *  4. The launcher remains displayed.
+ *  1. White uSolder brand screen inside the CRT.
+ *  2. CRT channel-change shutters close over the brand, then open.
+ *  3. The selected game preview remains displayed inside the CRT.
  */
 
 #include "launcher.h"
@@ -17,6 +16,7 @@
 #include "open_sans.h"
 #include "open_sans_bold.h"
 #include "render.h"
+#include "avenir_next_demi_usolder.h"
 
 #include <limits.h>
 #include <stdbool.h>
@@ -28,15 +28,7 @@
 #define LAUNCHER_UI_PALETTE_START_INDEX         (128U)
 #define LAUNCHER_UI_PALETTE_ENTRY_COUNT         (128U)
 
-#define LAUNCHER_WHITE_END_MS                   (700U)
-#define LAUNCHER_BARS_RISE_END_MS               (2300U)
-#define LAUNCHER_BARS_HOLD_END_MS               (2550U)
-#define LAUNCHER_BARS_FALL_END_MS               (4050U)
-
-#define LAUNCHER_BAR_COUNT                      (6U)
-#define LAUNCHER_BAR_STAGGER_MS                 (140U)
-#define LAUNCHER_BAR_TRAVEL_MS                  (500U)
-
+#define LAUNCHER_WHITE_END_MS                   (1000U)
 /* Palette changes occur only while the closing CRT shutters cover the preview. */
 #define LAUNCHER_PREVIEW_SHUTTER_TRAVEL_MS       (120U)
 #define LAUNCHER_PREVIEW_SHUTTER_HOLD_MS         (50U)
@@ -48,9 +40,11 @@
 
 /* Top-screen tab positions. */
 #define LAUNCHER_SETTINGS_BUTTON_X                (240)
-#define LAUNCHER_START_BUTTON_X                   (800-240-80)
+#define LAUNCHER_CHARGING_INDICATOR_X             (360)
+#define LAUNCHER_START_BUTTON_X                   (480)
 #define LAUNCHER_SCREEN_TAB_Y                     (0)
 #define LAUNCHER_SETTINGS_BUTTON_WIDTH            (80)
+#define LAUNCHER_CHARGING_INDICATOR_WIDTH         (80)
 #define LAUNCHER_START_BUTTON_WIDTH               (80)
 #define LAUNCHER_SCREEN_TAB_CAP_HEIGHT            (14U)
 #define LAUNCHER_SCREEN_TAB_SIDE_ANGLE            (8)
@@ -58,13 +52,23 @@
 #define LAUNCHER_SCREEN_TAB_BOTTOM_BORDER_HEIGHT  (5)
 #define LAUNCHER_SCREEN_TAB_LABEL_Y               (18)
 
+#define LAUNCHER_BATTERY_DISPLAY_X                (365)
+#define LAUNCHER_BATTERY_DISPLAY_Y                (21)
+#define LAUNCHER_BATTERY_DISPLAY_WIDTH            (70U)
+#define LAUNCHER_BATTERY_DISPLAY_HEIGHT           (24U)
+
 /* Vertical position of the centered lower-bezel uSolder wordmark. */
 #define LAUNCHER_BRAND_TEXT_Y                     (425)
+
+/* Baseline position of the centered opening-screen uSolder wordmark. */
+#define LAUNCHER_STARTUP_BRAND_TEXT_Y             (200)
 
 #define INPUT_LEFT_SLIDER_NUMBER      ((Input_NumberTypeDef)1U)
 #define INPUT_RIGHT_SLIDER_NUMBER     ((Input_NumberTypeDef)2U)
 #define INPUT_PRIMARY_BUTTON_NUMBER   ((Input_NumberTypeDef)3U)
 #define INPUT_SECONDARY_BUTTON_NUMBER ((Input_NumberTypeDef)4U)
+#define INPUT_BATTERY_NUMBER          ((Input_NumberTypeDef)5U)
+#define INPUT_USB_POWER_NUMBER        ((Input_NumberTypeDef)6U)
 
 /*
  * The slider must enter a narrow hard-stop zone to change applications, then
@@ -99,9 +103,7 @@
 typedef enum
 {
     LAUNCHER_PHASE_WHITE = 0,
-    LAUNCHER_PHASE_BARS_RISE,
-    LAUNCHER_PHASE_BARS_HOLD,
-    LAUNCHER_PHASE_BARS_FALL,
+    LAUNCHER_PHASE_STARTUP_CHANNEL_CHANGE,
     LAUNCHER_PHASE_MENU
 } Launcher_PhaseTypeDef;
 
@@ -113,6 +115,12 @@ typedef enum
     LAUNCHER_PREVIEW_TRANSITION_APPLY_PALETTE,
     LAUNCHER_PREVIEW_TRANSITION_OPEN
 } Launcher_PreviewTransitionTypeDef;
+
+typedef enum
+{
+    LAUNCHER_SCREEN_CONTENT_LOGO = 0,
+    LAUNCHER_SCREEN_CONTENT_PREVIEW
+} Launcher_ScreenContentTypeDef;
 
 typedef struct
 {
@@ -126,6 +134,11 @@ typedef struct
     bool LeftSliderArmed;
     bool RightSliderArmed;
     bool PrimaryButtonPressed;
+    bool PrimaryButtonLaunchArmed;
+    bool SecondaryButtonPressed;
+    bool USBPowerPresent;
+    bool StartupChannelChangeStarted;
+    bool StartupChannelChangeCompleted;
 } Launcher_StateTypeDef;
 
 enum
@@ -143,8 +156,14 @@ enum
     COLOUR_CYAN,
     COLOUR_MAGENTA,
     COLOUR_YELLOW,
+    COLOUR_LIGHT_GREY,
     COLOUR_RED_DARK,
-    COLOUR_RED_LIGHT
+    COLOUR_RED_LIGHT,
+    COLOUR_BLUE_DARK,
+    COLOUR_ORANGE_DARK,
+    COLOUR_ORANGE,
+    COLOUR_USOLDER_BLUE,
+    COLOUR_USOLDER_NAVY
 };
 
 static Launcher_StateTypeDef Launcher_State;
@@ -156,12 +175,16 @@ static bool Launcher_Paused;
 static uint32_t Launcher_ClampUnsigned(uint32_t Value, uint32_t Minimum, uint32_t Maximum);
 static uint16_t Launcher_MeasureTextWidth(const Font *FontAsset, const char *Text);
 
-static void Launcher_DrawMenuScreen(Render_TargetTypeDef *Target);
+static void Launcher_DrawMenuScreen(Render_TargetTypeDef *Target, Launcher_ScreenContentTypeDef Content);
 static void Launcher_DrawScreenTab(Render_TargetTypeDef *Target, int16_t X, uint16_t Width, const char *Label, uint8_t CoverColour);
 static void Launcher_DrawBrandName(Render_TargetTypeDef *Target);
+static void Launcher_DrawStartupBrandName(Render_TargetTypeDef *Target);
+static void Launcher_DrawBatteryPercentage(Render_TargetTypeDef *Target);
 
 static void Launcher_UpdateMenuInput(void);
 static void Launcher_UpdatePrimaryButton(void);
+static void Launcher_UpdateSecondaryButton(void);
+static void Launcher_UpdateUSBPowerStatus(void);
 static void Launcher_UpdatePreviewTransition(uint32_t DeltaTimeMilliseconds);
 static bool Launcher_SetSplashPalette(uint16_t ApplicationIndex);
 
@@ -187,7 +210,7 @@ static uint32_t Launcher_ClampUnsigned(uint32_t Value, uint32_t Minimum, uint32_
 static uint16_t Launcher_MeasureTextWidth(const Font *FontAsset, const char *Text)
 {
     uint32_t Codepoint;
-    uint32_t GlyphIndex;
+    const FontGlyph *Glyph;
     uint32_t Width = 0U;
 
     if((FontAsset == NULL) || (FontAsset->glyphs == NULL) || (Text == NULL))
@@ -200,14 +223,14 @@ static uint16_t Launcher_MeasureTextWidth(const Font *FontAsset, const char *Tex
         Codepoint = (uint8_t)*Text;
         Text++;
 
-        if((Codepoint < FontAsset->firstCodepoint) ||
-           ((Codepoint - FontAsset->firstCodepoint) >= (uint32_t)FontAsset->glyphCount))
+        Glyph = Font_GetGlyph(FontAsset, Codepoint);
+
+        if(Glyph == NULL)
         {
             continue;
         }
 
-        GlyphIndex = Codepoint - FontAsset->firstCodepoint;
-        Width += FontAsset->glyphs[GlyphIndex].advance;
+        Width += Glyph->advance;
     }
 
     return (Width > UINT16_MAX) ? UINT16_MAX : (uint16_t)Width;
@@ -274,11 +297,132 @@ static void Launcher_DrawScreenTab(Render_TargetTypeDef *Target, int16_t X, uint
 
 static void Launcher_DrawBrandName(Render_TargetTypeDef *Target)
 {
-    static const char BrandName[] = "uSolder";
-    const uint16_t BrandWidth = Launcher_MeasureTextWidth(&OpenSansBold28, BrandName);
-    const int16_t BrandX = (int16_t)(((int16_t)RENDER_WIDTH - (int16_t)BrandWidth) / 2);
+    static const char BrandNameFirstLetter[] = "u";
+    static const char BrandNameRest[] = "Solder";
+    const uint16_t BrandWidth = Launcher_MeasureTextWidth(&OpenSansBold28, BrandNameFirstLetter) + Launcher_MeasureTextWidth(&OpenSansBold28, BrandNameRest);
+    const int16_t BrandFirstLetterX = (int16_t)(((int16_t)RENDER_WIDTH - (int16_t)BrandWidth) / 2);
+    const int16_t BrandRestX = BrandFirstLetterX + Launcher_MeasureTextWidth(&OpenSansBold28, BrandNameFirstLetter);
 
-    Render_DrawText(Target, &OpenSansBold28, BrandName, BrandX, LAUNCHER_BRAND_TEXT_Y, COLOUR_BLACK);
+    Render_DrawText(Target, &OpenSansBold28, BrandNameFirstLetter, BrandFirstLetterX, LAUNCHER_BRAND_TEXT_Y, COLOUR_USOLDER_BLUE);
+    Render_DrawText(Target, &OpenSansBold28, BrandNameRest, BrandRestX, LAUNCHER_BRAND_TEXT_Y, COLOUR_BLACK);
+}
+
+static void Launcher_DrawStartupBrandName(Render_TargetTypeDef *Target)
+{
+    static const char BrandNameFirstLetter[] = "u";
+    static const char BrandNameRest[] = "Solder";
+    const uint16_t FirstLetterWidth = Launcher_MeasureTextWidth(&AvenirNextDemi125, BrandNameFirstLetter);
+    const uint16_t BrandWidth = FirstLetterWidth + Launcher_MeasureTextWidth(&AvenirNextDemi125, BrandNameRest);
+    const int16_t BrandFirstLetterX = (int16_t)(((int16_t)RENDER_WIDTH - (int16_t)BrandWidth) / 2);
+    const int16_t BrandRestX = BrandFirstLetterX + (int16_t)FirstLetterWidth;
+
+    Render_DrawText(Target, &AvenirNextDemi125, BrandNameFirstLetter, BrandFirstLetterX, LAUNCHER_STARTUP_BRAND_TEXT_Y, COLOUR_USOLDER_BLUE);
+    Render_DrawText(Target, &AvenirNextDemi125, BrandNameRest, BrandRestX, LAUNCHER_STARTUP_BRAND_TEXT_Y, COLOUR_USOLDER_NAVY);
+}
+
+static void Launcher_DrawBatteryPercentage(Render_TargetTypeDef *Target)
+{
+    const Render_RectTypeDef BatteryBezel = {
+        (int16_t)(LAUNCHER_BATTERY_DISPLAY_X - 2),
+        (int16_t)(LAUNCHER_BATTERY_DISPLAY_Y - 2),
+        (uint16_t)(LAUNCHER_BATTERY_DISPLAY_WIDTH + 4U),
+        (uint16_t)(LAUNCHER_BATTERY_DISPLAY_HEIGHT + 4U)
+    };
+    const Render_RectTypeDef BatteryBezelTopHighlight = {
+        (int16_t)(LAUNCHER_BATTERY_DISPLAY_X - 1),
+        (int16_t)(LAUNCHER_BATTERY_DISPLAY_Y - 1),
+        (uint16_t)(LAUNCHER_BATTERY_DISPLAY_WIDTH + 2U),
+        1U
+    };
+    const Render_RectTypeDef BatteryBezelLeftHighlight = {
+        (int16_t)(LAUNCHER_BATTERY_DISPLAY_X - 1),
+        (int16_t)(LAUNCHER_BATTERY_DISPLAY_Y - 1),
+        1U,
+        (uint16_t)(LAUNCHER_BATTERY_DISPLAY_HEIGHT + 2U)
+    };
+    const Render_RectTypeDef BatteryBezelBottomShadow = {
+        (int16_t)(LAUNCHER_BATTERY_DISPLAY_X - 1),
+        (int16_t)(LAUNCHER_BATTERY_DISPLAY_Y + (int16_t)LAUNCHER_BATTERY_DISPLAY_HEIGHT),
+        (uint16_t)(LAUNCHER_BATTERY_DISPLAY_WIDTH + 2U),
+        1U
+    };
+    const Render_RectTypeDef BatteryBezelRightShadow = {
+        (int16_t)(LAUNCHER_BATTERY_DISPLAY_X + (int16_t)LAUNCHER_BATTERY_DISPLAY_WIDTH),
+        (int16_t)(LAUNCHER_BATTERY_DISPLAY_Y - 1),
+        1U,
+        (uint16_t)(LAUNCHER_BATTERY_DISPLAY_HEIGHT + 2U)
+    };
+    const Render_RectTypeDef BatteryDisplay = {
+        LAUNCHER_BATTERY_DISPLAY_X,
+        LAUNCHER_BATTERY_DISPLAY_Y,
+        LAUNCHER_BATTERY_DISPLAY_WIDTH,
+        LAUNCHER_BATTERY_DISPLAY_HEIGHT
+    };
+    char BatteryText[5];
+    int32_t BatteryPercentage;
+    uint16_t TextWidth;
+    int16_t TextX;
+    uint8_t TextColour;
+
+    if(!Input_Get_Value(INPUT_BATTERY_NUMBER, &BatteryPercentage))
+    {
+        return;
+    }
+
+    if(BatteryPercentage < 0)
+    {
+        BatteryPercentage = 0;
+    }
+    else if(BatteryPercentage > 100)
+    {
+        BatteryPercentage = 100;
+    }
+
+    if(BatteryPercentage >= 100)
+    {
+        BatteryText[0] = '1';
+        BatteryText[1] = '0';
+        BatteryText[2] = '0';
+        BatteryText[3] = '%';
+        BatteryText[4] = '\0';
+    }
+    else if(BatteryPercentage >= 10)
+    {
+        BatteryText[0] = (char)('0' + (BatteryPercentage / 10));
+        BatteryText[1] = (char)('0' + (BatteryPercentage % 10));
+        BatteryText[2] = '%';
+        BatteryText[3] = '\0';
+    }
+    else
+    {
+        BatteryText[0] = (char)('0' + BatteryPercentage);
+        BatteryText[1] = '%';
+        BatteryText[2] = '\0';
+    }
+
+    if(BatteryPercentage > 30)
+    {
+        TextColour = COLOUR_LIGHT_GREY;
+    }
+    else if(BatteryPercentage > 15)
+    {
+        TextColour = COLOUR_ORANGE;
+    }
+    else
+    {
+        TextColour = COLOUR_RED;
+    }
+
+    TextWidth = Launcher_MeasureTextWidth(&OpenSansBold20, BatteryText);
+    TextX = (int16_t)(LAUNCHER_BATTERY_DISPLAY_X + (((int16_t)LAUNCHER_BATTERY_DISPLAY_WIDTH - (int16_t)TextWidth) / 2));
+
+    Render_FillRect(Target, &BatteryBezel, COLOUR_BEZEL_DARK);
+    Render_FillRect(Target, &BatteryBezelTopHighlight, COLOUR_BEZEL_LIGHT);
+    Render_FillRect(Target, &BatteryBezelLeftHighlight, COLOUR_BEZEL_LIGHT);
+    Render_FillRect(Target, &BatteryBezelBottomShadow, COLOUR_NEAR_BLACK);
+    Render_FillRect(Target, &BatteryBezelRightShadow, COLOUR_NEAR_BLACK);
+    Render_FillRect(Target, &BatteryDisplay, COLOUR_BLACK);
+    Render_DrawText(Target, &OpenSansBold20, BatteryText, TextX, LAUNCHER_SCREEN_TAB_LABEL_Y, TextColour);
 }
 
 static void Launcher_Reset(void)
@@ -293,6 +437,11 @@ static void Launcher_Reset(void)
     Launcher_State.LeftSliderArmed = true;
     Launcher_State.RightSliderArmed = true;
     Launcher_State.PrimaryButtonPressed = false;
+    Launcher_State.PrimaryButtonLaunchArmed = false;
+    Launcher_State.SecondaryButtonPressed = false;
+    Launcher_State.USBPowerPresent = false;
+    Launcher_State.StartupChannelChangeStarted = false;
+    Launcher_State.StartupChannelChangeCompleted = false;
 }
 
 static void Launcher_UpdatePhase(void)
@@ -303,17 +452,24 @@ static void Launcher_UpdatePhase(void)
     {
         Launcher_State.Phase = LAUNCHER_PHASE_WHITE;
     }
-    else if(Elapsed < LAUNCHER_BARS_RISE_END_MS)
+    else if(!Launcher_State.StartupChannelChangeStarted)
     {
-        Launcher_State.Phase = LAUNCHER_PHASE_BARS_RISE;
+        Launcher_State.StartupChannelChangeStarted = true;
+        Launcher_State.PreviewTransition = LAUNCHER_PREVIEW_TRANSITION_CLOSE;
+        Launcher_State.PreviewTransitionElapsedMilliseconds = 0U;
+        Launcher_State.Phase = LAUNCHER_PHASE_STARTUP_CHANNEL_CHANGE;
     }
-    else if(Elapsed < LAUNCHER_BARS_HOLD_END_MS)
+    else if(!Launcher_State.StartupChannelChangeCompleted)
     {
-        Launcher_State.Phase = LAUNCHER_PHASE_BARS_HOLD;
-    }
-    else if(Elapsed < LAUNCHER_BARS_FALL_END_MS)
-    {
-        Launcher_State.Phase = LAUNCHER_PHASE_BARS_FALL;
+        if(Launcher_State.PreviewTransition == LAUNCHER_PREVIEW_TRANSITION_NONE)
+        {
+            Launcher_State.StartupChannelChangeCompleted = true;
+            Launcher_State.Phase = LAUNCHER_PHASE_MENU;
+        }
+        else
+        {
+            Launcher_State.Phase = LAUNCHER_PHASE_STARTUP_CHANNEL_CHANGE;
+        }
     }
     else
     {
@@ -412,12 +568,6 @@ static void Launcher_UpdateMenuInput(void)
     bool RightSliderAvailable = false;
     bool SelectionChanged = false;
 
-    if((Launcher_State.Phase != LAUNCHER_PHASE_BARS_FALL) &&
-       (Launcher_State.Phase != LAUNCHER_PHASE_MENU))
-    {
-        return;
-    }
-
     if(Input_Get_Value(INPUT_LEFT_SLIDER_NUMBER, &LeftSliderValue))
     {
         LeftSliderAvailable = true;
@@ -433,7 +583,6 @@ static void Launcher_UpdateMenuInput(void)
         Launcher_State.SliderEndEffectorY = Launcher_MapSliderToEndEffectorY(LeftSliderValue);
     }
 
-    /* The falling bars reveal a live launcher, but selection starts at rest. */
     if(Launcher_State.Phase != LAUNCHER_PHASE_MENU)
     {
         return;
@@ -484,35 +633,66 @@ static void Launcher_UpdatePrimaryButton(void)
     if(!Input_Get_Value(INPUT_PRIMARY_BUTTON_NUMBER, &PrimaryButtonValue))
     {
         Launcher_State.PrimaryButtonPressed = false;
+        Launcher_State.PrimaryButtonLaunchArmed = false;
         return;
     }
 
     if(PrimaryButtonValue != 0)
     {
+        Launcher_State.PrimaryButtonPressed = true;
+
         /* A press only arms launch while a stable menu preview is visible. */
         if((Launcher_State.Phase == LAUNCHER_PHASE_MENU) &&
-           (Launcher_State.PreviewTransition == LAUNCHER_PREVIEW_TRANSITION_NONE) &&
-           (NUM_APPS > 0U))
+            (Launcher_State.PreviewTransition == LAUNCHER_PREVIEW_TRANSITION_NONE) &&
+            (NUM_APPS > 0U))
         {
-            Launcher_State.PrimaryButtonPressed = true;
+            Launcher_State.PrimaryButtonLaunchArmed = true;
         }
 
         return;
     }
 
-    if(!Launcher_State.PrimaryButtonPressed)
+    Launcher_State.PrimaryButtonPressed = false;
+
+    if(!Launcher_State.PrimaryButtonLaunchArmed)
     {
         return;
     }
 
-    Launcher_State.PrimaryButtonPressed = false;
+    Launcher_State.PrimaryButtonLaunchArmed = false;
 
-    if((Launcher_State.Phase == LAUNCHER_PHASE_MENU) &&
-       (Launcher_State.PreviewTransition == LAUNCHER_PREVIEW_TRANSITION_NONE) &&
-       (NUM_APPS > 0U))
+    if( (Launcher_State.Phase == LAUNCHER_PHASE_MENU) &&
+        (Launcher_State.PreviewTransition == LAUNCHER_PREVIEW_TRANSITION_NONE) &&
+        (NUM_APPS > 0U))
     {
         (void)AppManager_StartApplication((uint16_t)Launcher_State.SelectedApplication);
     }
+}
+
+static void Launcher_UpdateSecondaryButton(void)
+{
+    int32_t SecondaryButtonValue;
+
+    if(!Input_Get_Value(INPUT_SECONDARY_BUTTON_NUMBER, &SecondaryButtonValue))
+    {
+        Launcher_State.SecondaryButtonPressed = false;
+        return;
+    }
+
+    Launcher_State.SecondaryButtonPressed = SecondaryButtonValue != 0;
+}
+
+static void Launcher_UpdateUSBPowerStatus(void)
+{
+    int32_t USBPowerValue;
+
+    if(!Input_Get_Value(INPUT_USB_POWER_NUMBER, &USBPowerValue))
+    {
+        Launcher_State.USBPowerPresent = false;
+        return;
+    }
+
+    Launcher_State.USBPowerPresent = USBPowerValue != 0;
 }
 
 static void Launcher_UpdatePreviewTransition(uint32_t DeltaTimeMilliseconds)
@@ -551,13 +731,13 @@ static void Launcher_UpdatePreviewTransition(uint32_t DeltaTimeMilliseconds)
 
 static void Launcher_UpdateSimulation(uint32_t DeltaTimeMilliseconds)
 {
-    if(Launcher_State.ElapsedMilliseconds < LAUNCHER_BARS_FALL_END_MS)
+    if(Launcher_State.ElapsedMilliseconds < LAUNCHER_WHITE_END_MS)
     {
         Launcher_State.ElapsedMilliseconds += DeltaTimeMilliseconds;
 
-        if(Launcher_State.ElapsedMilliseconds > LAUNCHER_BARS_FALL_END_MS)
+        if(Launcher_State.ElapsedMilliseconds > LAUNCHER_WHITE_END_MS)
         {
-            Launcher_State.ElapsedMilliseconds = LAUNCHER_BARS_FALL_END_MS;
+            Launcher_State.ElapsedMilliseconds = LAUNCHER_WHITE_END_MS;
         }
     }
 
@@ -565,6 +745,8 @@ static void Launcher_UpdateSimulation(uint32_t DeltaTimeMilliseconds)
     Launcher_UpdateMenuInput();
     Launcher_UpdatePreviewTransition(DeltaTimeMilliseconds);
     Launcher_UpdatePrimaryButton();
+    Launcher_UpdateSecondaryButton();
+    Launcher_UpdateUSBPowerStatus();
 }
 
 /* ------------------------------------------------------------------------- */
@@ -573,95 +755,7 @@ static void Launcher_UpdateSimulation(uint32_t DeltaTimeMilliseconds)
 
 static void Launcher_DrawWhiteField(Render_TargetTypeDef *Target)
 {
-    Launcher_DrawFullScreen(Target, COLOUR_WHITE);
-}
-
-static uint16_t Launcher_GetBarVisibleHeight(uint8_t BarIndex, bool Rising)
-{
-    uint32_t LocalElapsed;
-
-    if(Rising)
-    {
-        const uint32_t PhaseElapsed = Launcher_State.ElapsedMilliseconds -
-            LAUNCHER_WHITE_END_MS;
-
-        const uint32_t Start = (uint32_t)BarIndex *
-            LAUNCHER_BAR_STAGGER_MS;
-
-        if(PhaseElapsed <= Start)
-        {
-            return 0U;
-        }
-
-        LocalElapsed = PhaseElapsed - Start;
-
-        return (uint16_t)Launcher_EaseInOut(LocalElapsed, LAUNCHER_BAR_TRAVEL_MS, RENDER_HEIGHT);
-    }
-
-    {
-        const uint32_t PhaseElapsed = Launcher_State.ElapsedMilliseconds -
-            LAUNCHER_BARS_HOLD_END_MS;
-
-        const uint32_t Start = (uint32_t)BarIndex *
-            LAUNCHER_BAR_STAGGER_MS;
-
-        if(PhaseElapsed <= Start)
-        {
-            return RENDER_HEIGHT;
-        }
-
-        LocalElapsed = PhaseElapsed - Start;
-
-        return (uint16_t)(RENDER_HEIGHT - Launcher_EaseInOut(LocalElapsed, LAUNCHER_BAR_TRAVEL_MS, RENDER_HEIGHT));
-    }
-}
-
-static void Launcher_DrawColourBars(Render_TargetTypeDef *Target, bool Rising, bool FullyVisible)
-{
-    static const uint8_t BarColours[LAUNCHER_BAR_COUNT] = {
-        COLOUR_RED,
-        COLOUR_GREEN,
-        COLOUR_BLUE,
-        COLOUR_CYAN,
-        COLOUR_MAGENTA,
-        COLOUR_YELLOW
-    };
-
-    if(Rising || FullyVisible)
-    {
-        Launcher_DrawFullScreen(Target, COLOUR_WHITE);
-    }
-    else
-    {
-        Launcher_DrawMenuScreen(Target);
-    }
-
-    for(uint8_t Index = 0U; Index < LAUNCHER_BAR_COUNT; Index++)
-    {
-        const uint16_t Height = FullyVisible
-                ? RENDER_HEIGHT
-                : Launcher_GetBarVisibleHeight(Index, Rising);
-
-        const uint16_t BarWidth = (uint16_t)(RENDER_WIDTH / LAUNCHER_BAR_COUNT);
-
-        const int16_t X = (int16_t)(Index * BarWidth);
-
-        const uint16_t Width = Index == (LAUNCHER_BAR_COUNT - 1U)
-                ? (uint16_t)(RENDER_WIDTH - X)
-                : BarWidth;
-
-        if(Height > 0U)
-        {
-            const Render_RectTypeDef Bar = {
-                X,
-                (int16_t)(RENDER_HEIGHT - Height),
-                Width,
-                Height
-            };
-
-            Render_FillRect(Target, &Bar, BarColours[Index]);
-        }
-    }
+    Launcher_DrawMenuScreen(Target, LAUNCHER_SCREEN_CONTENT_LOGO);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -759,7 +853,7 @@ static void Launcher_DrawPreviewTransition(Render_TargetTypeDef *Target)
     Render_FillRect(Target, &BottomShutter, COLOUR_NEAR_BLACK);
 }
 
-static void Launcher_DrawMenuScreen(Render_TargetTypeDef *Target)
+static void Launcher_DrawMenuScreen(Render_TargetTypeDef *Target, Launcher_ScreenContentTypeDef Content)
 {
     const Render_RectTypeDef ScreenOpening = {
         LAUNCHER_SCREEN_OPENING_X,
@@ -870,17 +964,27 @@ static void Launcher_DrawMenuScreen(Render_TargetTypeDef *Target)
     Render_FillRect(Target, &RecessBottom, COLOUR_BEZEL_LIGHT);
     Render_FillRect(Target, &RecessRight, COLOUR_BEZEL_LIGHT);
 
-    if(Launcher_State.PreviewTransition == LAUNCHER_PREVIEW_TRANSITION_APPLY_PALETTE)
+    Render_SetClipRect(&ScreenOpening);
+
+    if(Content == LAUNCHER_SCREEN_CONTENT_LOGO)
     {
-        (void)Launcher_SetSplashPalette((uint16_t)Launcher_State.SelectedApplication);
+        Render_FillRect(Target, &ScreenOpening, COLOUR_WHITE);
+        Launcher_DrawStartupBrandName(Target);
+    }
+    else
+    {
+        if(Launcher_State.PreviewTransition == LAUNCHER_PREVIEW_TRANSITION_APPLY_PALETTE)
+        {
+            (void)Launcher_SetSplashPalette((uint16_t)Launcher_State.SelectedApplication);
+        }
+
+        /*
+         * Render the selected application's splash screen only within the CRT
+         * opening. Splash-screen callbacks must preserve the active clip region.
+         */
+        Launcher_DrawSelectedApplicationSplash(Target);
     }
 
-    /*
-     * Render the selected application's splash screen only within the CRT
-     * opening. Splash-screen callbacks must preserve the active clip region.
-     */
-    Render_SetClipRect(&ScreenOpening);
-    Launcher_DrawSelectedApplicationSplash(Target);
     Render_ResetClipRect();
 
     Render_FillRect(Target, &InnerTopShadow, COLOUR_NEAR_BLACK);
@@ -1165,19 +1269,19 @@ static void Launcher_DrawMenuScreen(Render_TargetTypeDef *Target)
 
     Render_SetClipRect(&ScreenOpening);
 
-    for(int16_t ScanlineY = 76; ScanlineY < 412; ScanlineY += 8)
-    {
-        const Render_RectTypeDef Scanline = {
-            68,
-            ScanlineY,
-            664U,
-            1U
-        };
+        for(int16_t ScanlineY = 76; ScanlineY < 412; ScanlineY += 8)
+        {
+            const Render_RectTypeDef Scanline = {
+                68,
+                ScanlineY,
+                664U,
+                1U
+            };
 
-        Render_FillRect(Target, &Scanline, COLOUR_NEAR_BLACK);
-    }
+            Render_FillRect(Target, &Scanline, COLOUR_NEAR_BLACK);
+        }
 
-    Launcher_DrawPreviewTransition(Target);
+        Launcher_DrawPreviewTransition(Target);
 
     Render_ResetClipRect();
 
@@ -1186,13 +1290,20 @@ static void Launcher_DrawMenuScreen(Render_TargetTypeDef *Target)
         LAUNCHER_SETTINGS_BUTTON_X,
         LAUNCHER_SETTINGS_BUTTON_WIDTH,
         "SETTINGS",
-        COLOUR_BLUE);
+        Launcher_State.SecondaryButtonPressed ? COLOUR_BLUE : COLOUR_BLUE_DARK);
+    Launcher_DrawScreenTab(
+        Target,
+        LAUNCHER_CHARGING_INDICATOR_X,
+        LAUNCHER_CHARGING_INDICATOR_WIDTH,
+        "",
+        Launcher_State.USBPowerPresent ? COLOUR_ORANGE : COLOUR_ORANGE_DARK);
+    Launcher_DrawBatteryPercentage(Target);
     Launcher_DrawScreenTab(
         Target,
         LAUNCHER_START_BUTTON_X,
         LAUNCHER_START_BUTTON_WIDTH,
         "START",
-        COLOUR_RED);
+        Launcher_State.PrimaryButtonPressed ? COLOUR_RED : COLOUR_RED_DARK);
     Launcher_DrawBrandName(Target);
 }
 
@@ -1216,8 +1327,14 @@ bool Launcher_Init(void)
         0x003BD5D5U, /* Cyan. */
         0x00D44CCBU, /* Magenta. */
         0x00F0D93CU, /* Yellow. */
+        0x00D8D8D8U, /* Light grey. */
         0x009E2028U, /* Dark button red. */
-        0x00FF6363U  /* Button red highlight. */
+        0x00FF6363U, /* Button red highlight. */
+        0x00253678U, /* Dark button blue. */
+        0x0085521AU, /* Dark charging orange. */
+        0x00FF9D27U, /* Charging orange. */
+        0x001F4497U, /* uSolder blue. */
+        0x00101130U  /* uSolder navy. */
     };
 
     for(uint16_t PaletteIndex = 0U; PaletteIndex < 256U; PaletteIndex++)
@@ -1293,21 +1410,21 @@ void Launcher_Render(void)
             Launcher_DrawWhiteField(&Target);
             break;
 
-        case LAUNCHER_PHASE_BARS_RISE:
-            Launcher_DrawColourBars(&Target, true, false);
-            break;
-
-        case LAUNCHER_PHASE_BARS_HOLD:
-            Launcher_DrawColourBars(&Target, true, true);
-            break;
-
-        case LAUNCHER_PHASE_BARS_FALL:
-            Launcher_DrawColourBars(&Target, false, false);
+        case LAUNCHER_PHASE_STARTUP_CHANNEL_CHANGE:
+            if((Launcher_State.PreviewTransition == LAUNCHER_PREVIEW_TRANSITION_CLOSE) ||
+               (Launcher_State.PreviewTransition == LAUNCHER_PREVIEW_TRANSITION_COVERED))
+            {
+                Launcher_DrawWhiteField(&Target);
+            }
+            else
+            {
+                Launcher_DrawMenuScreen(&Target, LAUNCHER_SCREEN_CONTENT_PREVIEW);
+            }
             break;
 
         case LAUNCHER_PHASE_MENU:
         default:
-            Launcher_DrawMenuScreen(&Target);
+            Launcher_DrawMenuScreen(&Target, LAUNCHER_SCREEN_CONTENT_PREVIEW);
             break;
     }
 

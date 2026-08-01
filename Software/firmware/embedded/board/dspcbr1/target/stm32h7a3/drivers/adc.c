@@ -28,6 +28,8 @@
 #define ADC_CALIBRATION_TIMEOUT_US      (100000U)
 #define ADC_ENABLE_TIMEOUT_US           (10000U)
 #define ADC_DISABLE_TIMEOUT_US          (10000U)
+#define ADC_VREFINT_STARTUP_DELAY_US    (10U)
+#define ADC_VREFINT_CHANNEL             (19U)
 
 #define ADC_GPIO_MODE_ANALOG            (3UL)
 #define ADC_SAMPLE_TIME                 (7UL)
@@ -50,6 +52,7 @@ typedef struct
     ADC_PinMappingTypeDef Mappings[ADC_MAX_INPUT_COUNT];
     uint8_t InputCount;
     volatile uint8_t CurrentInput;
+    bool VREFINTRequested;
     bool Initialized;
     bool Running;
 } ADC_StateTypeDef;
@@ -67,9 +70,11 @@ static ADC_StateTypeDef ADC_State;
 static ADC_ResultTypeDef ADC_MapPin(ADC_PinIdTypeDef Pin, ADC_PinMappingTypeDef *Mapping);
 static ADC_ResultTypeDef ADC_ConfigureGPIO(const ADC_PinMappingTypeDef *Mapping);
 static ADC_ResultTypeDef ADC_ConfigurePeripheral(void);
-static ADC_ResultTypeDef ADC_Calibrate(void);
-static ADC_ResultTypeDef ADC_EnablePeripheral(void);
-static ADC_ResultTypeDef ADC_DisablePeripheral(void);
+static ADC_ResultTypeDef ADC_Calibrate(ADC_TypeDef *ADC);
+static ADC_ResultTypeDef ADC_EnablePeripheral(ADC_TypeDef *ADC);
+static ADC_ResultTypeDef ADC_DisablePeripheral(ADC_TypeDef *ADC);
+static ADC_ResultTypeDef ADC_ConfigureVREFINT(void);
+static int32_t ADC_GetNextExternalInput(uint8_t StartIndex);
 static void ADC_SelectInput(uint8_t InputIndex);
 static int32_t ADC_FindInputIndex(const ADC_InputTypeDef *Input);
 static void ADC_ResetState(void);
@@ -83,6 +88,14 @@ static ADC_ResultTypeDef ADC_MapPin(ADC_PinIdTypeDef Pin, ADC_PinMappingTypeDef 
     if(Mapping == NULL)
     {
         return ADC_RESULT_INVALID_ARGUMENT;
+    }
+
+    if(Pin == ADC_PIN_VREFINT)
+    {
+        Mapping->GPIO = NULL;
+        Mapping->GPIOPin = 0U;
+        Mapping->Channel = ADC_VREFINT_CHANNEL;
+        return ADC_RESULT_OK;
     }
 
     switch(Pin)
@@ -219,15 +232,15 @@ static ADC_ResultTypeDef ADC_ConfigureGPIO(const ADC_PinMappingTypeDef *Mapping)
 /* Peripheral configuration                                                   */
 /* -------------------------------------------------------------------------- */
 
-static ADC_ResultTypeDef ADC_Calibrate(void)
+static ADC_ResultTypeDef ADC_Calibrate(ADC_TypeDef *ADC)
 {
     uint32_t TimeoutMicroseconds = ADC_CALIBRATION_TIMEOUT_US;
 
-    ADC1->CR &= ~ADC_CR_ADCALDIF;
-    ADC1->CR |= ADC_CR_ADCALLIN;
-    ADC1->CR |= ADC_CR_ADCAL;
+    ADC->CR &= ~ADC_CR_ADCALDIF;
+    ADC->CR |= ADC_CR_ADCALLIN;
+    ADC->CR |= ADC_CR_ADCAL;
 
-    while((ADC1->CR & ADC_CR_ADCAL) != 0U)
+    while((ADC->CR & ADC_CR_ADCAL) != 0U)
     {
         if(TimeoutMicroseconds == 0U)
         {
@@ -241,14 +254,14 @@ static ADC_ResultTypeDef ADC_Calibrate(void)
     return ADC_RESULT_OK;
 }
 
-static ADC_ResultTypeDef ADC_EnablePeripheral(void)
+static ADC_ResultTypeDef ADC_EnablePeripheral(ADC_TypeDef *ADC)
 {
     uint32_t TimeoutMicroseconds = ADC_ENABLE_TIMEOUT_US;
 
-    ADC1->ISR = ADC_ISR_ADRDY;
-    ADC1->CR |= ADC_CR_ADEN;
+    ADC->ISR = ADC_ISR_ADRDY;
+    ADC->CR |= ADC_CR_ADEN;
 
-    while((ADC1->ISR & ADC_ISR_ADRDY) == 0U)
+    while((ADC->ISR & ADC_ISR_ADRDY) == 0U)
     {
         if(TimeoutMicroseconds == 0U)
         {
@@ -259,25 +272,25 @@ static ADC_ResultTypeDef ADC_EnablePeripheral(void)
         TimeoutMicroseconds--;
     }
 
-    ADC1->ISR = ADC_ISR_ADRDY;
+    ADC->ISR = ADC_ISR_ADRDY;
 
     return ADC_RESULT_OK;
 }
 
-static ADC_ResultTypeDef ADC_DisablePeripheral(void)
+static ADC_ResultTypeDef ADC_DisablePeripheral(ADC_TypeDef *ADC)
 {
     uint32_t TimeoutMicroseconds = ADC_DISABLE_TIMEOUT_US;
 
-    if((ADC1->CR & ADC_CR_ADEN) == 0U)
+    if((ADC->CR & ADC_CR_ADEN) == 0U)
     {
         return ADC_RESULT_OK;
     }
 
-    if((ADC1->CR & ADC_CR_ADSTART) != 0U)
+    if((ADC->CR & ADC_CR_ADSTART) != 0U)
     {
-        ADC1->CR |= ADC_CR_ADSTP;
+        ADC->CR |= ADC_CR_ADSTP;
 
-        while((ADC1->CR & ADC_CR_ADSTP) != 0U)
+        while((ADC->CR & ADC_CR_ADSTP) != 0U)
         {
             if(TimeoutMicroseconds == 0U)
             {
@@ -290,9 +303,9 @@ static ADC_ResultTypeDef ADC_DisablePeripheral(void)
     }
 
     TimeoutMicroseconds = ADC_DISABLE_TIMEOUT_US;
-    ADC1->CR |= ADC_CR_ADDIS;
+    ADC->CR |= ADC_CR_ADDIS;
 
-    while((ADC1->CR & ADC_CR_ADEN) != 0U)
+    while((ADC->CR & ADC_CR_ADEN) != 0U)
     {
         if(TimeoutMicroseconds == 0U)
         {
@@ -306,11 +319,62 @@ static ADC_ResultTypeDef ADC_DisablePeripheral(void)
     return ADC_RESULT_OK;
 }
 
+static ADC_ResultTypeDef ADC_ConfigureVREFINT(void)
+{
+    ADC_ResultTypeDef Result;
+
+    if(!ADC_State.VREFINTRequested)
+    {
+        return ADC_RESULT_OK;
+    }
+
+    ADC2->CR &= ~ADC_CR_DEEPPWD;
+    ADC2->CR |= ADC_CR_ADVREGEN;
+    Delay_us(ADC_REGULATOR_STARTUP_DELAY_US);
+
+    ADC12_COMMON->CCR |= ADC_CCR_VREFEN;
+    Delay_us(ADC_VREFINT_STARTUP_DELAY_US);
+
+    ADC2->CFGR = ADC_CFGR_CONT | ADC_CFGR_OVRMOD;
+    ADC2->CFGR2 = 0U;
+    ADC2->SQR1 = ADC_VREFINT_CHANNEL << ADC_SQR1_SQ1_Pos;
+    ADC2->SQR2 = 0U;
+    ADC2->SQR3 = 0U;
+    ADC2->SQR4 = 0U;
+    ADC2->SMPR1 = 0U;
+    ADC2->SMPR2 = 0U;
+    ADC2->SMPR2 |= ADC_SAMPLE_TIME << ((ADC_VREFINT_CHANNEL - 10U) * 3U);
+    ADC2->PCSEL = 1UL << ADC_VREFINT_CHANNEL;
+
+    Result = ADC_Calibrate(ADC2);
+
+    if(Result != ADC_RESULT_OK)
+    {
+        return Result;
+    }
+
+    Result = ADC_EnablePeripheral(ADC2);
+
+    if(Result != ADC_RESULT_OK)
+    {
+        return Result;
+    }
+
+    ADC2->ISR = ADC_ISR_EOC | ADC_ISR_EOS | ADC_ISR_OVR;
+
+    return ADC_RESULT_OK;
+}
+
 static ADC_ResultTypeDef ADC_ConfigurePeripheral(void)
 {
     ADC_ResultTypeDef Result;
 
     if(RCC_EnablePeripheralClock(ADC1) != RCC_RESULT_OK)
+    {
+        return ADC_RESULT_HARDWARE_ERROR;
+    }
+
+    if(ADC_State.VREFINTRequested && (RCC_EnablePeripheralClock(ADC2) != RCC_RESULT_OK))
     {
         return ADC_RESULT_HARDWARE_ERROR;
     }
@@ -353,17 +417,20 @@ static ADC_ResultTypeDef ADC_ConfigurePeripheral(void)
 
     for(uint8_t InputIndex = 0U; InputIndex < ADC_State.InputCount; InputIndex++)
     {
-        ADC1->PCSEL |= 1UL << ADC_State.Mappings[InputIndex].Channel;
+        if(ADC_State.Inputs[InputIndex].Pin != ADC_PIN_VREFINT)
+        {
+            ADC1->PCSEL |= 1UL << ADC_State.Mappings[InputIndex].Channel;
+        }
     }
 
-    Result = ADC_Calibrate();
+    Result = ADC_Calibrate(ADC1);
 
     if(Result != ADC_RESULT_OK)
     {
         return Result;
     }
 
-    Result = ADC_EnablePeripheral();
+    Result = ADC_EnablePeripheral(ADC1);
 
     if(Result != ADC_RESULT_OK)
     {
@@ -377,7 +444,7 @@ static ADC_ResultTypeDef ADC_ConfigurePeripheral(void)
     NVIC_SetPriority(ADC_IRQn, ADC_INTERRUPT_PRIORITY);
     NVIC_EnableIRQ(ADC_IRQn);
 
-    return ADC_RESULT_OK;
+    return ADC_ConfigureVREFINT();
 }
 
 /* -------------------------------------------------------------------------- */
@@ -389,6 +456,21 @@ static void ADC_SelectInput(uint8_t InputIndex)
     uint32_t Channel = ADC_State.Mappings[InputIndex].Channel;
 
     ADC1->SQR1 = Channel << ADC_SQR1_SQ1_Pos;
+}
+
+static int32_t ADC_GetNextExternalInput(uint8_t StartIndex)
+{
+    for(uint8_t Offset = 0U; Offset < ADC_State.InputCount; Offset++)
+    {
+        uint8_t InputIndex = (uint8_t)((StartIndex + Offset) % ADC_State.InputCount);
+
+        if(ADC_State.Inputs[InputIndex].Pin != ADC_PIN_VREFINT)
+        {
+            return (int32_t)InputIndex;
+        }
+    }
+
+    return -1;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -423,6 +505,7 @@ static void ADC_ResetState(void)
     ADC_State.Values = NULL;
     ADC_State.InputCount = 0U;
     ADC_State.CurrentInput = 0U;
+    ADC_State.VREFINTRequested = false;
     ADC_State.Initialized = false;
     ADC_State.Running = false;
 
@@ -474,12 +557,20 @@ ADC_ResultTypeDef ADC_Init(const ADC_InputTypeDef *Inputs, ADC_ValueTypeDef *Val
             return Result;
         }
 
-        Result = ADC_ConfigureGPIO(&ADC_State.Mappings[InputIndex]);
-
-        if(Result != ADC_RESULT_OK)
+        if(Inputs[InputIndex].Pin == ADC_PIN_VREFINT)
         {
-            ADC_ResetState();
-            return Result;
+            ADC_State.VREFINTRequested = true;
+        }
+
+        if(Inputs[InputIndex].Pin != ADC_PIN_VREFINT)
+        {
+            Result = ADC_ConfigureGPIO(&ADC_State.Mappings[InputIndex]);
+
+            if(Result != ADC_RESULT_OK)
+            {
+                ADC_ResetState();
+                return Result;
+            }
         }
 
         Values[InputIndex] = 0U;
@@ -501,6 +592,8 @@ ADC_ResultTypeDef ADC_Init(const ADC_InputTypeDef *Inputs, ADC_ValueTypeDef *Val
 
 ADC_ResultTypeDef ADC_Start(void)
 {
+    int32_t FirstExternalInput;
+
     if(!ADC_State.Initialized)
     {
         return ADC_RESULT_NOT_INITIALIZED;
@@ -511,13 +604,23 @@ ADC_ResultTypeDef ADC_Start(void)
         return ADC_RESULT_OK;
     }
 
-    ADC_State.CurrentInput = 0U;
     ADC_State.Running = true;
 
-    ADC_SelectInput(ADC_State.CurrentInput);
+    if(ADC_State.VREFINTRequested)
+    {
+        ADC2->ISR = ADC_ISR_EOC | ADC_ISR_EOS | ADC_ISR_OVR;
+        ADC2->CR |= ADC_CR_ADSTART;
+    }
 
-    ADC1->ISR = ADC_ISR_EOC | ADC_ISR_EOS | ADC_ISR_OVR;
-    ADC1->CR |= ADC_CR_ADSTART;
+    FirstExternalInput = ADC_GetNextExternalInput(0U);
+
+    if(FirstExternalInput >= 0)
+    {
+        ADC_State.CurrentInput = (uint8_t)FirstExternalInput;
+        ADC_SelectInput(ADC_State.CurrentInput);
+        ADC1->ISR = ADC_ISR_EOC | ADC_ISR_EOS | ADC_ISR_OVR;
+        ADC1->CR |= ADC_CR_ADSTART;
+    }
 
     return ADC_RESULT_OK;
 }
@@ -539,11 +642,21 @@ ADC_ResultTypeDef ADC_Stop(void)
     ADC1->IER = 0U;
     ADC1->ISR = ADC_ISR_EOC | ADC_ISR_EOS | ADC_ISR_OVR;
 
-    Result = ADC_DisablePeripheral();
+    Result = ADC_DisablePeripheral(ADC1);
 
     if(Result != ADC_RESULT_OK)
     {
         return Result;
+    }
+
+    if(ADC_State.VREFINTRequested)
+    {
+        Result = ADC_DisablePeripheral(ADC2);
+
+        if(Result != ADC_RESULT_OK)
+        {
+            return Result;
+        }
     }
 
     ADC_ResetState();
@@ -570,6 +683,12 @@ ADC_ResultTypeDef ADC_Read(const ADC_InputTypeDef *Input, ADC_ValueTypeDef *Valu
     if(InputIndex < 0)
     {
         return ADC_RESULT_INVALID_PIN;
+    }
+
+    if(Input->Pin == ADC_PIN_VREFINT)
+    {
+        *Value = (ADC_ValueTypeDef)ADC2->DR;
+        return ADC_RESULT_OK;
     }
 
     *Value = ADC_State.Values[InputIndex];
@@ -618,13 +737,14 @@ void ADC_IRQHandler(void)
     }
 
     ADC_State.Values[ADC_State.CurrentInput] = (ADC_ValueTypeDef)ADC1->DR;
-    ADC_State.CurrentInput++;
+    int32_t NextExternalInput = ADC_GetNextExternalInput((uint8_t)(ADC_State.CurrentInput + 1U));
 
-    if(ADC_State.CurrentInput >= ADC_State.InputCount)
+    if(NextExternalInput < 0)
     {
-        ADC_State.CurrentInput = 0U;
+        return;
     }
 
+    ADC_State.CurrentInput = (uint8_t)NextExternalInput;
     ADC_SelectInput(ADC_State.CurrentInput);
     ADC1->CR |= ADC_CR_ADSTART;
 }

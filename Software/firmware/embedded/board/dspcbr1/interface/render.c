@@ -661,7 +661,6 @@ void Render_DrawText(Render_TargetTypeDef *Target, const Font *FontAsset, const 
     const FontGlyph *glyph;
     const uint8_t *glyph_bitmap;
     uint32_t codepoint;
-    uint32_t glyph_index;
     uint32_t bit_index;
     uint32_t byte_index;
     uint16_t row;
@@ -697,18 +696,20 @@ void Render_DrawText(Render_TargetTypeDef *Target, const Font *FontAsset, const 
             continue;
         }
 
-        if ((codepoint < FontAsset->firstCodepoint) || ((codepoint - FontAsset->firstCodepoint) >= (uint32_t)FontAsset->glyphCount))
+        glyph = Font_GetGlyph(FontAsset, codepoint);
+
+        if (glyph == NULL)
         {
             codepoint = (uint32_t)'?';
 
-            if ((codepoint < FontAsset->firstCodepoint) || ((codepoint - FontAsset->firstCodepoint) >= (uint32_t)FontAsset->glyphCount))
+            glyph = Font_GetGlyph(FontAsset, codepoint);
+
+            if (glyph == NULL)
             {
                 continue;
             }
         }
 
-        glyph_index = codepoint - FontAsset->firstCodepoint;
-        glyph = &FontAsset->glyphs[glyph_index];
         glyph_bitmap = &FontAsset->bitmap[glyph->bitmapOffset];
 
         for (row = 0U; row < glyph->height; row++)

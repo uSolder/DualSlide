@@ -6,6 +6,7 @@
 #include "input.h"
 #include "system_tasks.h"
 #include "system_time.h"
+#include "storage.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -20,6 +21,7 @@
 
 #define INPUT_PRIMARY_BUTTON_NUMBER   ((Input_NumberTypeDef)3U)
 #define INPUT_SECONDARY_BUTTON_NUMBER ((Input_NumberTypeDef)4U)
+#define INPUT_BATTERY_NUMBER          ((Input_NumberTypeDef)5U)
 #define SYSTEM_BUTTON_HOLD_TIME_MS    (1500ULL)
 
 typedef struct
@@ -109,6 +111,26 @@ static bool System_UpdateButtonHold(System_ButtonHoldStateTypeDef *State, Input_
     }
 
     return false;
+}
+
+/**
+ * @brief Returns whether the power driver reports an empty battery.
+ *
+ * A failed input read is treated as non-empty so an input-backend fault cannot
+ * command an unexpected system shutdown.
+ *
+ * @return true when the reported battery percentage is zero; otherwise false.
+ */
+static bool System_IsBatteryDepleted(void)
+{
+    int32_t BatteryPercentage;
+
+    if(!Input_Get_Value(INPUT_BATTERY_NUMBER, &BatteryPercentage))
+    {
+        return false;
+    }
+
+    return BatteryPercentage <= 0;
 }
 
 /**
@@ -276,6 +298,11 @@ int System_Run(void)
     System_PrimaryButtonHoldState = (System_ButtonHoldStateTypeDef){0};
     System_SecondaryButtonHoldState = (System_ButtonHoldStateTypeDef){0};
 
+    if(Storage_Init() != STORAGE_RESULT_OK)
+    {
+        return 1;
+    }
+
     if(!Display_Init())
     {
         return 1;
@@ -323,6 +350,12 @@ int System_Run(void)
         {
             System_UpdateFpsStatistics();
             PreviousStatisticsTimeMilliseconds = FrameStartTimeMilliseconds;
+        }
+
+        if(System_IsBatteryDepleted())
+        {
+            SystemTasks_PowerOff();
+            Running = false;
         }
 
         if(System_UpdateButtonHold(&System_PrimaryButtonHoldState, INPUT_PRIMARY_BUTTON_NUMBER, FrameStartTimeMilliseconds))

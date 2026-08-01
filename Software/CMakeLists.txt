@@ -12,6 +12,7 @@ set_property(CACHE DS_PLATFORM PROPERTY STRINGS windows embedded)
 add_library(ds_assets STATIC
     assets/fonts/open_sans.c
     assets/fonts/open_sans_bold.c
+    assets/fonts/avenir_next_demi_usolder.c
 )
 
 target_include_directories(ds_assets PUBLIC

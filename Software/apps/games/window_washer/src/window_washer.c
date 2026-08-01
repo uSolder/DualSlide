@@ -11,9 +11,11 @@
 #include "input.h"
 #include "open_sans.h"
 #include "render.h"
+#include "storage.h"
 
 #include <stddef.h>
 
+static volatile Storage_ResultTypeDef WindowWasher_LastStorageResult;
 
 #define INPUT_LEFT_SLIDER_NUMBER      ((Input_NumberTypeDef)1U)
 #define INPUT_RIGHT_SLIDER_NUMBER     ((Input_NumberTypeDef)2U)
@@ -66,8 +68,8 @@
 #define SPEED_4_PIXELS_PER_FRAME         (4U)
 #define SPEED_4_START_TIME_MS            (120000ULL)
 
-#define SPEED_5_PIXELS_PER_FRAME         (5U)
-#define SPEED_5_START_TIME_MS            (240000ULL)
+#define SPEED_5_PIXELS_PER_FRAME         (4U)               // currently unused
+#define SPEED_5_START_TIME_MS            (120000ULL)        // currently unused
 
 #define HOTEL_GROUND_Y         ((int16_t)RENDER_HEIGHT - 34)
 #define HOTEL_ENTRANCE_TOP_Y   ((int16_t)RENDER_HEIGHT - 218)
@@ -98,6 +100,11 @@
 
 #define SCORE_POINTS_PER_FLOOR         (1U)
 #define SCORE_POINTS_PER_DIRT          (10U)
+
+#define WINDOW_WASHER_HIGH_SCORE_STORAGE_KEY (0x57574853UL) /* "WWHS" */
+#define WINDOW_WASHER_SAVE_DATA_VERSION       (1U)
+
+static bool WindowWasher_HighScoreDirty;
 
 enum
 {
@@ -196,6 +203,12 @@ typedef struct
     WindowWasher_CleanWindowTypeDef CleanWindows[CLEAN_WINDOW_TRACKED_COUNT];
 } WindowWasher_GameTypeDef;
 
+typedef struct
+{
+    uint32_t Version;
+    uint32_t HighScore;
+} WindowWasher_SaveDataTypeDef;
+
 static Render_ColourIndexTypeDef WindowWasher_WasherPixels[WASHER_IMAGE_SIZE * WASHER_IMAGE_SIZE];
 
 static const Render_ImageTypeDef WindowWasher_WasherImage =
@@ -277,6 +290,32 @@ static uint32_t WindowWasher_HighScore;
 static uint8_t WindowWasher_ScorePulseFrames;
 static bool WindowWasher_Initialized;
 static bool WindowWasher_Paused;
+
+static void WindowWasher_SaveHighScore(void)
+{
+    const WindowWasher_SaveDataTypeDef SaveData =
+    {
+        .Version = WINDOW_WASHER_SAVE_DATA_VERSION,
+        .HighScore = WindowWasher_HighScore
+    };
+    WindowWasher_LastStorageResult = Storage_Write(WINDOW_WASHER_HIGH_SCORE_STORAGE_KEY, &SaveData, sizeof(SaveData));
+    if(WindowWasher_LastStorageResult == STORAGE_RESULT_OK)
+    {
+        WindowWasher_HighScoreDirty = false;
+    }
+}
+
+static void WindowWasher_LoadHighScore(void)
+{
+    WindowWasher_SaveDataTypeDef SaveData;
+    WindowWasher_HighScore = 0U;
+    WindowWasher_HighScoreDirty = false;
+    WindowWasher_LastStorageResult = Storage_Read(WINDOW_WASHER_HIGH_SCORE_STORAGE_KEY, &SaveData, sizeof(SaveData), NULL);
+    if((WindowWasher_LastStorageResult == STORAGE_RESULT_OK) && (SaveData.Version == WINDOW_WASHER_SAVE_DATA_VERSION) && (SaveData.HighScore <= SCORE_MAXIMUM))
+    {
+        WindowWasher_HighScore = SaveData.HighScore;
+    }
+}
 
 static int16_t WindowWasher_Clamp(int16_t Value, int16_t Minimum, int16_t Maximum)
 {
@@ -610,6 +649,7 @@ static void WindowWasher_AddScore(WindowWasher_GameTypeDef *Game, uint32_t Point
     if(Game->Score > WindowWasher_HighScore)
     {
         WindowWasher_HighScore = Game->Score;
+        WindowWasher_HighScoreDirty = true;
     }
 
     if(FlashScore)
@@ -836,6 +876,10 @@ static void WindowWasher_UpdateGame(WindowWasher_GameTypeDef *Game, WindowWasher
     if(((Figure->PositionX / FIGURE_FIXED_SCALE) < (PLATFORM_LEFT_X + ((int16_t)FIGURE_WIDTH / 2))) || ((Figure->PositionX / FIGURE_FIXED_SCALE) > (PLATFORM_RIGHT_X - ((int16_t)FIGURE_WIDTH / 2))) || WindowWasher_FigureHitsBalcony(Game, Platform, Figure))
     {
         Game->Crashed = true;
+        if(WindowWasher_HighScoreDirty)
+        {
+            WindowWasher_SaveHighScore();
+        }
         Figure->PositionY = (int32_t)WindowWasher_FigureY(Platform, Figure) * FIGURE_FIXED_SCALE;
         Figure->VelocityY = FALL_INITIAL_VELOCITY_FIXED_PER_SECOND;
         Figure->OffscreenMilliseconds = 0U;
@@ -2009,6 +2053,7 @@ bool WindowWasher_Init(void)
     WindowWasher_PendingDeltaTimeMilliseconds = 0U;
     WindowWasher_ScorePulseFrames = 0U;
     WindowWasher_Paused = false;
+    WindowWasher_LoadHighScore();
 
     WindowWasher_ResetGame(&WindowWasher_Game, &WindowWasher_Figure);
 
@@ -2175,6 +2220,10 @@ void WindowWasher_Resume(void)
 
 void WindowWasher_Shutdown(void)
 {
+    if(WindowWasher_HighScoreDirty)
+    {
+        WindowWasher_SaveHighScore();
+    }
     WindowWasher_Initialized = false;
     WindowWasher_Paused = false;
     WindowWasher_PendingDeltaTimeMilliseconds = 0U;
