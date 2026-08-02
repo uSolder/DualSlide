@@ -131,7 +131,6 @@ typedef struct
     int SplashPaletteApplication;
     Launcher_PreviewTransitionTypeDef PreviewTransition;
     uint32_t PreviewTransitionElapsedMilliseconds;
-    bool LeftSliderArmed;
     bool RightSliderArmed;
     bool PrimaryButtonPressed;
     bool PrimaryButtonLaunchArmed;
@@ -434,8 +433,11 @@ static void Launcher_Reset(void)
     Launcher_State.SplashPaletteApplication = -1;
     Launcher_State.PreviewTransition = LAUNCHER_PREVIEW_TRANSITION_NONE;
     Launcher_State.PreviewTransitionElapsedMilliseconds = 0U;
-    Launcher_State.LeftSliderArmed = true;
-    Launcher_State.RightSliderArmed = true;
+    /*
+     * The right slider must first leave either hard stop.  This prevents an
+     * already-held slider from changing the page during startup or return.
+     */
+    Launcher_State.RightSliderArmed = false;
     Launcher_State.PrimaryButtonPressed = false;
     Launcher_State.PrimaryButtonLaunchArmed = false;
     Launcher_State.SecondaryButtonPressed = false;
@@ -597,26 +599,11 @@ static void Launcher_UpdateMenuInput(void)
         return;
     }
 
-    if(LeftSliderAvailable)
-    {
-        SelectionChanged = Launcher_ProcessSliderHardStops(LeftSliderValue, &Launcher_State.LeftSliderArmed);
-    }
-
     if(RightSliderAvailable)
     {
-        if(SelectionChanged)
-        {
-            if(!Launcher_State.RightSliderArmed && (RightSliderValue >= LAUNCHER_SLIDER_TOP_RELEASE) && (RightSliderValue <= LAUNCHER_SLIDER_BOTTOM_RELEASE))
-            {
-                Launcher_State.RightSliderArmed = true;
-            }
-        }
-        else
-        {
-            SelectionChanged = Launcher_ProcessSliderHardStops(
-                RightSliderValue,
-                &Launcher_State.RightSliderArmed);
-        }
+        SelectionChanged = Launcher_ProcessSliderHardStops(
+            RightSliderValue,
+            &Launcher_State.RightSliderArmed);
     }
 
     if(SelectionChanged)
@@ -1445,6 +1432,8 @@ void Launcher_Pause(void)
 
 void Launcher_Resume(void)
 {
+    /* Require a fresh move away from the hard stop after an application exits. */
+    Launcher_State.RightSliderArmed = false;
     Launcher_Paused = false;
 }
 
