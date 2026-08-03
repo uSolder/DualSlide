@@ -8,6 +8,8 @@
 #include "launcher.h"
 #include "template_game.h"
 #include "window_washer.h"
+#include "pong.h"
+
 
 #include <stddef.h>
 #include <stdint.h>
@@ -71,6 +73,16 @@ static const AppManager_ApplicationInterfaceTypeDef AppManager_Applications[NUM_
         .Pause = TemplateGame_Pause,
         .Resume = TemplateGame_Resume,
         .Shutdown = TemplateGame_Shutdown
+    },
+    {
+        .Init = Pong_Init,
+        .Update = Pong_Update,
+        .Render = Pong_Render,
+        .GetSplashScreenPalette = Pong_GetSplashScreenPalette,
+        .DrawSplashScreen = Pong_DrawSplashScreen,
+        .Pause = Pong_Pause,
+        .Resume = Pong_Resume,
+        .Shutdown = Pong_Shutdown
     }
 };
 
