@@ -9,7 +9,7 @@
 #include "template_game.h"
 #include "window_washer.h"
 #include "pong.h"
-
+#include "solar_scout.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -83,6 +83,16 @@ static const AppManager_ApplicationInterfaceTypeDef AppManager_Applications[NUM_
         .Pause = Pong_Pause,
         .Resume = Pong_Resume,
         .Shutdown = Pong_Shutdown
+    },
+    {
+        .Init = SolarScout_Init,
+        .Update = SolarScout_Update,
+        .Render = SolarScout_Render,
+        .GetSplashScreenPalette = SolarScout_GetSplashScreenPalette,
+        .DrawSplashScreen = SolarScout_DrawSplashScreen,
+        .Pause = SolarScout_Pause,
+        .Resume = SolarScout_Resume,
+        .Shutdown = SolarScout_Shutdown
     }
 };
 

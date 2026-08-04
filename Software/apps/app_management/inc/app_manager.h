@@ -20,7 +20,7 @@ extern "C" {
 /**
  * @brief Number of applications registered with the application manager.
  */
-#define NUM_APPS (3U)
+#define NUM_APPS (4U)
 
 /**
  * @brief Splash-screen position within the logical render target.
