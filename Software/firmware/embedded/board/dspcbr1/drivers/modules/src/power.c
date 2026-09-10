@@ -1,6 +1,6 @@
 /**
  * @file power.c
- * @brief Target-agnostic battery charging and charge-indicator implementation.
+ * @brief Target-agnostic battery charging, voltage-monitoring, and charge-indicator implementation.
  */
 
 #include "power.h"
@@ -11,26 +11,19 @@
 #define USB_CC_FAST_CURRENT_THRESHOLD_MILLIVOLTS        660U
 #define CHARGE_LED_MINIMUM_DUTY_PERMILLE                500U
 #define CHARGE_LED_MAXIMUM_DUTY_PERMILLE                1000U
-#define BATTERY_FILTER_SHIFT                            8U
-#define BATTERY_CHARGE_FULL_PERMILLE                    1000U
-
-/*
- * TIM4 calls Power_TimerUpdate() at 1 kHz. Applying one permille correction
- * every three seconds limits the displayed charge change to 1% every 30 s.
- */
-#define BATTERY_CHARGE_CORRECTION_INTERVAL_UPDATES      3000U
-
-typedef struct
-{
-    uint16_t voltage_millivolts;
-    uint16_t charge_permille;
-} Power_BatteryChargePointTypeDef;
+#define CHARGE_LED_DISABLE_VOLTAGE_MILLIVOLTS           4150U
+#define BATTERY_VOLTAGE_AVERAGE_SAMPLE_COUNT            1024U
+#define BATTERY_VOLTAGE_OUTPUT_STEP_MILLIVOLTS          10U
+#define BATTERY_DEPLETED_VOLTAGE_MILLIVOLTS             3300U
+#define BATTERY_RECOVERY_VOLTAGE_MILLIVOLTS             3400U
+#define BATTERY_DEPLETED_CONFIRMATION_AVERAGES          5U
 
 static bool Power_IsFastUSBCurrentAvailable(void);
 static void Power_UpdateBatteryChargeCurrentLimit(bool fast_current_available);
 static void Power_UpdateBatteryVoltage(void);
-static void Power_UpdateBatteryChargeEstimate(void);
-static uint16_t Power_GetBatteryChargeFromVoltage(uint16_t voltage_millivolts);
+static void Power_ApplyBatteryVoltageAverage(uint32_t battery_voltage_millivolts);
+static void Power_UpdateBatteryDepletedState(uint32_t battery_voltage_millivolts);
+static uint16_t Power_RoundBatteryVoltageToOutputStep(uint32_t battery_voltage_millivolts);
 
 static const Power_Handle *PowerHandle;
 static bool IsCharging;
@@ -38,29 +31,12 @@ static bool IsFastUSBCurrent;
 static uint16_t OrangeLEDDutyPermille = CHARGE_LED_MINIMUM_DUTY_PERMILLE;
 static bool OrangeLEDDutyIncreasing = true;
 static bool OrangeLEDSlowUpdateToggle;
-static uint32_t FilteredBatteryVoltageMillivolts;
+static uint32_t BatteryVoltageSampleAccumulator;
+static uint16_t BatteryVoltageSampleCount;
+static uint16_t FilteredBatteryVoltageMillivolts;
+static uint8_t BatteryDepletedAverageCount;
 static bool IsBatteryVoltageValid;
-static uint16_t EstimatedBatteryChargePermille;
-static uint16_t BatteryChargeCorrectionUpdateCount;
-static bool IsBatteryChargeEstimateValid;
-
-/* Typical 1-cell Li-ion open-circuit discharge curve. */
-static const Power_BatteryChargePointTypeDef BatteryChargeCurve[] =
-{
-    { 3300U,    0U },
-    { 3600U,   50U },
-    { 3700U,  100U },
-    { 3740U,  200U },
-    { 3770U,  300U },
-    { 3800U,  400U },
-    { 3830U,  500U },
-    { 3860U,  600U },
-    { 3900U,  700U },
-    { 3950U,  800U },
-    { 4000U,  900U },
-    { 4100U,  975U },
-    { 4150U, 1000U }
-};
+static bool IsBatteryDepleted;
 
 Power_ResultTypeDef Power_Init(const Power_Handle *handle)
 {
@@ -81,10 +57,12 @@ Power_ResultTypeDef Power_Init(const Power_Handle *handle)
     OrangeLEDDutyPermille = CHARGE_LED_MINIMUM_DUTY_PERMILLE;
     OrangeLEDDutyIncreasing = true;
     OrangeLEDSlowUpdateToggle = false;
+    BatteryVoltageSampleAccumulator = 0U;
+    BatteryVoltageSampleCount = 0U;
+    FilteredBatteryVoltageMillivolts = 0U;
+    BatteryDepletedAverageCount = 0U;
     IsBatteryVoltageValid = false;
-    EstimatedBatteryChargePermille = 0U;
-    BatteryChargeCorrectionUpdateCount = 0U;
-    IsBatteryChargeEstimateValid = false;
+    IsBatteryDepleted = false;
 
     if(GPIO_Set(PowerHandle->charger_current_limit_pin) != GPIO_RESULT_OK)
     {
@@ -122,7 +100,8 @@ void Power_TimerUpdate(void *context)
     fast_current_available = Power_IsFastUSBCurrentAvailable();
     Power_UpdateBatteryChargeCurrentLimit(fast_current_available);
 
-    if(!IsCharging || (Power_GetBatteryChargePermille() >= BATTERY_CHARGE_FULL_PERMILLE))
+    if(!IsCharging ||
+       (Power_GetBatteryVoltageMillivolts() >= CHARGE_LED_DISABLE_VOLTAGE_MILLIVOLTS))
     {
         (void)Timer_OutputDisable(PowerHandle->charge_led_channel);
         return;
@@ -174,17 +153,12 @@ bool Power_IsCharging(void)
 
 uint16_t Power_GetBatteryVoltageMillivolts(void)
 {
-    return (uint16_t)FilteredBatteryVoltageMillivolts;
+    return FilteredBatteryVoltageMillivolts;
 }
 
-uint16_t Power_GetBatteryChargePermille(void)
+bool Power_IsBatteryDepleted(void)
 {
-    if(IsBatteryChargeEstimateValid)
-    {
-        return EstimatedBatteryChargePermille;
-    }
-
-    return Power_GetBatteryChargeFromVoltage(Power_GetBatteryVoltageMillivolts());
+    return IsBatteryDepleted && !IsCharging;
 }
 
 static bool Power_IsFastUSBCurrentAvailable(void)
@@ -215,6 +189,7 @@ static void Power_UpdateBatteryChargeCurrentLimit(bool fast_current_available)
 static void Power_UpdateBatteryVoltage(void)
 {
     uint32_t battery_voltage_millivolts;
+    uint32_t average_battery_voltage_millivolts;
 
     battery_voltage_millivolts = PowerHandle->get_battery_millivolts();
 
@@ -225,103 +200,79 @@ static void Power_UpdateBatteryVoltage(void)
 
     if(!IsBatteryVoltageValid)
     {
-        FilteredBatteryVoltageMillivolts = battery_voltage_millivolts;
+        FilteredBatteryVoltageMillivolts = Power_RoundBatteryVoltageToOutputStep(battery_voltage_millivolts);
         IsBatteryVoltageValid = true;
-        Power_UpdateBatteryChargeEstimate();
+    }
+
+    BatteryVoltageSampleAccumulator += battery_voltage_millivolts;
+    BatteryVoltageSampleCount++;
+
+    if(BatteryVoltageSampleCount < BATTERY_VOLTAGE_AVERAGE_SAMPLE_COUNT)
+    {
         return;
     }
 
-    if(battery_voltage_millivolts > FilteredBatteryVoltageMillivolts)
-    {
-        uint32_t difference = battery_voltage_millivolts - FilteredBatteryVoltageMillivolts;
-        uint32_t adjustment = difference >> BATTERY_FILTER_SHIFT;
+    average_battery_voltage_millivolts =
+        (BatteryVoltageSampleAccumulator + (BATTERY_VOLTAGE_AVERAGE_SAMPLE_COUNT / 2U)) /
+        BATTERY_VOLTAGE_AVERAGE_SAMPLE_COUNT;
 
-        FilteredBatteryVoltageMillivolts += (adjustment != 0U) ? adjustment : 1U;
-    }
-    else if(battery_voltage_millivolts < FilteredBatteryVoltageMillivolts)
-    {
-        uint32_t difference = FilteredBatteryVoltageMillivolts - battery_voltage_millivolts;
-        uint32_t adjustment = difference >> BATTERY_FILTER_SHIFT;
+    BatteryVoltageSampleAccumulator = 0U;
+    BatteryVoltageSampleCount = 0U;
 
-        FilteredBatteryVoltageMillivolts -= (adjustment != 0U) ? adjustment : 1U;
-    }
-
-    Power_UpdateBatteryChargeEstimate();
+    Power_ApplyBatteryVoltageAverage(average_battery_voltage_millivolts);
+    Power_UpdateBatteryDepletedState(average_battery_voltage_millivolts);
 }
 
-static void Power_UpdateBatteryChargeEstimate(void)
+static void Power_ApplyBatteryVoltageAverage(uint32_t battery_voltage_millivolts)
 {
-    uint16_t voltage_charge_permille;
-
-    voltage_charge_permille = Power_GetBatteryChargeFromVoltage(Power_GetBatteryVoltageMillivolts());
-
-    if(!IsBatteryChargeEstimateValid)
+    if((battery_voltage_millivolts >= ((uint32_t)FilteredBatteryVoltageMillivolts + BATTERY_VOLTAGE_OUTPUT_STEP_MILLIVOLTS)) ||
+       ((battery_voltage_millivolts + BATTERY_VOLTAGE_OUTPUT_STEP_MILLIVOLTS) <= FilteredBatteryVoltageMillivolts))
     {
-        EstimatedBatteryChargePermille = voltage_charge_permille;
-        IsBatteryChargeEstimateValid = true;
-        BatteryChargeCorrectionUpdateCount = 0U;
-        return;
-    }
-
-    /*
-     * Board load causes an immediate voltage drop when the main rail starts.
-     * While the charger is actively charging, that voltage sag must not be
-     * interpreted as battery capacity being removed.
-     */
-    if(IsCharging && (voltage_charge_permille < EstimatedBatteryChargePermille))
-    {
-        BatteryChargeCorrectionUpdateCount = 0U;
-        return;
-    }
-
-    if(EstimatedBatteryChargePermille == voltage_charge_permille)
-    {
-        BatteryChargeCorrectionUpdateCount = 0U;
-        return;
-    }
-
-    BatteryChargeCorrectionUpdateCount++;
-
-    if(BatteryChargeCorrectionUpdateCount < BATTERY_CHARGE_CORRECTION_INTERVAL_UPDATES)
-    {
-        return;
-    }
-
-    BatteryChargeCorrectionUpdateCount = 0U;
-
-    if(EstimatedBatteryChargePermille < voltage_charge_permille)
-    {
-        EstimatedBatteryChargePermille++;
-    }
-    else
-    {
-        EstimatedBatteryChargePermille--;
+        FilteredBatteryVoltageMillivolts = Power_RoundBatteryVoltageToOutputStep(battery_voltage_millivolts);
     }
 }
 
-static uint16_t Power_GetBatteryChargeFromVoltage(uint16_t voltage_millivolts)
+static void Power_UpdateBatteryDepletedState(uint32_t battery_voltage_millivolts)
 {
-    uint32_t index;
-
-    if(voltage_millivolts <= BatteryChargeCurve[0].voltage_millivolts)
+    if(IsCharging)
     {
-        return BatteryChargeCurve[0].charge_permille;
+        BatteryDepletedAverageCount = 0U;
+        IsBatteryDepleted = false;
+        return;
     }
 
-    for(index = 1U; index < (sizeof(BatteryChargeCurve) / sizeof(BatteryChargeCurve[0])); index++)
+    if(battery_voltage_millivolts <= BATTERY_DEPLETED_VOLTAGE_MILLIVOLTS)
     {
-        const Power_BatteryChargePointTypeDef *lower_point = &BatteryChargeCurve[index - 1U];
-        const Power_BatteryChargePointTypeDef *upper_point = &BatteryChargeCurve[index];
-
-        if(voltage_millivolts <= upper_point->voltage_millivolts)
+        if(BatteryDepletedAverageCount < BATTERY_DEPLETED_CONFIRMATION_AVERAGES)
         {
-            uint32_t voltage_range = upper_point->voltage_millivolts - lower_point->voltage_millivolts;
-            uint32_t voltage_offset = voltage_millivolts - lower_point->voltage_millivolts;
-            uint32_t charge_range = upper_point->charge_permille - lower_point->charge_permille;
-
-            return (uint16_t)(lower_point->charge_permille + ((voltage_offset * charge_range) / voltage_range));
+            BatteryDepletedAverageCount++;
         }
+
+        if(BatteryDepletedAverageCount >= BATTERY_DEPLETED_CONFIRMATION_AVERAGES)
+        {
+            IsBatteryDepleted = true;
+        }
+
+        return;
     }
 
-    return BatteryChargeCurve[(sizeof(BatteryChargeCurve) / sizeof(BatteryChargeCurve[0])) - 1U].charge_permille;
+    BatteryDepletedAverageCount = 0U;
+
+    if(battery_voltage_millivolts >= BATTERY_RECOVERY_VOLTAGE_MILLIVOLTS)
+    {
+        IsBatteryDepleted = false;
+    }
+}
+
+static uint16_t Power_RoundBatteryVoltageToOutputStep(uint32_t battery_voltage_millivolts)
+{
+    uint32_t rounded_battery_voltage_millivolts;
+
+    rounded_battery_voltage_millivolts =
+        ((battery_voltage_millivolts + (BATTERY_VOLTAGE_OUTPUT_STEP_MILLIVOLTS / 2U)) /
+         BATTERY_VOLTAGE_OUTPUT_STEP_MILLIVOLTS) *
+        BATTERY_VOLTAGE_OUTPUT_STEP_MILLIVOLTS;
+
+    return (rounded_battery_voltage_millivolts > UINT16_MAX) ?
+        UINT16_MAX : (uint16_t)rounded_battery_voltage_millivolts;
 }

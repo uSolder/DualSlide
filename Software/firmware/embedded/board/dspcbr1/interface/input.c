@@ -3,8 +3,7 @@
  * @brief Embedded implementation of the generic input-control contract.
  *
  * This backend reads the board-mounted analog sliders through the assigned
- * ADC inputs, board GPIO inputs, and battery charge state through the power
- * driver.
+ * ADC inputs, board GPIO inputs, and battery state through the power driver.
  */
 
 #include "input.h"
@@ -24,6 +23,7 @@
 #define EMBEDDED_INPUT_SECONDARY_BUTTON_NUMBER  ((Input_NumberTypeDef)4U)
 #define EMBEDDED_INPUT_BATTERY_NUMBER           ((Input_NumberTypeDef)5U)
 #define EMBEDDED_INPUT_USB_POWER_NUMBER         ((Input_NumberTypeDef)6U)
+#define EMBEDDED_INPUT_BATTERY_DEPLETED_NUMBER  ((Input_NumberTypeDef)7U)
 
 #define EMBEDDED_INPUT_SLIDER_MINIMUM           (0)
 #define EMBEDDED_INPUT_SLIDER_MAXIMUM           (65535)
@@ -35,9 +35,8 @@
 #define EMBEDDED_INPUT_DIGITAL_LOW               (0)
 #define EMBEDDED_INPUT_DIGITAL_HIGH              (1)
 
-#define EMBEDDED_INPUT_BATTERY_MINIMUM           (0)
-#define EMBEDDED_INPUT_BATTERY_MAXIMUM           (100)
-#define EMBEDDED_INPUT_BATTERY_PERMILLE_DIVISOR  (10U)
+#define EMBEDDED_INPUT_BATTERY_MINIMUM_MILLIVOLTS    (0)
+#define EMBEDDED_INPUT_BATTERY_MAXIMUM_MILLIVOLTS    (5000)
 
 static const ADC_InputTypeDef *Embedded_POTAInput;
 static const ADC_InputTypeDef *Embedded_POTBInput;
@@ -80,12 +79,18 @@ static const Input_InfoTypeDef Embedded_InputInfo[] =
     },
     {
         .Number = EMBEDDED_INPUT_BATTERY_NUMBER,
-        .Minimum = EMBEDDED_INPUT_BATTERY_MINIMUM,
-        .Maximum = EMBEDDED_INPUT_BATTERY_MAXIMUM,
+        .Minimum = EMBEDDED_INPUT_BATTERY_MINIMUM_MILLIVOLTS,
+        .Maximum = EMBEDDED_INPUT_BATTERY_MAXIMUM_MILLIVOLTS,
         .Type = INPUT_TYPE_ANALOG
     },
     {
         .Number = EMBEDDED_INPUT_USB_POWER_NUMBER,
+        .Minimum = EMBEDDED_INPUT_DIGITAL_LOW,
+        .Maximum = EMBEDDED_INPUT_DIGITAL_HIGH,
+        .Type = INPUT_TYPE_DIGITAL
+    },
+    {
+        .Number = EMBEDDED_INPUT_BATTERY_DEPLETED_NUMBER,
         .Minimum = EMBEDDED_INPUT_DIGITAL_LOW,
         .Maximum = EMBEDDED_INPUT_DIGITAL_HIGH,
         .Type = INPUT_TYPE_DIGITAL
@@ -151,7 +156,6 @@ bool Input_Get_Value(Input_NumberTypeDef Number, int32_t *Value)
 {
     ADC_ValueTypeDef ADCValue;
     GPIO_LevelTypeDef GPIOLevel;
-    uint16_t battery_charge_percent;
 
     if(!Embedded_InputInitialised || (Value == NULL))
     {
@@ -197,14 +201,7 @@ bool Input_Get_Value(Input_NumberTypeDef Number, int32_t *Value)
             return true;
 
         case EMBEDDED_INPUT_BATTERY_NUMBER:
-            battery_charge_percent = Power_GetBatteryChargePermille() / EMBEDDED_INPUT_BATTERY_PERMILLE_DIVISOR;
-
-            if(battery_charge_percent > EMBEDDED_INPUT_BATTERY_MAXIMUM)
-            {
-                battery_charge_percent = EMBEDDED_INPUT_BATTERY_MAXIMUM;
-            }
-
-            *Value = (int32_t)battery_charge_percent;
+            *Value = (int32_t)Power_GetBatteryVoltageMillivolts();
             return true;
 
         case EMBEDDED_INPUT_USB_POWER_NUMBER:
@@ -214,6 +211,10 @@ bool Input_Get_Value(Input_NumberTypeDef Number, int32_t *Value)
             }
 
             *Value = (GPIOLevel == GPIO_LEVEL_HIGH) ? EMBEDDED_INPUT_DIGITAL_HIGH : EMBEDDED_INPUT_DIGITAL_LOW;
+            return true;
+
+        case EMBEDDED_INPUT_BATTERY_DEPLETED_NUMBER:
+            *Value = Power_IsBatteryDepleted() ? EMBEDDED_INPUT_DIGITAL_HIGH : EMBEDDED_INPUT_DIGITAL_LOW;
             return true;
 
         default:

@@ -1,6 +1,6 @@
 /**
  * @file power.h
- * @brief Target-agnostic battery charging, monitoring, and charge-indicator driver.
+ * @brief Target-agnostic battery charging, voltage monitoring, and charge-indicator driver.
  */
 
 #ifndef POWER_H
@@ -31,7 +31,7 @@ typedef struct
 } Power_Handle;
 
 /**
- * @brief Initializes the board-provided charging and monitoring interfaces.
+ * @brief Initializes the board-provided charging and voltage-monitoring interfaces.
  *
  * @param handle Initialized board power-hardware handle.
  *
@@ -40,7 +40,7 @@ typedef struct
 Power_ResultTypeDef Power_Init(const Power_Handle *handle);
 
 /**
- * @brief Periodic timer callback for power monitoring and charge indication.
+ * @brief Periodic timer callback for voltage monitoring and charge indication.
  *
  * @param context Unused callback context.
  */
@@ -57,8 +57,8 @@ bool Power_IsCharging(void);
 uint16_t Power_GetBatteryVoltageMillivolts(void);
 
 /**
- * @brief Returns the estimated battery charge from 0 to 1000 permille.
+ * @brief Returns whether the battery voltage has remained below the depletion threshold.
  */
-uint16_t Power_GetBatteryChargePermille(void);
+bool Power_IsBatteryDepleted(void);
 
 #endif

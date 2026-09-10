@@ -21,7 +21,7 @@
 
 #define INPUT_PRIMARY_BUTTON_NUMBER   ((Input_NumberTypeDef)3U)
 #define INPUT_SECONDARY_BUTTON_NUMBER ((Input_NumberTypeDef)4U)
-#define INPUT_BATTERY_NUMBER          ((Input_NumberTypeDef)5U)
+#define INPUT_BATTERY_DEPLETED_NUMBER ((Input_NumberTypeDef)7U)
 #define SYSTEM_BUTTON_HOLD_TIME_MS    (1500ULL)
 
 typedef struct
@@ -114,23 +114,21 @@ static bool System_UpdateButtonHold(System_ButtonHoldStateTypeDef *State, Input_
 }
 
 /**
- * @brief Returns whether the power driver reports an empty battery.
+ * @brief Returns whether the input backend reports a depleted battery.
  *
- * A failed input read is treated as non-empty so an input-backend fault cannot
- * command an unexpected system shutdown.
- *
- * @return true when the reported battery percentage is zero; otherwise false.
+ * A failed input read is treated as non-depleted so an unavailable optional
+ * battery input cannot command an unexpected shutdown.
  */
 static bool System_IsBatteryDepleted(void)
 {
-    int32_t BatteryPercentage;
+    int32_t BatteryDepleted;
 
-    if(!Input_Get_Value(INPUT_BATTERY_NUMBER, &BatteryPercentage))
+    if(!Input_Get_Value(INPUT_BATTERY_DEPLETED_NUMBER, &BatteryDepleted))
     {
         return false;
     }
 
-    return BatteryPercentage <= 0;
+    return BatteryDepleted != 0;
 }
 
 /**

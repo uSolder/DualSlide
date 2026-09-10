@@ -56,6 +56,9 @@
 #define LAUNCHER_BATTERY_DISPLAY_Y                (21)
 #define LAUNCHER_BATTERY_DISPLAY_WIDTH            (70U)
 #define LAUNCHER_BATTERY_DISPLAY_HEIGHT           (24U)
+#define LAUNCHER_BATTERY_DISPLAY_MAXIMUM_MILLIVOLTS       (5000)
+#define LAUNCHER_BATTERY_WARNING_MILLIVOLTS               (3700)
+#define LAUNCHER_BATTERY_CRITICAL_MILLIVOLTS              (3500)
 
 /* Vertical position of the centered lower-bezel uSolder wordmark. */
 #define LAUNCHER_BRAND_TEXT_Y                     (425)
@@ -178,7 +181,7 @@ static void Launcher_DrawMenuScreen(Render_TargetTypeDef *Target, Launcher_Scree
 static void Launcher_DrawScreenTab(Render_TargetTypeDef *Target, int16_t X, uint16_t Width, const char *Label, uint8_t CoverColour);
 static void Launcher_DrawBrandName(Render_TargetTypeDef *Target);
 static void Launcher_DrawStartupBrandName(Render_TargetTypeDef *Target);
-static void Launcher_DrawBatteryPercentage(Render_TargetTypeDef *Target);
+static void Launcher_DrawBatteryVoltage(Render_TargetTypeDef *Target);
 
 static void Launcher_UpdateMenuInput(void);
 static void Launcher_UpdatePrimaryButton(void);
@@ -319,7 +322,7 @@ static void Launcher_DrawStartupBrandName(Render_TargetTypeDef *Target)
     Render_DrawText(Target, &AvenirNextDemi125, BrandNameRest, BrandRestX, LAUNCHER_STARTUP_BRAND_TEXT_Y, COLOUR_USOLDER_NAVY);
 }
 
-static void Launcher_DrawBatteryPercentage(Render_TargetTypeDef *Target)
+static void Launcher_DrawBatteryVoltage(Render_TargetTypeDef *Target)
 {
     const Render_RectTypeDef BatteryBezel = {
         (int16_t)(LAUNCHER_BATTERY_DISPLAY_X - 2),
@@ -357,53 +360,38 @@ static void Launcher_DrawBatteryPercentage(Render_TargetTypeDef *Target)
         LAUNCHER_BATTERY_DISPLAY_WIDTH,
         LAUNCHER_BATTERY_DISPLAY_HEIGHT
     };
-    char BatteryText[5];
-    int32_t BatteryPercentage;
+    char BatteryText[6];
+    int32_t BatteryVoltageMillivolts;
+    uint32_t BatteryVoltageCentivolts;
     uint16_t TextWidth;
     int16_t TextX;
     uint8_t TextColour;
 
-    if(!Input_Get_Value(INPUT_BATTERY_NUMBER, &BatteryPercentage))
+    if(!Input_Get_Value(INPUT_BATTERY_NUMBER, &BatteryVoltageMillivolts) ||
+       (BatteryVoltageMillivolts <= 0))
     {
         return;
     }
 
-    if(BatteryPercentage < 0)
+    if(BatteryVoltageMillivolts > LAUNCHER_BATTERY_DISPLAY_MAXIMUM_MILLIVOLTS)
     {
-        BatteryPercentage = 0;
-    }
-    else if(BatteryPercentage > 100)
-    {
-        BatteryPercentage = 100;
+        BatteryVoltageMillivolts = LAUNCHER_BATTERY_DISPLAY_MAXIMUM_MILLIVOLTS;
     }
 
-    if(BatteryPercentage >= 100)
-    {
-        BatteryText[0] = '1';
-        BatteryText[1] = '0';
-        BatteryText[2] = '0';
-        BatteryText[3] = '%';
-        BatteryText[4] = '\0';
-    }
-    else if(BatteryPercentage >= 10)
-    {
-        BatteryText[0] = (char)('0' + (BatteryPercentage / 10));
-        BatteryText[1] = (char)('0' + (BatteryPercentage % 10));
-        BatteryText[2] = '%';
-        BatteryText[3] = '\0';
-    }
-    else
-    {
-        BatteryText[0] = (char)('0' + BatteryPercentage);
-        BatteryText[1] = '%';
-        BatteryText[2] = '\0';
-    }
+    BatteryVoltageCentivolts = ((uint32_t)BatteryVoltageMillivolts + 5U) / 10U;
 
-    if(BatteryPercentage > 30)
+    BatteryText[0] = (char)('0' + (BatteryVoltageCentivolts / 100U));
+    BatteryText[1] = '.';
+    BatteryText[2] = (char)('0' + ((BatteryVoltageCentivolts / 10U) % 10U));
+    BatteryText[3] = (char)('0' + (BatteryVoltageCentivolts % 10U));
+    BatteryText[4] = 'V';
+    BatteryText[5] = '\0';
+
+    if(BatteryVoltageMillivolts > LAUNCHER_BATTERY_WARNING_MILLIVOLTS)
     {
         TextColour = COLOUR_LIGHT_GREY;
     }
-    else if(BatteryPercentage > 15)
+    else if(BatteryVoltageMillivolts > LAUNCHER_BATTERY_CRITICAL_MILLIVOLTS)
     {
         TextColour = COLOUR_ORANGE;
     }
@@ -1284,7 +1272,7 @@ static void Launcher_DrawMenuScreen(Render_TargetTypeDef *Target, Launcher_Scree
         LAUNCHER_CHARGING_INDICATOR_WIDTH,
         "",
         Launcher_State.USBPowerPresent ? COLOUR_ORANGE : COLOUR_ORANGE_DARK);
-    Launcher_DrawBatteryPercentage(Target);
+    Launcher_DrawBatteryVoltage(Target);
     Launcher_DrawScreenTab(
         Target,
         LAUNCHER_START_BUTTON_X,
