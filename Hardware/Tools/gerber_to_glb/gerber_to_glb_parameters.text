@@ -1,0 +1,63 @@
+python gerber_to_glb.py Gerber.zip -o pcb.glb
+
+All thicknesses and distances are in millimetres.
+
+source
+Gerber ZIP or folder. Include drill files in the same ZIP or folder.
+
+-o, --output
+Output .glb file. Default: gerber_to_glb.glb. Replaces an existing file.
+
+--thickness
+Board thickness. Default: 1.0.
+
+--copper-thickness
+Outer copper thickness. Default: 0.035.
+
+--mask-thickness
+Soldermask thickness and edge wrap. Default: 0.020.
+
+--finish-thickness
+Surface finish thickness, including hole finish. Default: 0.004.
+
+--silk-thickness
+Silkscreen thickness and edge wrap. Default: 0.015.
+
+--mask-color
+black, green, blue, red, purple or white. Default: black.
+
+--finish
+enig or hasl. Default: enig.
+
+--simplify
+Artwork simplification tolerance. Smaller values retain more detail.
+Use 0 to disable. Default: 0.005.
+
+--drills
+auto or off. Default: auto. Reads supported Excellon drills and straight slots.
+Tenting follows the soldermask files on each side. Only through-holes are supported.
+
+--drill-format
+Override implicit coordinate format, for example 2:5.
+Normally read from the drill file. Does not change its units.
+
+--hole-plating
+Copper thickness around plated holes. Default: 0.025.
+The specified hole diameter is kept as the finished opening.
+
+--internal-layers
+auto or off. Default: auto. Includes supplied internal copper layers.
+
+--inner-copper-thickness
+Internal copper thickness. Default: 0.035.
+
+--inner-z
+Internal layer centre heights, top to bottom, relative to the board midplane.
+Example: --inner-z=0.30,-0.30. Positive is toward the top.
+Default: evenly spaced estimates. One value per detected internal layer.
+
+--self-test
+Generate a small test model instead of reading Gerbers. No source required.
+
+-h, --help
+Show command help.

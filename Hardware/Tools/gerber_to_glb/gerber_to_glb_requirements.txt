@@ -1,0 +1,3 @@
+numpy>=1.26,<3
+shapely>=2.1,<3
+pygerber[shapely]==3.0.0a4
