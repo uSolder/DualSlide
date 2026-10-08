@@ -4,6 +4,7 @@
  */
 
 #include "tanks_internal.h"
+#include "tanks_audio.h"
 
 #include <stddef.h>
 
@@ -18,13 +19,19 @@
 #define PLAYER_TURN_RATE      (1800)
 #define PLAYER_RELOAD_MS      (620U)
 #define ROUND_CLEAR_MS        (2200U)
-#define WAVE_INTRO_MS         (2400U)
 #define PLAYER_OWNER          (0U)
 #define RICOCHET_MAX_BOUNCES  (2U)
 #define RICOCHET_PLAYER_SPEED (400)
 #define RICOCHET_ENEMY_SPEED  (275)
 #define ROCKET_BLAST_RADIUS   (54U)
 #define CAMPAIGN_WAVES        (10U)
+#define BASIC_FIRE_CONE       (80)
+#define HUNTER_SPEED_PERCENT  (120)
+#define HUNTER_CLOSE_RANGE    (170)
+#define HUNTER_ROCKET_RANGE   (260)
+
+/* Testing only: 1 makes the player's tank indestructible. Set to 0 for release. */
+#define PLAYER_INVINCIBLE     (1)
 
 /* -------------------------------------------------------------------------- */
 /* Private function declarations                                              */
@@ -476,7 +483,7 @@ void Tanks_StartWave(uint16_t Wave)
     }
     Tanks_Game.Screen = TANKS_SCREEN_WAVE_INTRO;
     Tanks_Game.ScreenMilliseconds = 0U;
-    Tanks_ShowMessage(Wave == 1U ? "TRAINING ROOM" : "ROOM CLEARANCE", WAVE_INTRO_MS);
+    TanksAudio_PlayJingle(TANKS_AUDIO_JINGLE_WAVE_INTRO);
 }
 
 uint8_t Tanks_CountActiveEnemies(void)
@@ -660,6 +667,7 @@ static Tanks_ParticleTypeDef *Tanks_AllocateParticle(void)
 void Tanks_SpawnExplosion(Tanks_VectorTypeDef Position, uint8_t Strength)
 {
     const uint8_t Count = (uint8_t)Tanks_Clamp32(8 + Strength, 8, 30);
+    TanksAudio_PlayExplosion(Position, Strength);
     Tanks_Game.CameraKickMilliseconds = (uint16_t)Tanks_Clamp32(70 + ((int32_t)Strength * 8), 70, 260);
     for(uint8_t Index = 0U; Index < Count; Index++)
     {
@@ -715,6 +723,11 @@ static void Tanks_DestroyEnemy(Tanks_TankTypeDef *Enemy, bool LeaveWreck)
 static void Tanks_DestroyPlayer(bool LeaveWreck, const char *Message)
 {
     Tanks_TankTypeDef *Player = &Tanks_Game.Player;
+#if PLAYER_INVINCIBLE
+    (void)LeaveWreck;
+    (void)Message;
+    return;
+#endif
     if(!Player->Active)
     {
         return;
@@ -733,11 +746,16 @@ static void Tanks_DestroyPlayer(bool LeaveWreck, const char *Message)
     {
         Tanks_Game.Screen = TANKS_SCREEN_GAME_OVER;
         Tanks_Game.ScreenMilliseconds = 0U;
+        TanksAudio_PlayJingle(TANKS_AUDIO_JINGLE_GAME_OVER);
     }
     else
     {
+        TanksAudio_PlayJingle(TANKS_AUDIO_JINGLE_TANK_LOST);
         Tanks_ResetPlayer();
-        Tanks_ShowMessage(Message, 1500U);
+        if(Message != NULL)
+        {
+            Tanks_ShowMessage(Message, 1500U);
+        }
     }
 }
 
@@ -748,7 +766,7 @@ void Tanks_DamagePlayer(uint8_t Damage)
     {
         return;
     }
-    Tanks_DestroyPlayer(true, "NEW TANK DEPLOYED");
+    Tanks_DestroyPlayer(true, NULL);
 }
 
 void Tanks_DamageHq(uint8_t Damage)
@@ -845,6 +863,7 @@ static bool Tanks_Fire(Tanks_TankTypeDef *Tank, uint8_t Owner)
         Particle->Active = true;
     }
     Tanks_Game.CameraKickMilliseconds = Owner == PLAYER_OWNER ? 45U : 28U;
+    TanksAudio_PlayFire(Bullet->Position, Owner == PLAYER_OWNER, ProjectileType == TANKS_PROJECTILE_ROCKET);
     return true;
 }
 
@@ -866,13 +885,17 @@ static bool Tanks_MoveTank(Tanks_TankTypeDef *Tank, int16_t Radius, uint32_t Del
         {
             MaximumSpeed = 76;
         }
+        if(Tanks_EnemyTargetsPlayer((Tanks_EnemyTypeDef)Tank->Type))
+        {
+            MaximumSpeed = (MaximumSpeed * HUNTER_SPEED_PERCENT) / 100;
+        }
     }
     const int32_t SpeedTarget = (AverageTrack * MaximumSpeed) / 1000;
     int32_t TurnTarget = (((int32_t)Tank->LeftTrack - Tank->RightTrack) * PLAYER_TURN_RATE) / 2000;
     Tanks_VectorTypeDef Candidate;
     bool Moved = false;
     const bool AvoidPits = Tank != &Tanks_Game.Player;
-    if(Tank != &Tanks_Game.Player)
+    if((Tank != &Tanks_Game.Player) && !Tanks_EnemyTargetsPlayer((Tanks_EnemyTypeDef)Tank->Type))
     {
         TurnTarget = (TurnTarget * 74) / 100;
     }
@@ -1228,6 +1251,15 @@ static bool Tanks_FindRicochetHeading(const Tanks_TankTypeDef *Enemy, int16_t *H
     return false;
 }
 
+/* Heading that leads the player: where they will be when a shot at this speed arrives. */
+static int16_t Tanks_LeadHeading(const Tanks_TankTypeDef *Enemy, int32_t BulletSpeed)
+{
+    const Tanks_TankTypeDef *Player = &Tanks_Game.Player;
+    const int32_t FlightMilliseconds = (int32_t)((Tanks_DistancePixels(Enemy->Position, Player->Position) * 1000U) / (uint32_t)BulletSpeed);
+    const int32_t Travel = Tanks_Clamp32(((int32_t)Player->LinearVelocity * FlightMilliseconds) / 1000, -200, 200);
+    return Tanks_AngleTo(Enemy->Position, Tanks_PointAhead(Player->Position, Player->Heading, (int16_t)Travel));
+}
+
 static bool Tanks_DropEnemyMine(Tanks_TankTypeDef *Enemy, uint8_t Owner)
 {
     Tanks_VectorTypeDef Position;
@@ -1250,6 +1282,7 @@ static bool Tanks_DropEnemyMine(Tanks_TankTypeDef *Enemy, uint8_t Owner)
         Mine->Owner = Owner;
         Mine->Active = true;
         Enemy->ReloadMilliseconds = 1250U;
+        TanksAudio_PlayMineDropped(Position);
         return true;
     }
     return false;
@@ -1290,51 +1323,78 @@ static void Tanks_UpdateEnemy(Tanks_TankTypeDef *Enemy, uint8_t EnemyIndex, uint
 
     if(Hunter)
     {
-        Enemy->MoveTarget = Tanks_PathWaypointToPlayer(Enemy);
-        DesiredHeading = Tanks_AngleTo(Enemy->Position, Enemy->MoveTarget);
-        Speed = 610;
-        if(PlayerVisible && (PlayerDistance < (Rocket ? 420U : 300U)))
+        /*
+         * Hunters chase. In sight, they drive at the player and fire on the
+         * move, aiming where the player will be, easing off only at close
+         * range. Out of sight, they follow the shortest path to the player.
+         */
+        if(PlayerVisible)
         {
-            Speed = 0;
+            const int32_t BulletSpeed = Rocket ? 225 : (Ricochet ? (RICOCHET_ENEMY_SPEED + 20) : RICOCHET_ENEMY_SPEED);
+            AimHeading = Tanks_LeadHeading(Enemy, BulletSpeed);
+            DesiredHeading = AimHeading;
+            Speed = (int16_t)Tanks_Clamp32(((int32_t)PlayerDistance - (Rocket ? HUNTER_ROCKET_RANGE : HUNTER_CLOSE_RANGE)) * 4, 0, 650);
+            MayFire = true;
+        }
+        else
+        {
+            Enemy->MoveTarget = Tanks_PathWaypointToPlayer(Enemy);
+            DesiredHeading = Tanks_AngleTo(Enemy->Position, Enemy->MoveTarget);
+            Speed = 650;
+
+            /* A ricochet hunter banks a shot off the walls when it has one. */
+            if(Ricochet && (Enemy->ReloadMilliseconds == 0U))
+            {
+                if(Enemy->AimRefreshMilliseconds == 0U)
+                {
+                    Enemy->AimValid = Tanks_FindRicochetHeading(Enemy, &Enemy->TurretHeading);
+                    Enemy->AimRefreshMilliseconds = 350U;
+                }
+                if(Enemy->AimValid)
+                {
+                    AimHeading = Enemy->TurretHeading;
+                    DesiredHeading = AimHeading;
+                    Speed = 0;
+                    MayFire = true;
+                }
+            }
         }
     }
     else
     {
+        /*
+         * Basic tanks never track the player: they patrol, and fire straight
+         * ahead only when the player crosses their line of fire (or, for the
+         * ricochet tank, a bounce along its heading would hit the player).
+         */
         DesiredHeading = Tanks_AngleTo(Enemy->Position, Enemy->MoveTarget);
         Speed = Type == TANKS_ENEMY_MINELAYER ? 520 : 430;
         if(Tanks_DistancePixels(Enemy->Position, Enemy->MoveTarget) < 42U)
         {
             Enemy->AiThinkMilliseconds = 0U;
         }
-    }
-
-    if(Type == TANKS_ENEMY_MINELAYER)
-    {
-        MayFire = false;
-    }
-    else if(Ricochet)
-    {
-        if(Enemy->ReloadMilliseconds == 0U)
+        AimHeading = Enemy->Heading;
+        if((Type != TANKS_ENEMY_MINELAYER) && (Enemy->ReloadMilliseconds == 0U))
         {
-            if(Enemy->AimRefreshMilliseconds == 0U)
+            if(Ricochet)
             {
-                Enemy->AimValid = Tanks_FindRicochetHeading(Enemy, &Enemy->TurretHeading);
-                Enemy->AimRefreshMilliseconds = 350U;
+                if(Enemy->AimRefreshMilliseconds == 0U)
+                {
+                    Enemy->AimValid = Tanks_RicochetRayHitsPlayer(Enemy->Position, Enemy->Heading);
+                    Enemy->AimRefreshMilliseconds = 200U;
+                }
+                MayFire = Enemy->AimValid;
             }
-            if(Enemy->AimValid)
+            else
             {
-                AimHeading = Enemy->TurretHeading;
-                DesiredHeading = AimHeading;
-                Speed = 0;
-                MayFire = true;
+                int16_t Offset = Tanks_NormalizeAngle((int32_t)Tanks_AngleTo(Enemy->Position, Tanks_Game.Player.Position) - Enemy->Heading);
+                if(Offset < 0)
+                {
+                    Offset = (int16_t)-Offset;
+                }
+                MayFire = PlayerVisible && (Offset < BASIC_FIRE_CONE);
             }
         }
-    }
-    else if(PlayerVisible)
-    {
-        DesiredHeading = AimHeading;
-        Speed = 0;
-        MayFire = true;
     }
 
     if(Tanks_Game.Wave == 1U && Speed > 300)
@@ -1342,7 +1402,7 @@ static void Tanks_UpdateEnemy(Tanks_TankTypeDef *Enemy, uint8_t EnemyIndex, uint
         Speed = 300;
     }
 
-    if(Tanks_EnemyProbeBlocked(Enemy, DesiredHeading, 55))
+    if((Speed > 0) && Tanks_EnemyProbeBlocked(Enemy, DesiredHeading, 55))
     {
         const int16_t LeftHeading = Tanks_NormalizeAngle((int32_t)DesiredHeading - 560);
         const int16_t RightHeading = Tanks_NormalizeAngle((int32_t)DesiredHeading + 560);
@@ -1648,6 +1708,11 @@ static void Tanks_UpdateBullet(Tanks_BulletTypeDef *Bullet, uint32_t DeltaMillis
         if(Bullet->Bounces > RICOCHET_MAX_BOUNCES)
         {
             Bullet->Active = false;
+            TanksAudio_PlayBulletSpent(Bullet->Position);
+        }
+        else
+        {
+            TanksAudio_PlayRicochet(Bullet->Position);
         }
     }
     if(Bullet->Active && Tanks_BulletHitsTank(Bullet))
@@ -1680,12 +1745,17 @@ static void Tanks_UpdateMines(uint32_t DeltaMilliseconds)
         else
         {
             Mine->Active = false;
+            TanksAudio_PlayMineFizzle(Mine->Position);
             continue;
         }
         if(Mine->ArmMilliseconds > DeltaMilliseconds)
         {
             Mine->ArmMilliseconds -= (uint16_t)DeltaMilliseconds;
             continue;
+        }
+        if(Mine->ArmMilliseconds != 0U)
+        {
+            TanksAudio_PlayMineArmed(Mine->Position);
         }
         Mine->ArmMilliseconds = 0U;
         if(Tanks_Game.Player.Active && (Tanks_Game.Player.InvulnerableMilliseconds == 0U) &&
@@ -1845,7 +1915,7 @@ void Tanks_Simulate(uint32_t DeltaMilliseconds)
     {
         Tanks_Game.RoundComplete = true;
         Tanks_Game.RoundClearMilliseconds = ROUND_CLEAR_MS;
-        Tanks_ShowMessage("ARENA CLEAR", ROUND_CLEAR_MS);
+        TanksAudio_PlayJingle(TANKS_AUDIO_JINGLE_ARENA_CLEAR);
     }
 
     if(Tanks_Game.RoundComplete)
@@ -1859,6 +1929,7 @@ void Tanks_Simulate(uint32_t DeltaMilliseconds)
             Tanks_Game.RoundClearMilliseconds = 0U;
             Tanks_Game.Screen = TANKS_SCREEN_VICTORY;
             Tanks_Game.ScreenMilliseconds = 0U;
+            TanksAudio_PlayJingle(TANKS_AUDIO_JINGLE_VICTORY);
         }
         else
         {

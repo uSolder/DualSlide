@@ -4,6 +4,7 @@
  */
 
 #include "tanks_internal.h"
+#include "tanks_audio.h"
 
 #include "app_manager.h"
 #include "display.h"
@@ -197,6 +198,7 @@ bool Tanks_Init(void)
     Tanks_Game.Initialized = true;
     Tanks_SplashElapsedMilliseconds = 0U;
     Tanks_ResetBattlefield();
+    TanksAudio_Start();
     return true;
 }
 
@@ -275,7 +277,6 @@ void Tanks_Render(void)
         {
             Tanks_Game.Screen = TANKS_SCREEN_PLAYING;
             Tanks_Game.ScreenMilliseconds = 0U;
-            Tanks_ShowMessage("CLEAR THE ARENA", 900U);
         }
     }
     else if(Tanks_Game.Screen == TANKS_SCREEN_PLAYING)
@@ -288,6 +289,7 @@ void Tanks_Render(void)
             Remaining -= Step;
         }
     }
+    TanksAudio_Update(DeltaMilliseconds);
 
     if(Tanks_Game.Screen == TANKS_SCREEN_TITLE)
     {
@@ -310,12 +312,14 @@ void Tanks_Render(void)
 
 void Tanks_Pause(void)
 {
+    TanksAudio_Stop();
     Tanks_Game.Paused = true;
     Tanks_Game.PendingDeltaMilliseconds = 0U;
 }
 
 void Tanks_Resume(void)
 {
+    TanksAudio_Start();
     Tanks_Game.Paused = false;
     Tanks_Game.Input.Primary.Down = false;
     Tanks_Game.Input.Secondary.Down = false;
@@ -323,6 +327,7 @@ void Tanks_Resume(void)
 
 void Tanks_Shutdown(void)
 {
+    TanksAudio_Stop();
     Tanks_Game.Initialized = false;
     Tanks_Game.Paused = false;
     Tanks_Game.PendingDeltaMilliseconds = 0U;

@@ -43,6 +43,21 @@ static void Tanks_DrawCenteredText(Render_TargetTypeDef *Target, const Font *Fon
     Render_DrawText(Target, FontData, Text, (int16_t)(CentreX - (Tanks_TextWidth(FontData, Text) / 2)), Y, Colour);
 }
 
+/* Joins two strings into Buffer, truncating to fit. */
+static void Tanks_JoinText(char *Buffer, uint8_t Size, const char *First, const char *Second)
+{
+    uint8_t Length = 0U;
+    while((First != NULL) && (*First != '\0') && (Length + 1U < Size))
+    {
+        Buffer[Length++] = *First++;
+    }
+    while((Second != NULL) && (*Second != '\0') && (Length + 1U < Size))
+    {
+        Buffer[Length++] = *Second++;
+    }
+    Buffer[Length] = '\0';
+}
+
 static int16_t Tanks_ScaleVisual(int16_t Value)
 {
     return Value;
@@ -312,6 +327,7 @@ static void Tanks_DrawTankBody(Render_TargetTypeDef *Target, int16_t CentreX, in
     Render_PointTypeDef RightCentre;
     Render_PointTypeDef BarrelBase;
     Render_PointTypeDef BarrelTip;
+    Render_PointTypeDef Stripe;
     const int16_t TrackWidth = Boss ? 4 : 3;
     const int16_t BarrelLength = (int16_t)(HalfHeight + 17);
     (void)TurretAngle;
@@ -330,8 +346,10 @@ static void Tanks_DrawTankBody(Render_TargetTypeDef *Target, int16_t CentreX, in
     Tanks_RotateLocalPoint(CentreX, CentreY, (int16_t)(-HalfWidth + 4), HalfHeight, HullAngle, &Hull[4]);
     Tanks_RotateLocalPoint(CentreX, CentreY, (int16_t)(-HalfWidth - 2), (int16_t)(HalfHeight - 5), HullAngle, &Hull[5]);
     (void)Render_DrawPolygon(Target, Hull, 6U, Body);
-    Tanks_DrawRotatedRect(Target, CentreX, (int16_t)(CentreY - 5), (int16_t)(HalfWidth - 4), 3, HullAngle, Light);
-    Tanks_DrawRotatedRect(Target, CentreX, (int16_t)(CentreY + HalfHeight - 5), (int16_t)(HalfWidth - 5), 2, HullAngle, Dark);
+    Tanks_RotateLocalPoint(CentreX, CentreY, 0, -5, HullAngle, &Stripe);
+    Tanks_DrawRotatedRect(Target, Stripe.X, Stripe.Y, (int16_t)(HalfWidth - 4), 3, HullAngle, Light);
+    Tanks_RotateLocalPoint(CentreX, CentreY, 0, (int16_t)(HalfHeight - 5), HullAngle, &Stripe);
+    Tanks_DrawRotatedRect(Target, Stripe.X, Stripe.Y, (int16_t)(HalfWidth - 5), 2, HullAngle, Dark);
 
     Tanks_DrawDisc(Target, CentreX, CentreY, Boss ? 8 : 7, Dark);
     Tanks_DrawDisc(Target, CentreX, (int16_t)(CentreY - 1), Boss ? 6 : 5, Light);
@@ -572,14 +590,14 @@ static void Tanks_DrawWorldEntities(Render_TargetTypeDef *Target)
         int16_t Y;
         int16_t TrailX;
         int16_t TrailY;
-        const uint8_t Colour = Bullet->Owner == 0U ? TANKS_COLOUR_BULLET : TANKS_COLOUR_FIRE_LIGHT;
+        const uint8_t Colour = Bullet->Owner == 0U ? TANKS_COLOUR_WHITE : TANKS_COLOUR_DANGER;
         if(!Bullet->Active)
         {
             continue;
         }
         Tanks_WorldToScreen(Bullet->Position, &X, &Y);
-        Trail.X = Bullet->Position.X - (Bullet->Velocity.X / 28);
-        Trail.Y = Bullet->Position.Y - (Bullet->Velocity.Y / 28);
+        Trail.X = Bullet->Position.X - (Bullet->Velocity.X / 16);
+        Trail.Y = Bullet->Position.Y - (Bullet->Velocity.Y / 16);
         Tanks_WorldToScreen(Trail, &TrailX, &TrailY);
         if(Bullet->Type == TANKS_PROJECTILE_ROCKET)
         {
@@ -590,7 +608,10 @@ static void Tanks_DrawWorldEntities(Render_TargetTypeDef *Target)
         }
         else
         {
+            /* A dark outline keeps the trail and shell visible against the sand. */
+            Tanks_DrawThickLine(Target, TrailX, TrailY, X, Y, 2, TANKS_COLOUR_SHADOW);
             Tanks_DrawThickLine(Target, TrailX, TrailY, X, Y, 1, Colour);
+            Tanks_DrawDisc(Target, X, Y, 5, TANKS_COLOUR_SHADOW);
             Tanks_DrawDisc(Target, X, Y, 3, Colour);
             Tanks_DrawDisc(Target, X, Y, 1, TANKS_COLOUR_WHITE);
         }
@@ -631,18 +652,19 @@ static void Tanks_DrawHud(Render_TargetTypeDef *Target)
 
 static void Tanks_DrawRoundOverlay(Render_TargetTypeDef *Target)
 {
-    char Wave[8];
-    char Enemies[8];
-    Tanks_FormatUnsigned(Wave, sizeof(Wave), Tanks_Game.Wave);
-    Tanks_FormatUnsigned(Enemies, sizeof(Enemies), Tanks_CountActiveEnemies());
-    Tanks_FillRect(Target, 215, 147, 370U, 176U, TANKS_COLOUR_PANEL);
-    Tanks_FillRect(Target, 215, 147, 370U, 5U, TANKS_COLOUR_PLAYER_LIGHT);
-    Tanks_DrawCenteredText(Target, &OpenSans20, "ROUND", 400, 168, TANKS_COLOUR_MUTED);
-    Tanks_DrawCenteredText(Target, &OpenSans36, Wave, 400, 192, TANKS_COLOUR_TEXT);
-    Tanks_DrawCenteredText(Target, &OpenSans36, Tanks_RoundName(Tanks_Game.Wave), 400, 235, TANKS_COLOUR_PLAYER_LIGHT);
-    Tanks_DrawCenteredText(Target, &OpenSans20, "ENEMIES", 348, 282, TANKS_COLOUR_MUTED);
-    Tanks_DrawCenteredText(Target, &OpenSans20, Enemies, 468, 282, TANKS_COLOUR_TEXT);
-    Tanks_DrawCenteredText(Target, &OpenSans20, Tanks_Game.Wave == 1U ? "ONE BASIC TANK" : "NEW ENEMY TYPES APPEAR EACH ROUND", 400, 306, TANKS_COLOUR_WARNING);
+    const uint8_t EnemyCount = Tanks_CountActiveEnemies();
+    char Number[8];
+    char Round[16];
+    char Enemies[16];
+    Tanks_FormatUnsigned(Number, sizeof(Number), Tanks_Game.Wave);
+    Tanks_JoinText(Round, sizeof(Round), "ROUND ", Number);
+    Tanks_FormatUnsigned(Number, sizeof(Number), EnemyCount);
+    Tanks_JoinText(Enemies, sizeof(Enemies), Number, EnemyCount == 1U ? " ENEMY" : " ENEMIES");
+    Tanks_FillRect(Target, 230, 140, 340U, 150U, TANKS_COLOUR_PANEL);
+    Tanks_FillRect(Target, 230, 140, 340U, 5U, TANKS_COLOUR_PLAYER_LIGHT);
+    Tanks_DrawCenteredText(Target, &OpenSans36, Round, 400, 160, TANKS_COLOUR_TEXT);
+    Tanks_DrawCenteredText(Target, &OpenSans20, Tanks_RoundName(Tanks_Game.Wave), 400, 212, TANKS_COLOUR_PLAYER_LIGHT);
+    Tanks_DrawCenteredText(Target, &OpenSans20, Enemies, 400, 244, TANKS_COLOUR_MUTED);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -671,10 +693,9 @@ void Tanks_DrawGame(Render_TargetTypeDef *Target)
     }
     else if(Tanks_Game.RoundComplete)
     {
-        Tanks_FillRect(Target, 252, 174, 296U, 116U, TANKS_COLOUR_PANEL);
-        Tanks_FillRect(Target, 252, 174, 296U, 6U, TANKS_COLOUR_SUCCESS);
-        Tanks_DrawCenteredText(Target, &OpenSans36, "ARENA CLEAR", 400, 196, TANKS_COLOUR_SUCCESS);
-        Tanks_DrawCenteredText(Target, &OpenSans20, "NEW FIELD INCOMING", 400, 252, TANKS_COLOUR_MUTED);
+        Tanks_FillRect(Target, 252, 190, 296U, 90U, TANKS_COLOUR_PANEL);
+        Tanks_FillRect(Target, 252, 190, 296U, 6U, TANKS_COLOUR_SUCCESS);
+        Tanks_DrawCenteredText(Target, &OpenSans36, "ARENA CLEAR", 400, 208, TANKS_COLOUR_SUCCESS);
     }
     else if(Tanks_Game.MessageMilliseconds > 0U)
     {
@@ -688,43 +709,37 @@ void Tanks_DrawTitle(Render_TargetTypeDef *Target)
 {
     Tanks_TankTypeDef Preview = Tanks_Game.Player;
     Tanks_DrawOutsidePattern(Target);
-    Tanks_FillRect(Target, 102, 42, 596U, 396U, TANKS_COLOUR_PANEL);
-    Tanks_FillRect(Target, 102, 42, 596U, 6U, TANKS_COLOUR_PLAYER_LIGHT);
-    Tanks_DrawCenteredText(Target, &OpenSans36, "TANKS", 400, 68, TANKS_COLOUR_TEXT);
-    Tanks_DrawCenteredText(Target, &OpenSans20, "ROOM RICOCHET", 400, 114, TANKS_COLOUR_MUTED);
+    Tanks_FillRect(Target, 200, 110, 400U, 260U, TANKS_COLOUR_PANEL);
+    Tanks_FillRect(Target, 200, 110, 400U, 6U, TANKS_COLOUR_PLAYER_LIGHT);
+    Tanks_DrawCenteredText(Target, &OpenSans36, "TANKS", 400, 136, TANKS_COLOUR_TEXT);
     Preview.Active = true;
     Preview.Type = 0U;
     Preview.FlashMilliseconds = 0U;
     Preview.Heading = 900;
     Preview.TurretHeading = Preview.Heading;
-    Tanks_DrawDisc(Target, 535, 212, 5, TANKS_COLOUR_SHADOW);
-    Tanks_DrawDisc(Target, 535, 212, 3, TANKS_COLOUR_DANGER);
-    Tanks_DrawTank(Target, &Preview, 400, 212, 900, 900, true);
-    Tanks_DrawCenteredText(Target, &OpenSans20, "DRIVE WITH BOTH TRACK SLIDERS", 400, 286, TANKS_COLOUR_TEXT);
-    Tanks_DrawCenteredText(Target, &OpenSans20, "RED DOT SHOWS THE DIRECT BARREL AIM", 400, 318, TANKS_COLOUR_WARNING);
-    Tanks_DrawCenteredText(Target, &OpenSans20, "QUICK TAP PRIMARY: FIRE ONE SHOT", 400, 350, TANKS_COLOUR_TEXT);
-    Tanks_DrawCenteredText(Target, &OpenSans20, "DIRECT, RICOCHET, MINE AND ROCKET TANKS", 400, 380, TANKS_COLOUR_SUCCESS);
+    Tanks_DrawTank(Target, &Preview, 400, 240, 900, 900, true);
     if(((Tanks_Game.ScreenMilliseconds / 450U) & 1U) == 0U)
     {
-        Tanks_DrawCenteredText(Target, &OpenSans20, "PRESS PRIMARY TO START", 400, 410, TANKS_COLOUR_TEXT);
+        Tanks_DrawCenteredText(Target, &OpenSans20, "PRESS PRIMARY TO START", 400, 316, TANKS_COLOUR_TEXT);
     }
 }
 
 void Tanks_DrawEndScreen(Render_TargetTypeDef *Target, bool Victory)
 {
-    char Wave[8];
+    char Number[8];
+    char Round[16];
     Tanks_DrawGame(Target);
-    Tanks_FillRect(Target, 172, 100, 456U, 278U, TANKS_COLOUR_PANEL);
-    Tanks_FillRect(Target, 172, 100, 456U, 6U, Victory ? TANKS_COLOUR_SUCCESS : TANKS_COLOUR_DANGER);
-    Tanks_DrawCenteredText(Target, &OpenSans36, Victory ? "CAMPAIGN COMPLETE" : "TANK DESTROYED", 400, 132, Victory ? TANKS_COLOUR_SUCCESS : TANKS_COLOUR_DANGER);
-    Tanks_FormatUnsigned(Wave, sizeof(Wave), Tanks_Game.Wave);
-    Tanks_DrawCenteredText(Target, &OpenSans20, Victory ? "ALL TEN ROUNDS CLEARED" : "REACHED ROUND", 400, 218, TANKS_COLOUR_MUTED);
+    Tanks_FillRect(Target, 220, 130, 360U, 210U, TANKS_COLOUR_PANEL);
+    Tanks_FillRect(Target, 220, 130, 360U, 6U, Victory ? TANKS_COLOUR_SUCCESS : TANKS_COLOUR_DANGER);
+    Tanks_DrawCenteredText(Target, &OpenSans36, Victory ? "VICTORY" : "GAME OVER", 400, 152, Victory ? TANKS_COLOUR_SUCCESS : TANKS_COLOUR_DANGER);
     if(!Victory)
     {
-        Tanks_DrawCenteredText(Target, &OpenSans36, Wave, 400, 246, TANKS_COLOUR_TEXT);
+        Tanks_FormatUnsigned(Number, sizeof(Number), Tanks_Game.Wave);
+        Tanks_JoinText(Round, sizeof(Round), "ROUND ", Number);
+        Tanks_DrawCenteredText(Target, &OpenSans20, Round, 400, 210, TANKS_COLOUR_MUTED);
     }
-    Tanks_DrawCenteredText(Target, &OpenSans20, "PRIMARY: NEW CAMPAIGN", 400, 316, TANKS_COLOUR_WARNING);
-    Tanks_DrawCenteredText(Target, &OpenSans20, "SECONDARY: TITLE", 400, 348, TANKS_COLOUR_MUTED);
+    Tanks_DrawCenteredText(Target, &OpenSans20, "PRIMARY: PLAY AGAIN", 400, 262, TANKS_COLOUR_WARNING);
+    Tanks_DrawCenteredText(Target, &OpenSans20, "SECONDARY: MENU", 400, 294, TANKS_COLOUR_MUTED);
 }
 
 void Tanks_DrawSplashArtwork(Render_TargetTypeDef *Target, uint32_t ElapsedMilliseconds)
@@ -739,8 +754,7 @@ void Tanks_DrawSplashArtwork(Render_TargetTypeDef *Target, uint32_t ElapsedMilli
     }
     Tanks_FillRect(Target, 90, 92, 620U, 292U, TANKS_COLOUR_FLOOR);
     Tanks_FillRect(Target, 90, 92, 620U, 5U, TANKS_COLOUR_PLAYER_LIGHT);
-    Tanks_DrawCenteredText(Target, &OpenSans36, "TANKS", 400, 106, TANKS_COLOUR_PANEL);
-    Tanks_DrawCenteredText(Target, &OpenSans20, "RICOCHET TACTICS", 400, 154, TANKS_COLOUR_PLAYER_DARK);
+    Tanks_DrawCenteredText(Target, &OpenSans36, "TANKS", 400, 130, TANKS_COLOUR_PANEL);
     Preview.Active = true;
     Preview.Type = 0U;
     Preview.FlashMilliseconds = 0U;
