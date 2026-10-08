@@ -28,7 +28,16 @@
             "toolchainFile": "${sourceDir}/cmake/gcc-arm-none-eabi.cmake",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug",
-                "DS_PLATFORM": "embedded"
+                "DS_PLATFORM": "embedded",
+                "DS_USB_AUDIO_TEST": "OFF"
+            }
+        },
+        {
+            "name": "embedded-usb-audio-test",
+            "displayName": "STM32H7A3 USB Audio Test",
+            "inherits": "embedded-debug",
+            "cacheVariables": {
+                "DS_USB_AUDIO_TEST": "ON"
             }
         }
     ],
@@ -40,6 +49,10 @@
         {
             "name": "embedded-debug",
             "configurePreset": "embedded-debug"
+        },
+        {
+            "name": "embedded-usb-audio-test",
+            "configurePreset": "embedded-usb-audio-test"
         }
     ]
 }
