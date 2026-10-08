@@ -6,6 +6,8 @@
 #include "app_manager.h"
 
 #include "launcher.h"
+#include "mixer.h"
+#include "music.h"
 #include "pong.h"
 #include "tanks.h"
 #include "template_game.h"
@@ -153,6 +155,10 @@ bool AppManager_StartApplication(uint16_t ApplicationIndex)
         return false;
     }
 
+    /* Each application starts with silent mixer channels. */
+    Music_Stop();
+    (void)Mixer_StopApplicationChannels();
+
     if(!Application->Init())
     {
         return false;
@@ -241,21 +247,6 @@ void AppManager_Render(void)
     if((Application != NULL) && (Application->Render != NULL))
     {
         Application->Render();
-    }
-}
-
-void AppManager_FillAudioBuffer(Audio_SampleTypeDef *Samples, uint32_t FrameCount, void *Context)
-{
-    (void)Context;
-
-    if(Samples == NULL)
-    {
-        return;
-    }
-
-    for(uint32_t FrameIndex = 0U; FrameIndex < FrameCount; FrameIndex++)
-    {
-        Samples[FrameIndex] = 0;
     }
 }
 
@@ -371,6 +362,9 @@ void AppManager_OpenLauncher(void)
         Application->Shutdown();
     }
 
+    Music_Stop();
+    (void)Mixer_StopApplicationChannels();
+
     AppManager_State = APP_MANAGER_STATE_LAUNCHER;
     AppManager_ActiveApplicationIndex = 0U;
 
@@ -405,6 +399,9 @@ void AppManager_Shutdown(void)
             Application->Shutdown();
         }
     }
+
+    Music_Stop();
+    (void)Mixer_StopApplicationChannels();
 
     AppManager_State = APP_MANAGER_STATE_LAUNCHER;
     AppManager_ActiveApplicationIndex = 0U;

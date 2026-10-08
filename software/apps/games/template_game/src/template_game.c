@@ -13,6 +13,10 @@
  * 3. Add drawing helpers above TemplateGame_Render().
  * 4. Replace the two-colour palette as artwork is introduced.
  * 5. Keep splash-screen rendering inside the launcher-provided bounds.
+ * 6. Play sound effects through mixer.h and music through music.h, using
+ *    mixer channels 0 to MIXER_APPLICATION_CHANNEL_COUNT - 1. Both stop
+ *    automatically when the game exits. Songs and instruments are generated
+ *    with the scripts in tools/music_converter.
  */
 
 #include "template_game.h"

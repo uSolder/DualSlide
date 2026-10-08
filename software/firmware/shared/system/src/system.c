@@ -12,6 +12,7 @@
 #include "audio.h"
 #include "display.h"
 #include "input.h"
+#include "mixer.h"
 #include "storage.h"
 #include "system_tasks.h"
 #include "system_time.h"
@@ -28,21 +29,13 @@
 /* Private configuration                                                      */
 /* -------------------------------------------------------------------------- */
 
-/* System audio format, shared by application audio and the USB audio test. */
-#define SYSTEM_AUDIO_SAMPLE_RATE_HZ          (24000U)
-#define SYSTEM_AUDIO_CHANNEL_COUNT           (1U)
-
 #ifdef DS_USB_AUDIO_TEST
 /*
  * USB audio test: the board also enumerates as a USB speaker, and the host's
- * PCM replaces application audio. Everything else runs normally.
+ * PCM plays on the system mixer channel. Everything else runs normally.
  */
-#define SYSTEM_AUDIO_FILL_CALLBACK           (USBAudio_FillAudioBuffer)
-
-_Static_assert(USB_AUDIO_OUTPUT_SAMPLE_RATE_HZ == SYSTEM_AUDIO_SAMPLE_RATE_HZ, "USB audio output rate must match the system audio rate");
-_Static_assert(USB_AUDIO_OUTPUT_CHANNEL_COUNT == SYSTEM_AUDIO_CHANNEL_COUNT, "USB audio output channels must match the system audio format");
-#else
-#define SYSTEM_AUDIO_FILL_CALLBACK           (AppManager_FillAudioBuffer)
+_Static_assert(USB_AUDIO_OUTPUT_SAMPLE_RATE_HZ == MIXER_SAMPLE_RATE_HZ, "USB audio output rate must match the mixer rate");
+_Static_assert(USB_AUDIO_OUTPUT_CHANNEL_COUNT == 1U, "USB audio output must be mono to feed a mixer channel");
 #endif
 
 #define SYSTEM_INPUT_PRIMARY_BUTTON          ((Input_NumberTypeDef)3U)
@@ -149,9 +142,9 @@ int System_Run(void)
 {
     const Audio_ConfigTypeDef AudioConfig =
     {
-        .SampleRateHz = SYSTEM_AUDIO_SAMPLE_RATE_HZ,
-        .ChannelCount = SYSTEM_AUDIO_CHANNEL_COUNT,
-        .FillCallback = SYSTEM_AUDIO_FILL_CALLBACK,
+        .SampleRateHz = MIXER_SAMPLE_RATE_HZ,
+        .ChannelCount = 1U,
+        .FillCallback = Mixer_FillAudioBuffer,
         .CallbackContext = NULL
     };
 
@@ -178,6 +171,9 @@ int System_Run(void)
         return 1;
     }
 
+    /* Before the application manager, so applications can play sounds from Init. */
+    Mixer_Init();
+
     if(!AppManager_Init())
     {
         return 1;
@@ -199,7 +195,7 @@ int System_Run(void)
     }
 
 #ifdef DS_USB_AUDIO_TEST
-    if(!USBAudio_Init())
+    if(!USBAudio_Init() || !Mixer_PlayGenerator(MIXER_SYSTEM_CHANNEL, USBAudio_FillAudioBuffer, NULL))
     {
         Audio_Stop();
         AppManager_Shutdown();

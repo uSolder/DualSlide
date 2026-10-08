@@ -4,8 +4,8 @@
  *
  * The service enumerates as a standard USB speaker accepting 48 kHz, 16-bit,
  * stereo PCM, so any host can use it without a custom driver. Received audio
- * is converted to 24 kHz mono and queued in a jitter buffer that the audio
- * output drains through USBAudio_FillAudioBuffer().
+ * is converted to 24 kHz mono and queued in a jitter buffer that a mixer
+ * channel drains through USBAudio_FillAudioBuffer().
  *
  * The device runs from its own sample clock, so the jitter buffer absorbs the
  * small rate difference to the host by occasionally dropping or repeating a
@@ -60,7 +60,7 @@ bool USBAudio_IsStreaming(void);
  *
  * Writes FrameCount mono samples at USB_AUDIO_OUTPUT_SAMPLE_RATE_HZ. Silence
  * is written while the host is not streaming or the jitter buffer is
- * refilling. Matches Audio_FillCallbackTypeDef.
+ * refilling. Matches Mixer_GeneratorTypeDef, so it can feed a mixer channel.
  */
 void USBAudio_FillAudioBuffer(Audio_SampleTypeDef *Samples, uint32_t FrameCount, void *Context);
 

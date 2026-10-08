@@ -14,6 +14,7 @@ target_include_directories(DualSlideAppManager
 target_link_libraries(DualSlideAppManager
     PUBLIC
         DualSlideShared
+        DualSlideSystem
         DualSlideLauncher
         DualSlideWindowWasher
         DualSlidePong

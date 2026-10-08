@@ -6,7 +6,6 @@
 #ifndef APP_MANAGER_H
 #define APP_MANAGER_H
 
-#include "audio.h"
 #include "display.h"
 #include "render.h"
 
@@ -69,15 +68,6 @@ void AppManager_Update(uint32_t DeltaTimeMilliseconds);
  * This renders either the launcher or the active application.
  */
 void AppManager_Render(void);
-
-/**
- * @brief Fills the audio output buffer for the currently active application.
- *
- * @param Samples Destination audio sample buffer.
- * @param FrameCount Number of audio frames to generate.
- * @param Context Optional callback context supplied by the audio subsystem.
- */
-void AppManager_FillAudioBuffer(Audio_SampleTypeDef *Samples, uint32_t FrameCount, void *Context);
 
 /**
  * @brief Retrieves an application's launcher splash-screen palette.
