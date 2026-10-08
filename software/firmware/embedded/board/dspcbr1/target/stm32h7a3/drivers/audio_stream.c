@@ -33,8 +33,8 @@
 #define AUDIO_STREAM_DAC_PIN                4U
 #define AUDIO_STREAM_GPIO_MODE_ANALOG       3U
 #define AUDIO_STREAM_DAC_MIDSCALE           2048U
-#define AUDIO_STREAM_RAMP_STEP_US           1000U
-#define AUDIO_STREAM_RAMP_STEP_CODES        16U
+#define AUDIO_STREAM_RAMP_STEPS             1600U
+#define AUDIO_STREAM_RAMP_STEP_US           100U
 
 /* DAC channel 1 trigger selection: tim6_trgo. */
 #define AUDIO_STREAM_DAC_TRIGGER_TIM6       5U
@@ -73,7 +73,7 @@ static uint16_t AudioStream_DMABuffer[AUDIO_STREAM_FRAMES_PER_HALF * 2U] __attri
 /* -------------------------------------------------------------------------- */
 
 static bool AudioStream_DisableDMA(void);
-static void AudioStream_RampToMidscale(void);
+static void AudioStream_RampOutput(uint32_t StartCode, uint32_t EndCode);
 static void AudioStream_SetTriggered(bool Triggered);
 static void AudioStream_FillHalf(uint32_t Half);
 
@@ -82,20 +82,30 @@ static void AudioStream_FillHalf(uint32_t Half);
 /* -------------------------------------------------------------------------- */
 
 /*
- * Raises the untriggered output from 0 V to mid-scale slowly enough that the
- * AC-coupled amplifier input sees a small, slow edge instead of a step.
+ * Moves the untriggered output from StartCode to EndCode over about 160 ms.
+ * Each step is at most two codes (about 1.6 mV) every 100 us, and the S-curve
+ * starts and ends with zero slope, so the AC-coupled amplifier input sees
+ * neither a step nor an audible staircase; coarse 1 ms steps were heard as a
+ * 1 kHz buzz. The channel is left disabled.
  */
-static void AudioStream_RampToMidscale(void)
+static void AudioStream_RampOutput(uint32_t StartCode, uint32_t EndCode)
 {
-    uint32_t Code;
+    const float Distance = (float)EndCode - (float)StartCode;
+    uint32_t Step;
 
-    DAC1->DHR12R1 = 0U;
+    DAC1->DHR12R1 = StartCode;
     DAC1->CR |= DAC_CR_EN1;
 
-    for(Code = AUDIO_STREAM_RAMP_STEP_CODES; Code <= AUDIO_STREAM_DAC_MIDSCALE; Code += AUDIO_STREAM_RAMP_STEP_CODES)
+    if(StartCode != EndCode)
     {
-        Delay_Microseconds(AUDIO_STREAM_RAMP_STEP_US);
-        DAC1->DHR12R1 = Code;
+        for(Step = 1U; Step <= AUDIO_STREAM_RAMP_STEPS; Step++)
+        {
+            const float Progress = (float)Step / (float)AUDIO_STREAM_RAMP_STEPS;
+            const float Shape = Progress * Progress * (3.0f - (2.0f * Progress));
+
+            Delay_Microseconds(AUDIO_STREAM_RAMP_STEP_US);
+            DAC1->DHR12R1 = (uint32_t)(((float)StartCode + (Distance * Shape)) + 0.5f);
+        }
     }
 
     DAC1->CR &= ~DAC_CR_EN1;
@@ -169,12 +179,35 @@ static void AudioStream_FillHalf(uint32_t Half)
 /* Stream control                                                             */
 /* -------------------------------------------------------------------------- */
 
+void AudioStream_HoldOutput(void)
+{
+    if(AudioStream_Initialized || ((DAC1->CR & DAC_CR_EN1) != 0U))
+    {
+        return;
+    }
+
+    if((RCC_EnablePeripheralClock(GPIOA) != RCC_RESULT_OK) ||
+       (RCC_EnablePeripheralClock(DAC1) != RCC_RESULT_OK))
+    {
+        return;
+    }
+
+    /* PA4 in analog mode, driven by the buffered DAC output at 0 V. */
+    GPIOA->PUPDR &= ~(0x3UL << (AUDIO_STREAM_DAC_PIN * 2U));
+    GPIOA->MODER |= AUDIO_STREAM_GPIO_MODE_ANALOG << (AUDIO_STREAM_DAC_PIN * 2U);
+
+    DAC1->CR &= ~(DAC_CR_TEN1 | DAC_CR_TSEL1 | DAC_CR_DMAEN1);
+    DAC1->MCR &= ~DAC_MCR_MODE1;
+    DAC1->DHR12R1 = 0U;
+    DAC1->CR |= DAC_CR_EN1;
+}
+
 bool AudioStream_Init(const AudioStream_ConfigTypeDef *Config)
 {
     uint32_t TimerClockHz;
     uint32_t Period;
     uint32_t Index;
-    bool DACWasEnabled;
+    uint32_t StartCode;
 
     if((Config == NULL) || (Config->FillCallback == NULL) || (Config->SampleRate == 0U) ||
        (Config->ChannelCount == 0U) || (Config->ChannelCount > AUDIO_STREAM_MAX_CHANNELS))
@@ -222,16 +255,13 @@ bool AudioStream_Init(const AudioStream_ConfigTypeDef *Config)
     /*
      * DAC1 channel 1: buffered pin output, selected to convert on TIM6 TRGO.
      * The trigger stays off until the stream starts so the output idles at
-     * mid-scale. On first power-up the output is ramped to mid-scale.
+     * mid-scale. The output ramps there from wherever it is held: 0 V after
+     * power-up, or already mid-scale when the stream is configured again.
      */
-    DACWasEnabled = (DAC1->CR & DAC_CR_EN1) != 0U;
+    StartCode = ((DAC1->CR & DAC_CR_EN1) != 0U) ? (DAC1->DOR1 & DAC_DOR1_DACC1DOR) : 0U;
     DAC1->CR &= ~(DAC_CR_EN1 | DAC_CR_TEN1 | DAC_CR_TSEL1 | DAC_CR_DMAEN1);
     DAC1->MCR &= ~DAC_MCR_MODE1;
-
-    if(!DACWasEnabled)
-    {
-        AudioStream_RampToMidscale();
-    }
+    AudioStream_RampOutput(StartCode, AUDIO_STREAM_DAC_MIDSCALE);
 
     DAC1->CR |= (AUDIO_STREAM_DAC_TRIGGER_TIM6 << DAC_CR_TSEL1_Pos) | DAC_CR_DMAEN1;
     AudioStream_SetTriggered(false);
@@ -318,6 +348,29 @@ void AudioStream_Stop(void)
 bool AudioStream_IsRunning(void)
 {
     return AudioStream_Running;
+}
+
+void AudioStream_PowerDown(void)
+{
+    uint32_t StartCode;
+
+    if((DAC1->CR & DAC_CR_EN1) == 0U)
+    {
+        return;
+    }
+
+    /* Stopping parks the output at mid-scale; ramp down from wherever it is. */
+    AudioStream_Stop();
+    StartCode = DAC1->DOR1 & DAC_DOR1_DACC1DOR;
+
+    DAC1->CR &= ~DAC_CR_EN1;
+    DAC1->CR &= ~(DAC_CR_TEN1 | DAC_CR_DMAEN1);
+    AudioStream_RampOutput(StartCode, 0U);
+
+    /* Hold 0 V until power is removed; the stream must be configured again to restart. */
+    DAC1->DHR12R1 = 0U;
+    DAC1->CR |= DAC_CR_EN1;
+    AudioStream_Initialized = false;
 }
 
 /* -------------------------------------------------------------------------- */

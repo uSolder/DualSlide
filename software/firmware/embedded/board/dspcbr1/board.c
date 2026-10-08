@@ -6,6 +6,7 @@
 #include "board.h"
 
 #include "adc.h"
+#include "audio_stream.h"
 #include "delay.h"
 #include "display_controller.h"
 #include "gpio.h"
@@ -53,6 +54,7 @@
 
 static void Board_SetLCDReset(bool Asserted);
 static void Board_InitFailure(void);
+static void Board_InitPowerLatch(void);
 static void Board_InitTarget(void);
 static void Board_InitCriticalInterfaces(void);
 static void Board_InitInterfaces(void);
@@ -332,20 +334,29 @@ static W430WVC004_A_HandleTypeDef Board_LCDPanel =
 
 void Board_Init(void)
 {
+    Board_InitPowerLatch();
+
+    /*
+     * Drive the amplifier input straight away; left floating it buzzes. Like
+     * the latch this needs only bus clocks, so it runs before clock setup,
+     * which waits for the crystal and PLLs to settle.
+     */
+    AudioStream_HoldOutput();
+
     Board_InitTarget();
     Board_InitCriticalInterfaces();
-    Board_WakeReason = Board_DetectWakeReason();
 
+    /* On external power, stay unlatched until the power button is pressed. */
     if(Board_WakeReason == BOARD_WAKE_REASON_EXTERNAL_POWER)
     {
         while(GPIO_IsLow(&Board_PrimaryButtonPin))
         {
         }
-    }
 
-    if(GPIO_Set(&Board_PowerEnablePin) != GPIO_RESULT_OK)
-    {
-        Board_InitFailure();
+        if(GPIO_Set(&Board_PowerEnablePin) != GPIO_RESULT_OK)
+        {
+            Board_InitFailure();
+        }
     }
 
     Board_InitInterfaces();
@@ -384,9 +395,13 @@ const GPIO_PinTypeDef *Board_GetSecondaryButtonInput(void)
 
 void Board_PowerOff(void)
 {
-    GPIO_Clear(&Board_PowerEnablePin);
     GPIO_Clear(&Board_LCDBacklightPin);
     GPIO_Clear(&Board_RedLEDPin);
+
+    /* Bring the speaker down gently while the supply is still latched on. */
+    AudioStream_PowerDown();
+
+    GPIO_Clear(&Board_PowerEnablePin);
     while(GPIO_IsHigh(&Board_PrimaryButtonPin))
     {
     }
@@ -419,6 +434,36 @@ static void Board_InitFailure(void)
     }
 }
 
+/*
+ * On a power-button start only the button holds the supply on until the
+ * power enable pin is set, so this runs before anything else: clock setup,
+ * USB, and ADC calibration together take long enough that a short click would
+ * otherwise be released first. It needs only the GPIO port clocks, which
+ * work on the reset clock.
+ */
+static void Board_InitPowerLatch(void)
+{
+    if(GPIO_Init(&Board_PowerEnablePin, &Board_PowerEnableConfig) != GPIO_RESULT_OK)
+    {
+        Board_InitFailure();
+    }
+
+    if(GPIO_Init(&Board_PrimaryButtonPin, &Board_ButtonInputConfig) != GPIO_RESULT_OK)
+    {
+        Board_InitFailure();
+    }
+
+    Board_WakeReason = Board_DetectWakeReason();
+
+    if(Board_WakeReason == BOARD_WAKE_REASON_POWER_BUTTON)
+    {
+        if(GPIO_Set(&Board_PowerEnablePin) != GPIO_RESULT_OK)
+        {
+            Board_InitFailure();
+        }
+    }
+}
+
 static void Board_InitTarget(void)
 {
     Target_Init();
@@ -436,16 +481,6 @@ static void Board_InitTarget(void)
 
 static void Board_InitCriticalInterfaces(void)
 {
-    if(GPIO_Init(&Board_PowerEnablePin, &Board_PowerEnableConfig) != GPIO_RESULT_OK)
-    {
-        Board_InitFailure();
-    }
-
-    if(GPIO_Init(&Board_PrimaryButtonPin, &Board_ButtonInputConfig) != GPIO_RESULT_OK)
-    {
-        Board_InitFailure();
-    }
-
     if(ADC_Init(Board_ADCInputs, Board_ADCValues, ADC_INPUT_COUNT) != ADC_RESULT_OK)
     {
         Board_InitFailure();

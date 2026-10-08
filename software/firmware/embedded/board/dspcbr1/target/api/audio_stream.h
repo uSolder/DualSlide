@@ -46,6 +46,14 @@ typedef struct AudioStream_ConfigTypeDef
 /* -------------------------------------------------------------------------- */
 
 /*
+ * Holds the output at its resting level so the amplifier input is never left
+ * floating, where it picks up noise and buzzes. Call as early as possible at
+ * power-up; AudioStream_Init later moves the output smoothly from here to its
+ * idle level.
+ */
+void AudioStream_HoldOutput(void);
+
+/*
  * Configures the target's sole audio output stream.
  *
  * The callback must fill every requested frame before returning.
@@ -62,6 +70,13 @@ void AudioStream_Stop(void);
 
 /* Returns true while the stream is actively producing PCM output. */
 bool AudioStream_IsRunning(void);
+
+/*
+ * Stops the stream and moves the output smoothly down to its resting level,
+ * where it holds, so removing power or resetting does not pop the speaker.
+ * Call before powering down; AudioStream_Init is needed to play again.
+ */
+void AudioStream_PowerDown(void);
 
 /* -------------------------------------------------------------------------- */
 /* Interrupt handling                                                         */
