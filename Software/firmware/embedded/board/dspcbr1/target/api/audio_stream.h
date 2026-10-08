@@ -1,11 +1,6 @@
-#ifndef AUDIO_STREAM_H
-#define AUDIO_STREAM_H
-
-#include <stdbool.h>
-#include <stdint.h>
-
-/*
- * Audio stream contract
+/**
+ * @file audio_stream.h
+ * @brief Hardware-independent audio output stream contract.
  *
  * The stream outputs signed 16-bit PCM frames continuously.
  *
@@ -14,8 +9,23 @@
  * - Stereo: FrameCount * 2 int16_t values, interleaved L/R
  *
  * The implementation owns its hardware buffer, DMA, timer, cache handling,
- * DAC/I2S/etc. The callback supplies the next PCM frames when needed.
+ * DAC/I2S/etc. The callback supplies the next PCM frames when needed. A
+ * target with fewer physical outputs than requested channels mixes them down.
  */
+
+#ifndef AUDIO_STREAM_H
+#define AUDIO_STREAM_H
+
+#include <stdbool.h>
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* -------------------------------------------------------------------------- */
+/* Configuration types                                                        */
+/* -------------------------------------------------------------------------- */
 
 typedef void (*Audio_StreamFillCallback)(
     int16_t *Buffer,
@@ -30,6 +40,10 @@ typedef struct Audio_StreamConfig
     Audio_StreamFillCallback FillCallback;
     void *CallbackContext;
 } Audio_StreamConfig;
+
+/* -------------------------------------------------------------------------- */
+/* Stream control                                                             */
+/* -------------------------------------------------------------------------- */
 
 /*
  * Configures the target's sole audio output stream.
@@ -48,5 +62,20 @@ void Audio_Stream_Stop(void);
 
 /* Returns true while the stream is actively producing PCM output. */
 bool Audio_Stream_IsRunning(void);
+
+/* -------------------------------------------------------------------------- */
+/* Interrupt handling                                                         */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * Handles the stream's buffer interrupt and requests more frames from the
+ * fill callback. Intended to be called directly by the interrupt handler of
+ * the stream's DMA channel in the target interrupt-vector file.
+ */
+void Audio_Stream_IRQHandler(void);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* AUDIO_STREAM_H */

@@ -8,12 +8,27 @@
 #include "system_time.h"
 #include "storage.h"
 
+#ifdef DS_USB_AUDIO_TEST
+#include "usb_audio.h"
+#endif
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
+#ifdef DS_USB_AUDIO_TEST
+/*
+ * USB audio test: the board also enumerates as a USB speaker, and the host's
+ * PCM replaces application audio. Everything else runs normally.
+ */
+#define AUDIO_SAMPLE_RATE_HZ          (USB_AUDIO_OUTPUT_SAMPLE_RATE_HZ)
+#define AUDIO_CHANNEL_COUNT           (USB_AUDIO_OUTPUT_CHANNEL_COUNT)
+#define AUDIO_FILL_CALLBACK           (USBAudio_FillAudioBuffer)
+#else
 #define AUDIO_SAMPLE_RATE_HZ          (48000U)
 #define AUDIO_CHANNEL_COUNT           (1U)
+#define AUDIO_FILL_CALLBACK           (AppManager_FillAudioBuffer)
+#endif
 
 #define FPS_SAMPLE_CAPACITY           (600U)
 #define FPS_UPDATE_INTERVAL_MS        (1000ULL)
@@ -276,7 +291,7 @@ int System_Run(void)
     {
         .SampleRateHz = AUDIO_SAMPLE_RATE_HZ,
         .ChannelCount = AUDIO_CHANNEL_COUNT,
-        .FillCallback = AppManager_FillAudioBuffer,
+        .FillCallback = AUDIO_FILL_CALLBACK,
         .CallbackContext = NULL
     };
 
@@ -330,6 +345,16 @@ int System_Run(void)
 
         return 1;
     }
+
+#ifdef DS_USB_AUDIO_TEST
+    if(!USBAudio_Init())
+    {
+        Audio_Stop();
+        AppManager_Shutdown();
+
+        return 1;
+    }
+#endif
 
     PreviousFrameTimeMilliseconds = SystemTime_GetMilliseconds();
     PreviousStatisticsTimeMilliseconds = PreviousFrameTimeMilliseconds;
@@ -386,6 +411,10 @@ int System_Run(void)
             Running = false;
         }
     }
+
+#ifdef DS_USB_AUDIO_TEST
+    USBAudio_Deinit();
+#endif
 
     Audio_Stop();
     AppManager_Shutdown();

@@ -6,9 +6,11 @@
 #include "STM32H7xx.h"
 
 #include "adc.h"
+#include "audio_stream.h"
 #include "display_controller.h"
 #include "gpio.h"
 #include "timer.h"
+#include "usbd.h"
 
 #include "STM32H7A3_Defs.h"
 
@@ -127,8 +129,7 @@ void EXTI4_IRQHandler(void)
 
 void DMA_STR0_IRQHandler(void)
 {
-    IT_UnhandledInterrupt();
-    /* DMA_IRQHandler(DMA1, 0); */
+    Audio_Stream_IRQHandler();
 }
 
 void DMA_STR1_IRQHandler(void)
@@ -453,7 +454,7 @@ void OTG_HS_WKUP_IRQHandler(void)
 
 void OTG_HS_IRQHandler(void)
 {
-    IT_UnhandledInterrupt();
+    USBD_IRQHandler();
 }
 
 void DCMI_PSSI_IRQHandler(void)

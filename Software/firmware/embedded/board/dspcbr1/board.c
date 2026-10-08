@@ -16,6 +16,7 @@
 #include "target.h"
 #include "time.h"
 #include "timer.h"
+#include "usbd.h"
 #include "w430wvc004_a.h"
 
 #include <stdbool.h>
@@ -37,10 +38,10 @@
 #define VREFINT_INPUT_INDEX                            5U
 #define ADC_INPUT_COUNT                                6U
 
-#define ADC_FULL_SCALE_VALUE                       65535U
-#define VREFINT_CALIBRATION_ADDRESS          0x08FFF810UL
-#define VREFINT_CALIBRATION_MILLIVOLTS            3300U
-#define BATTERY_VOLTAGE_DIVIDER_RATIO                 2U
+#define ADC_FULL_SCALE_VALUE                        65535U
+#define VREFINT_CALIBRATION_ADDRESS           0x08FFF810UL
+#define VREFINT_CALIBRATION_MILLIVOLTS               3300U
+#define BATTERY_VOLTAGE_DIVIDER_RATIO                   2U
 
 static void Board_SetLCDReset(bool asserted);
 static void Board_InitFailure(void);
@@ -167,17 +168,12 @@ static const GPIO_ConfigTypeDef LED_Config =
     .Mode = GPIO_MODE_OUTPUT,
     .OutputType = GPIO_OUTPUT_PUSH_PULL,
     .Pull = GPIO_PULL_NONE,
-    .InitialLevel = GPIO_LEVEL_LOW
+    .InitialLevel = GPIO_LEVEL_HIGH
 };
 
 static const GPIO_PinTypeDef PrimaryButtonPin =
 {
     .Pin = PC12
-};
-
-static const GPIO_PinTypeDef USBPowerDetectPin =
-{
-    .Pin = PA9
 };
 
 static const GPIO_PinTypeDef SecondaryButtonPin =
@@ -358,11 +354,6 @@ const ADC_InputTypeDef *Board_GetPOTBInput(void)
     return &ADC_Inputs[POT_B_INPUT_INDEX];
 }
 
-const GPIO_PinTypeDef *Board_GetUSBPowerInput(void)
-{
-    return &USBPowerDetectPin;
-}
-
 const GPIO_PinTypeDef *Board_GetPrimaryButtonInput(void)
 {
     return &PrimaryButtonPin;
@@ -377,7 +368,7 @@ void Board_PowerOff(void)
 {
     GPIO_Clear(&PowerEnablePin);
     GPIO_Clear(&LCD_BacklightPin);
-
+    GPIO_Clear(&RedLED_Pin);
     while(GPIO_IsHigh(&PrimaryButtonPin));
 
     Delay_ms(500U);
@@ -408,6 +399,11 @@ static void Board_InitTarget(void)
 {
     Target_Init();
 
+    if(USBD_Init(NULL) != USBD_RESULT_OK)
+    {
+        Board_InitFailure();
+    }
+
     if(Time_Init() != TIME_RESULT_OK)
     {
         Board_InitFailure();
@@ -422,11 +418,6 @@ static void Board_InitCriticalInterfaces(void)
     }
 
     if(GPIO_Init(&PrimaryButtonPin, &ButtonInputConfig) != GPIO_RESULT_OK)
-    {
-        Board_InitFailure();
-    }
-
-    if(GPIO_Init(&USBPowerDetectPin, &ButtonInputConfig) != GPIO_RESULT_OK)
     {
         Board_InitFailure();
     }

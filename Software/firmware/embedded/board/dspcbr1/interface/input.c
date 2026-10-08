@@ -12,6 +12,7 @@
 #include "board.h"
 #include "gpio.h"
 #include "power.h"
+#include "usbd.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -42,7 +43,6 @@ static const ADC_InputTypeDef *Embedded_POTAInput;
 static const ADC_InputTypeDef *Embedded_POTBInput;
 static const GPIO_PinTypeDef *Embedded_PrimaryButtonInput;
 static const GPIO_PinTypeDef *Embedded_SecondaryButtonInput;
-static const GPIO_PinTypeDef *Embedded_USBPowerInput;
 static int32_t Embedded_LeftSliderFilteredValue;
 static int32_t Embedded_RightSliderFilteredValue;
 static bool Embedded_LeftSliderFilterInitialised;
@@ -108,13 +108,11 @@ bool Input_Init(void)
     Embedded_POTBInput = Board_GetPOTBInput();
     Embedded_PrimaryButtonInput = Board_GetPrimaryButtonInput();
     Embedded_SecondaryButtonInput = Board_GetSecondaryButtonInput();
-    Embedded_USBPowerInput = Board_GetUSBPowerInput();
 
     if((Embedded_POTAInput == NULL) ||
        (Embedded_POTBInput == NULL) ||
        (Embedded_PrimaryButtonInput == NULL) ||
-       (Embedded_SecondaryButtonInput == NULL) ||
-       (Embedded_USBPowerInput == NULL))
+       (Embedded_SecondaryButtonInput == NULL))
     {
         return false;
     }
@@ -122,8 +120,7 @@ bool Input_Init(void)
     if(!ADC_IsAssigned(Embedded_POTAInput) ||
        !ADC_IsAssigned(Embedded_POTBInput) ||
        !GPIO_IsAssigned(Embedded_PrimaryButtonInput) ||
-       !GPIO_IsAssigned(Embedded_SecondaryButtonInput) ||
-       !GPIO_IsAssigned(Embedded_USBPowerInput))
+       !GPIO_IsAssigned(Embedded_SecondaryButtonInput))
     {
         return false;
     }
@@ -205,12 +202,7 @@ bool Input_Get_Value(Input_NumberTypeDef Number, int32_t *Value)
             return true;
 
         case EMBEDDED_INPUT_USB_POWER_NUMBER:
-            if(GPIO_Read(Embedded_USBPowerInput, &GPIOLevel) != GPIO_RESULT_OK)
-            {
-                return false;
-            }
-
-            *Value = (GPIOLevel == GPIO_LEVEL_HIGH) ? EMBEDDED_INPUT_DIGITAL_HIGH : EMBEDDED_INPUT_DIGITAL_LOW;
+            *Value = USBD_IsVbusPresent() ? EMBEDDED_INPUT_DIGITAL_HIGH : EMBEDDED_INPUT_DIGITAL_LOW;
             return true;
 
         case EMBEDDED_INPUT_BATTERY_DEPLETED_NUMBER:

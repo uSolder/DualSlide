@@ -33,6 +33,12 @@ set_target_properties(DualSlideFirmware PROPERTIES
     SUFFIX ".elf"
 )
 
+option(DS_USB_AUDIO_TEST "Also enumerate as a USB speaker whose PCM replaces application audio" OFF)
+
+if(DS_USB_AUDIO_TEST)
+    target_compile_definitions(DualSlideSystem PRIVATE DS_USB_AUDIO_TEST)
+endif()
+
 add_subdirectory(board/dspcbr1)
 
 target_link_libraries(DualSlideFirmware
