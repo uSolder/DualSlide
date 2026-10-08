@@ -28,17 +28,20 @@
 /* Private configuration                                                      */
 /* -------------------------------------------------------------------------- */
 
+/* System audio format, shared by application audio and the USB audio test. */
+#define SYSTEM_AUDIO_SAMPLE_RATE_HZ          (24000U)
+#define SYSTEM_AUDIO_CHANNEL_COUNT           (1U)
+
 #ifdef DS_USB_AUDIO_TEST
 /*
  * USB audio test: the board also enumerates as a USB speaker, and the host's
  * PCM replaces application audio. Everything else runs normally.
  */
-#define SYSTEM_AUDIO_SAMPLE_RATE_HZ          (USB_AUDIO_OUTPUT_SAMPLE_RATE_HZ)
-#define SYSTEM_AUDIO_CHANNEL_COUNT           (USB_AUDIO_OUTPUT_CHANNEL_COUNT)
 #define SYSTEM_AUDIO_FILL_CALLBACK           (USBAudio_FillAudioBuffer)
+
+_Static_assert(USB_AUDIO_OUTPUT_SAMPLE_RATE_HZ == SYSTEM_AUDIO_SAMPLE_RATE_HZ, "USB audio output rate must match the system audio rate");
+_Static_assert(USB_AUDIO_OUTPUT_CHANNEL_COUNT == SYSTEM_AUDIO_CHANNEL_COUNT, "USB audio output channels must match the system audio format");
 #else
-#define SYSTEM_AUDIO_SAMPLE_RATE_HZ          (48000U)
-#define SYSTEM_AUDIO_CHANNEL_COUNT           (1U)
 #define SYSTEM_AUDIO_FILL_CALLBACK           (AppManager_FillAudioBuffer)
 #endif
 
