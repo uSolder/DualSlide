@@ -15,6 +15,7 @@
 #include "display.h"
 #include "input.h"
 #include "open_sans.h"
+#include "pong_audio.h"
 
 #include <stddef.h>
 
@@ -330,8 +331,39 @@ static uint32_t Pong_Random(void)
     return Pong_Game.RandomState;
 }
 
+static float Pong_BallSpeed(void)
+{
+    const int32_t VelocityX = Pong_Game.Ball.VelocityX < 0 ? -Pong_Game.Ball.VelocityX : Pong_Game.Ball.VelocityX;
+    return (float)VelocityX / (float)BALL_MAX_SPEED;
+}
+
+static void Pong_PlayPowerUpSound(Pong_PowerUpTypeDef Type)
+{
+    if(Type == PONG_POWER_UP_EXPAND)
+    {
+        PongAudio_PlayPowerUp(PONG_AUDIO_POWER_UP_EXPAND);
+    }
+    else if(Type == PONG_POWER_UP_SHIELD)
+    {
+        PongAudio_PlayPowerUp(PONG_AUDIO_POWER_UP_SHIELD);
+    }
+    else if(Type == PONG_POWER_UP_SHRINK)
+    {
+        PongAudio_PlayPowerUp(PONG_AUDIO_POWER_UP_SHRINK);
+    }
+    else if(Type == PONG_POWER_UP_POWER)
+    {
+        PongAudio_PlayPowerUp(PONG_AUDIO_POWER_UP_POWER);
+    }
+    else if(Type == PONG_POWER_UP_INVERT)
+    {
+        PongAudio_PlayPowerUp(PONG_AUDIO_POWER_UP_INVERT);
+    }
+}
+
 static void Pong_AwardPoint(bool Left)
 {
+    PongAudio_PlayMiss();
     uint8_t *Score = Left ? &Pong_Game.LeftScore : &Pong_Game.RightScore;
     (*Score)++;
     Pong_Game.LastWinner = Left ? 1U : 2U;
@@ -375,6 +407,7 @@ static void Pong_ApplyPowerUp(void)
 {
     const bool ActsOnOpponent = (Pong_Game.PowerUp.Type == PONG_POWER_UP_SHRINK) || (Pong_Game.PowerUp.Type == PONG_POWER_UP_INVERT);
     const bool Left = ActsOnOpponent ? !Pong_Game.LastHitLeft : Pong_Game.LastHitLeft;
+    Pong_PlayPowerUpSound(Pong_Game.PowerUp.Type);
     if(Pong_Game.PowerUp.Type == PONG_POWER_UP_EXPAND)
     {
         if(Left)
@@ -531,6 +564,7 @@ static void Pong_UpdatePlaying(uint32_t DeltaTimeMilliseconds)
     if((Ball->Y < 0) || (Ball->Y > ((int32_t)RENDER_HEIGHT - (int32_t)BALL_SIZE) * BALL_FIXED_SCALE))
     {
         Ball->VelocityY = -Ball->VelocityY;
+        PongAudio_PlayWall(Pong_BallSpeed());
         Ball->Y = Pong_Clamp((int16_t)(Ball->Y / BALL_FIXED_SCALE), 0, (int16_t)RENDER_HEIGHT - (int16_t)BALL_SIZE) * BALL_FIXED_SCALE;
     }
     Pong_RecordBallTrail();
@@ -546,6 +580,7 @@ static void Pong_UpdatePlaying(uint32_t DeltaTimeMilliseconds)
         Pong_Game.LeftPaddleFlashMilliseconds = PADDLE_HIT_FLASH_MILLISECONDS;
         Ball->VelocityX = -Ball->VelocityX;
         Ball->VelocityY = (HitOffset * 500 * BALL_FIXED_SCALE) / (LeftHeight / 2);
+        PongAudio_PlayPaddle(true, Pong_BallSpeed());
     }
     else if((Ball->VelocityX > 0) && Pong_BallHitsRect(RightX, Pong_Input.RightY, PADDLE_WIDTH, (uint16_t)RightHeight))
     {
@@ -559,6 +594,7 @@ static void Pong_UpdatePlaying(uint32_t DeltaTimeMilliseconds)
         Pong_Game.RightPaddleFlashMilliseconds = PADDLE_HIT_FLASH_MILLISECONDS;
         Ball->VelocityX = -Ball->VelocityX;
         Ball->VelocityY = (HitOffset * 500 * BALL_FIXED_SCALE) / (RightHeight / 2);
+        PongAudio_PlayPaddle(false, Pong_BallSpeed());
     }
     if(Ball->VelocityX > (Pong_Game.PowerShotActive ? (BALL_MAX_SPEED * 3) / 2 : BALL_MAX_SPEED))
     {
@@ -580,6 +616,7 @@ static void Pong_UpdatePlaying(uint32_t DeltaTimeMilliseconds)
         {
             Ball->VelocityX = -Ball->VelocityX;
             Ball->X = 12 * BALL_FIXED_SCALE;
+            PongAudio_PlayShield();
         }
         else
         {
@@ -592,6 +629,7 @@ static void Pong_UpdatePlaying(uint32_t DeltaTimeMilliseconds)
         {
             Ball->VelocityX = -Ball->VelocityX;
             Ball->X = ((int32_t)RENDER_WIDTH - 12 - (int32_t)BALL_SIZE) * BALL_FIXED_SCALE;
+            PongAudio_PlayShield();
         }
         else
         {
@@ -675,6 +713,10 @@ static void Pong_UpdateTimedEffect(uint32_t *Timer, uint32_t DeltaTimeMillisecon
     }
     else
     {
+        if(*Timer > 0U)
+        {
+            PongAudio_PlayExpire();
+        }
         *Timer = 0U;
     }
 }
@@ -1285,6 +1327,7 @@ void Pong_Render(void)
 
 void Pong_Pause(void)
 {
+    PongAudio_Stop();
     Pong_Paused = true;
 }
 void Pong_Resume(void)
@@ -1293,6 +1336,7 @@ void Pong_Resume(void)
 }
 void Pong_Shutdown(void)
 {
+    PongAudio_Stop();
     Pong_Initialized = false;
     Pong_Paused = false;
     Pong_PendingDeltaTimeMilliseconds = 0U;
