@@ -12,8 +12,10 @@
 #include "open_sans.h"
 #include "render.h"
 #include "storage.h"
+#include "window_washer_audio.h"
 
 #include <stddef.h>
+#include <stdlib.h>
 
 /* -------------------------------------------------------------------------- */
 /* Private configuration                                                      */
@@ -45,6 +47,8 @@
 #define BUCKET_HEIGHT           (34U)
 #define FIGURE_FIXED_SCALE      (256)
 #define FIGURE_SLIDE_GRAVITY    (240)
+/* Cart speed (fixed point per game step) at which the track sound is loudest. */
+#define CART_SOUND_FULL_SPEED   (8 * FIGURE_FIXED_SCALE)
 #define WASHER_IMAGE_SIZE       (64U)
 #define BALCONY_STEP_Y          (276U)
 #define BALCONY_VERTICAL_OFFSET (84)
@@ -693,6 +697,8 @@ static void WindowWasher_ResetGame(WindowWasher_GameTypeDef *Game, WindowWasher_
     Figure->PositionY = 0;
     Figure->VelocityY = 0;
     Figure->OffscreenMilliseconds = 0U;
+
+    WindowWasherAudio_StartRound();
 }
 
 static bool WindowWasher_FigureHitsBalcony(const WindowWasher_GameTypeDef *Game, const WindowWasher_PlatformTypeDef *Platform, const WindowWasher_FigureTypeDef *Figure)
@@ -810,6 +816,7 @@ static void WindowWasher_UpdateWindowCleaning(WindowWasher_GameTypeDef *Game, co
             CleanWindow->SparkleFrameCount = CLEAN_WINDOW_SPARKLE_FRAMES;
 
             WindowWasher_AddScore(Game, SCORE_POINTS_PER_DIRT, true);
+            WindowWasherAudio_PlaySqueegee();
         }
     }
 }
@@ -893,6 +900,7 @@ static void WindowWasher_UpdateGame(WindowWasher_GameTypeDef *Game, WindowWasher
        WindowWasher_FigureHitsBalcony(Game, Platform, Figure))
     {
         Game->Crashed = true;
+        WindowWasherAudio_PlayCrash((float)abs(Figure->VelocityX) / (float)CART_SOUND_FULL_SPEED);
         if(WindowWasher_HighScoreDirty)
         {
             WindowWasher_SaveHighScore();
@@ -2199,6 +2207,7 @@ void WindowWasher_Render(void)
 
     {
         uint32_t DeltaTimeMilliseconds = WindowWasher_PendingDeltaTimeMilliseconds;
+        float CartSpeed;
 
         /* Prevent a long pause from causing an excessive physics step. */
         if(DeltaTimeMilliseconds > 100U)
@@ -2209,6 +2218,10 @@ void WindowWasher_Render(void)
         WindowWasher_PendingDeltaTimeMilliseconds = 0U;
 
         WindowWasher_UpdateGame(&WindowWasher_Game, &WindowWasher_Figure, &Platform, DeltaTimeMilliseconds);
+
+        /* The cart is silent while the washer falls. */
+        CartSpeed = WindowWasher_Game.Crashed ? 0.0f : ((float)abs(WindowWasher_Figure.VelocityX) / (float)CART_SOUND_FULL_SPEED);
+        WindowWasherAudio_Update(CartSpeed, WindowWasher_Game.ElapsedMilliseconds);
     }
 
     Render_ResetClipRect();
@@ -2227,16 +2240,20 @@ void WindowWasher_Render(void)
 
 void WindowWasher_Pause(void)
 {
+    WindowWasherAudio_Stop();
     WindowWasher_Paused = true;
 }
 
 void WindowWasher_Resume(void)
 {
+    WindowWasherAudio_Resume();
     WindowWasher_Paused = false;
 }
 
 void WindowWasher_Shutdown(void)
 {
+    WindowWasherAudio_Stop();
+
     if(WindowWasher_HighScoreDirty)
     {
         WindowWasher_SaveHighScore();
