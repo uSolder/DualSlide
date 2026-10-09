@@ -58,8 +58,7 @@
 static void TemplateGame_DrawScene(Render_TargetTypeDef *Target, int16_t X, int16_t Y, uint16_t Width, uint16_t Height)
 {
     Render_Box(Target, X, Y, Width, Height, RENDER_WHITE);
-    Render_DrawTextAligned(Target, &OpenSans36, "Template", (int16_t)(X + (int16_t)(Width / 2U)), (int16_t)(Y + (((int16_t)Height - 36) / 2)),
-                           RENDER_ALIGN_CENTRE, RENDER_BLACK);
+    Render_DrawTextAligned(Target, &OpenSans36, "Template", (int16_t)(X + (int16_t)(Width / 2U)), (int16_t)(Y + (((int16_t)Height - 36) / 2)), RENDER_ALIGN_CENTRE, RENDER_BLACK);
 }
 
 /* -------------------------------------------------------------------------- */

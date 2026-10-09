@@ -20,10 +20,40 @@
 #define PLAYER_RELOAD_MS      (620U)
 #define ROUND_CLEAR_MS        (2200U)
 #define PLAYER_OWNER          (0U)
+
+/* The demo battle: the autopilot keeps about this far from its target, and a new battle starts this long after one ends. */
+#define DEMO_FIGHT_RANGE      (170)
+#define DEMO_RESTART_MS       (1800U)
 #define RICOCHET_MAX_BOUNCES  (2U)
 #define RICOCHET_PLAYER_SPEED (400)
 #define RICOCHET_ENEMY_SPEED  (275)
+/* Blast radii: every tank whose hull reaches into the circle is destroyed, whoever set it off. */
 #define ROCKET_BLAST_RADIUS   (54U)
+#define MINE_BLAST_RADIUS     (58U)
+
+/* The player can have this many mines out at once. */
+#define PLAYER_MAX_MINES      (2U)
+
+/* Tanks steer around any of the player's mines within this distance of where they're heading. */
+#define MINE_AVOID_DISTANCE   (34U)
+
+/*
+ * The mine-layer races between the spots on the level's mine map at
+ * MINELAYER_SPEED, planting a mine when it is within MINELAYER_PLANT_PIXELS
+ * of one. Facing more than MINELAYER_PIVOT_ANGLE away from where it's going,
+ * it turns on the spot first rather than driving round in circles. A spot
+ * with a mine within MINE_SPOT_PIXELS of it is already mined. Mines laid on
+ * the map stay until something sets them off.
+ */
+#define MINELAYER_SPEED       (900)
+#define MINELAYER_PIVOT_ANGLE (300)
+#define MINELAYER_PLANT_PIXELS (14U)
+#define MINE_SPOT_PIXELS      (20U)
+#define MINE_LIFE_FOREVER     (UINT16_MAX)
+#define NO_MINE_SPOT          (UINT8_MAX)
+
+/* A path that goes round the player keeps its waypoints this far from the player's tank. */
+#define PATH_PLAYER_CLEARANCE (40U)
 #define CAMPAIGN_WAVES        (10U)
 #define ENDLESS_HARDEST_FROM  (7U)
 #define BASIC_FIRE_CONE       (80)
@@ -39,6 +69,10 @@
 /* -------------------------------------------------------------------------- */
 
 static bool Tanks_SpawnEnemy(uint8_t Slot, uint8_t Ordinal, uint8_t Total);
+static void Tanks_DestroyEnemy(Tanks_TankTypeDef *Enemy, bool LeaveWreck);
+static Tanks_VectorTypeDef Tanks_EnemyRandomOpenPoint(const Tanks_TankTypeDef *Enemy, int16_t MaximumDistance);
+static bool Tanks_DropMine(const Tanks_TankTypeDef *Tank, uint8_t Owner);
+static bool Tanks_SteerTank(Tanks_TankTypeDef *Tank, int16_t DesiredHeading, int16_t Speed, bool MayFire);
 
 /* -------------------------------------------------------------------------- */
 /* Private data                                                               */
@@ -161,6 +195,10 @@ static void Tanks_ClearRoundEntities(void)
     {
         Tanks_Game.Wrecks[Index].Active = false;
     }
+    for(uint8_t Index = 0U; Index < TANKS_MAX_BLASTS; Index++)
+    {
+        Tanks_Game.Blasts[Index].Active = false;
+    }
     for(uint8_t Index = 0U; Index < TANKS_MAX_FLOATING_TEXT; Index++)
     {
         Tanks_Game.FloatingText[Index].Active = false;
@@ -241,9 +279,25 @@ static void Tanks_OpenVerticalDoor(uint8_t X, uint8_t Y, uint8_t Height)
     }
 }
 
+/*
+ * Add a spot to the level's mine map, in tiles. A mine-layer drives to every
+ * spot on the map and plants one mine on each: put them in doorways and
+ * other places the player has to pass.
+ */
+static void Tanks_AddMineSpot(uint8_t X, uint8_t Y)
+{
+    if(Tanks_Game.MineSpotCount < TANKS_MAX_MINE_SPOTS)
+    {
+        Tanks_Game.MineSpots[Tanks_Game.MineSpotCount][0] = X;
+        Tanks_Game.MineSpots[Tanks_Game.MineSpotCount][1] = Y;
+        Tanks_Game.MineSpotCount++;
+    }
+}
+
 static void Tanks_BuildArena(uint16_t Wave)
 {
     const uint8_t Layout = (uint8_t)((Wave - 1U) % 10U);
+    Tanks_Game.MineSpotCount = 0U;
     switch(Layout)
     {
         case 0U: /* TRAINING ROOMS */
@@ -255,6 +309,11 @@ static void Tanks_BuildArena(uint16_t Wave)
             Tanks_OpenHorizontalDoor(6U, 11U, 3U);
             Tanks_PlaceRoom(20U, 11U, 10U, 6U);
             Tanks_OpenHorizontalDoor(24U, 11U, 3U);
+            /* Mine map: the middle of every doorway. */
+            Tanks_AddMineSpot(8U, 8U);
+            Tanks_AddMineSpot(23U, 8U);
+            Tanks_AddMineSpot(7U, 11U);
+            Tanks_AddMineSpot(25U, 11U);
             break;
         case 1U: /* TWIN WINGS */
             Tanks_PlaceRoom(2U, 2U, 11U, 15U);
@@ -265,6 +324,12 @@ static void Tanks_BuildArena(uint16_t Wave)
             Tanks_OpenVerticalDoor(19U, 12U, 3U);
             Tanks_PlaceRoom(13U, 2U, 6U, 7U);
             Tanks_OpenHorizontalDoor(15U, 8U, 3U);
+            /* Mine map: the middle of every doorway. */
+            Tanks_AddMineSpot(12U, 6U);
+            Tanks_AddMineSpot(12U, 13U);
+            Tanks_AddMineSpot(19U, 6U);
+            Tanks_AddMineSpot(19U, 13U);
+            Tanks_AddMineSpot(16U, 8U);
             break;
         case 2U: /* FOUR CHAMBERS */
             Tanks_PlaceRoom(2U, 2U, 11U, 7U);
@@ -281,6 +346,15 @@ static void Tanks_BuildArena(uint16_t Wave)
             Tanks_OpenVerticalDoor(19U, 13U, 3U);
             Tanks_PlaceWallLine(15U, 2U, 5U, true);
             Tanks_PlaceWallLine(16U, 14U, 3U, true);
+            /* Mine map: the middle of every doorway. */
+            Tanks_AddMineSpot(8U, 8U);
+            Tanks_AddMineSpot(12U, 5U);
+            Tanks_AddMineSpot(23U, 8U);
+            Tanks_AddMineSpot(19U, 5U);
+            Tanks_AddMineSpot(7U, 11U);
+            Tanks_AddMineSpot(12U, 14U);
+            Tanks_AddMineSpot(24U, 11U);
+            Tanks_AddMineSpot(19U, 14U);
             break;
         case 3U: /* NESTED HALLS */
             Tanks_PlaceRoom(3U, 2U, 26U, 8U);
@@ -292,6 +366,12 @@ static void Tanks_BuildArena(uint16_t Wave)
             Tanks_OpenHorizontalDoor(7U, 11U, 3U);
             Tanks_PlaceRoom(18U, 11U, 11U, 6U);
             Tanks_OpenHorizontalDoor(22U, 11U, 3U);
+            /* Mine map: the middle of every doorway. */
+            Tanks_AddMineSpot(9U, 9U);
+            Tanks_AddMineSpot(22U, 9U);
+            Tanks_AddMineSpot(16U, 6U);
+            Tanks_AddMineSpot(8U, 11U);
+            Tanks_AddMineSpot(23U, 11U);
             break;
         case 4U: /* SPLIT HOUSE */
             Tanks_PlaceRoom(2U, 3U, 13U, 13U);
@@ -304,6 +384,13 @@ static void Tanks_BuildArena(uint16_t Wave)
             Tanks_PlaceWallLine(21U, 9U, 5U, false);
             Tanks_OpenHorizontalDoor(9U, 9U, 3U);
             Tanks_OpenHorizontalDoor(23U, 9U, 3U);
+            /* Mine map: the middle of every doorway. */
+            Tanks_AddMineSpot(14U, 7U);
+            Tanks_AddMineSpot(14U, 13U);
+            Tanks_AddMineSpot(17U, 7U);
+            Tanks_AddMineSpot(17U, 13U);
+            Tanks_AddMineSpot(10U, 9U);
+            Tanks_AddMineSpot(24U, 9U);
             break;
         case 5U: /* FIVE ROOMS */
             Tanks_PlaceRoom(2U, 2U, 9U, 7U);
@@ -316,6 +403,12 @@ static void Tanks_BuildArena(uint16_t Wave)
             Tanks_OpenHorizontalDoor(8U, 11U, 3U);
             Tanks_PlaceRoom(17U, 11U, 12U, 6U);
             Tanks_OpenHorizontalDoor(22U, 11U, 3U);
+            /* Mine map: the middle of every doorway. */
+            Tanks_AddMineSpot(6U, 8U);
+            Tanks_AddMineSpot(16U, 8U);
+            Tanks_AddMineSpot(25U, 8U);
+            Tanks_AddMineSpot(9U, 11U);
+            Tanks_AddMineSpot(23U, 11U);
             break;
         case 6U: /* CENTRAL COURT */
             Tanks_PlaceRoom(5U, 2U, 22U, 6U);
@@ -330,6 +423,14 @@ static void Tanks_BuildArena(uint16_t Wave)
             Tanks_OpenVerticalDoor(9U, 8U, 3U);
             Tanks_PlaceRoom(22U, 6U, 8U, 7U);
             Tanks_OpenVerticalDoor(22U, 8U, 3U);
+            /*
+             * Mine map: the middle of every doorway a tank fits through. The
+             * side rooms wall over the outer doors of the top and bottom halls.
+             */
+            Tanks_AddMineSpot(16U, 7U);
+            Tanks_AddMineSpot(16U, 12U);
+            Tanks_AddMineSpot(9U, 9U);
+            Tanks_AddMineSpot(22U, 9U);
             break;
         case 7U: /* OFFSET SUITES */
             Tanks_PlaceRoom(2U, 2U, 14U, 8U);
@@ -344,6 +445,14 @@ static void Tanks_BuildArena(uint16_t Wave)
             Tanks_PlaceRoom(19U, 10U, 11U, 7U);
             Tanks_OpenHorizontalDoor(23U, 10U, 3U);
             Tanks_OpenVerticalDoor(19U, 13U, 3U);
+            /* Mine map: the middle of every doorway (the two suites share one, through both walls). */
+            Tanks_AddMineSpot(8U, 9U);
+            Tanks_AddMineSpot(15U, 6U);
+            Tanks_AddMineSpot(23U, 9U);
+            Tanks_AddMineSpot(7U, 10U);
+            Tanks_AddMineSpot(12U, 14U);
+            Tanks_AddMineSpot(24U, 10U);
+            Tanks_AddMineSpot(19U, 14U);
             break;
         case 8U: /* ROCKET LAB */
             Tanks_PlaceRoom(2U, 2U, 28U, 6U);
@@ -358,6 +467,14 @@ static void Tanks_BuildArena(uint16_t Wave)
             Tanks_OpenHorizontalDoor(7U, 11U, 3U);
             Tanks_PlaceRoom(17U, 11U, 13U, 6U);
             Tanks_OpenHorizontalDoor(22U, 11U, 3U);
+            /* Mine map: the middle of every doorway. */
+            Tanks_AddMineSpot(7U, 7U);
+            Tanks_AddMineSpot(16U, 7U);
+            Tanks_AddMineSpot(25U, 7U);
+            Tanks_AddMineSpot(11U, 5U);
+            Tanks_AddMineSpot(21U, 5U);
+            Tanks_AddMineSpot(8U, 11U);
+            Tanks_AddMineSpot(23U, 11U);
             break;
         default: /* FINAL COMPLEX */
             Tanks_PlaceRoom(2U, 2U, 10U, 7U);
@@ -374,6 +491,15 @@ static void Tanks_BuildArena(uint16_t Wave)
             Tanks_OpenHorizontalDoor(15U, 12U, 3U);
             Tanks_OpenVerticalDoor(12U, 13U, 3U);
             Tanks_OpenVerticalDoor(19U, 13U, 3U);
+            /* Mine map: the middle of every doorway. */
+            Tanks_AddMineSpot(7U, 8U);
+            Tanks_AddMineSpot(16U, 8U);
+            Tanks_AddMineSpot(25U, 8U);
+            Tanks_AddMineSpot(7U, 11U);
+            Tanks_AddMineSpot(25U, 11U);
+            Tanks_AddMineSpot(16U, 12U);
+            Tanks_AddMineSpot(12U, 14U);
+            Tanks_AddMineSpot(19U, 14U);
             break;
     }
 
@@ -666,6 +792,7 @@ static bool Tanks_SpawnEnemy(uint8_t Slot, uint8_t Ordinal, uint8_t Total)
     Enemy->StuckMilliseconds = 0U;
     Enemy->AiTurnBias = (Tanks_Random() & 1U) != 0U ? 500 : -500;
     Enemy->Mines = 0U;
+    Enemy->MineSpot = NO_MINE_SPOT;
     Enemy->FlashMilliseconds = 0U;
     Enemy->AimValid = false;
     Enemy->Awake = true;
@@ -759,6 +886,10 @@ static void Tanks_DestroyPlayer(bool LeaveWreck, const char *Message)
     }
     Tanks_SpawnExplosion(Player->Position, 19U);
     Player->Active = false;
+    if(Tanks_Game.Demo)
+    {
+        return;
+    }
     if(Tanks_Game.Lives > 0U)
     {
         Tanks_Game.Lives--;
@@ -777,6 +908,61 @@ static void Tanks_DestroyPlayer(bool LeaveWreck, const char *Message)
         if(Message != NULL)
         {
             Tanks_ShowMessage(Message, 1500U);
+        }
+    }
+}
+
+/*
+ * An explosion at Position. Every tank whose hull reaches within Radius is
+ * destroyed, the player included (unless just respawned and protected), and
+ * any mine caught in the blast goes off too, so mines can chain.
+ */
+static void Tanks_Detonate(Tanks_VectorTypeDef Position, uint32_t Radius, uint8_t Strength)
+{
+    Tanks_BlastTypeDef *Ring = &Tanks_Game.Blasts[0];
+
+    Tanks_SpawnExplosion(Position, Strength);
+
+    for(uint8_t Index = 0U; Index < TANKS_MAX_BLASTS; Index++)
+    {
+        if(!Tanks_Game.Blasts[Index].Active || (Tanks_Game.Blasts[Index].LifeMilliseconds < Ring->LifeMilliseconds))
+        {
+            Ring = &Tanks_Game.Blasts[Index];
+        }
+
+        if(!Ring->Active)
+        {
+            break;
+        }
+    }
+    Ring->Position = Position;
+    Ring->Radius = (uint16_t)Radius;
+    Ring->LifeMilliseconds = TANKS_BLAST_RING_MS;
+    Ring->Active = true;
+
+    if(Tanks_Game.Player.Active && (Tanks_DistancePixels(Position, Tanks_Game.Player.Position) <= Radius + (PLAYER_RADIUS / 2U)))
+    {
+        Tanks_DamagePlayer(1U);
+    }
+
+    for(uint8_t Index = 0U; Index < TANKS_MAX_ENEMIES; Index++)
+    {
+        Tanks_TankTypeDef *Enemy = &Tanks_Game.Enemies[Index];
+
+        if(Enemy->Active && (Tanks_DistancePixels(Position, Enemy->Position) <= Radius + (ENEMY_RADIUS / 2U)))
+        {
+            Tanks_DestroyEnemy(Enemy, true);
+        }
+    }
+
+    for(uint8_t Index = 0U; Index < TANKS_MAX_MINES; Index++)
+    {
+        Tanks_MineTypeDef *Mine = &Tanks_Game.Mines[Index];
+
+        if(Mine->Active && (Tanks_DistancePixels(Position, Mine->Position) <= Radius))
+        {
+            Mine->Active = false;
+            Tanks_Detonate(Mine->Position, MINE_BLAST_RADIUS, 14U);
         }
     }
 }
@@ -897,7 +1083,7 @@ static bool Tanks_MoveTank(Tanks_TankTypeDef *Tank, int16_t Radius, uint32_t Del
     {
         if(Tank->Type == TANKS_ENEMY_MINELAYER)
         {
-            MaximumSpeed = 68;
+            MaximumSpeed = 204;
         }
         else if(Tanks_EnemyUsesRocket((Tanks_EnemyTypeDef)Tank->Type))
         {
@@ -920,6 +1106,11 @@ static bool Tanks_MoveTank(Tanks_TankTypeDef *Tank, int16_t Radius, uint32_t Del
     if((Tank != &Tanks_Game.Player) && !Tanks_EnemyTargetsPlayer((Tanks_EnemyTypeDef)Tank->Type))
     {
         TurnTarget = (TurnTarget * 74) / 100;
+    }
+    if((Tank != &Tanks_Game.Player) && (Tank->Type == TANKS_ENEMY_MINELAYER))
+    {
+        /* The mine-layer turns three times as fast as other basic tanks, to match its speed. */
+        TurnTarget *= 3;
     }
     Tank->LinearVelocity = (int16_t)(Tank->LinearVelocity + (((SpeedTarget - Tank->LinearVelocity) * 11 * (int32_t)DeltaMilliseconds) / 1000));
     Tank->AngularVelocity = (int16_t)(Tank->AngularVelocity + (((TurnTarget - Tank->AngularVelocity) * 11 * (int32_t)DeltaMilliseconds) / 1000));
@@ -945,7 +1136,7 @@ static bool Tanks_MoveTank(Tanks_TankTypeDef *Tank, int16_t Radius, uint32_t Del
         Tank->LinearVelocity /= 3;
         Tank->StuckMilliseconds = (uint16_t)Tanks_Clamp32(Tank->StuckMilliseconds + DeltaMilliseconds, 0, 4000);
     }
-    else
+    else if(Moved)
     {
         Tank->StuckMilliseconds = 0U;
     }
@@ -979,15 +1170,87 @@ static bool Tanks_LineOfSight(Tanks_VectorTypeDef Start, Tanks_VectorTypeDef End
     return true;
 }
 
+/*
+ * The demo's autopilot, for the launcher preview: the player's tank hunts the
+ * enemy with the same steering the enemies use. In sight, it turns to face
+ * the enemy and holds a fighting distance; out of sight, it roams. Returns
+ * whether it is lined up to fire.
+ */
+static bool Tanks_DemoPilot(Tanks_TankTypeDef *Player, uint32_t DeltaMilliseconds)
+{
+    const Tanks_TankTypeDef *Target = NULL;
+    int16_t Heading;
+    int16_t Speed;
+    int16_t Error;
+    bool Visible;
+
+    for(uint8_t Index = 0U; (Index < TANKS_MAX_ENEMIES) && (Target == NULL); Index++)
+    {
+        Target = Tanks_Game.Enemies[Index].Active ? &Tanks_Game.Enemies[Index] : NULL;
+    }
+    if(Target == NULL)
+    {
+        Player->LeftTrack = 0;
+        Player->RightTrack = 0;
+        return false;
+    }
+
+    Visible = Tanks_LineOfSight(Player->Position, Target->Position);
+    if(Visible)
+    {
+        Heading = Tanks_AngleTo(Player->Position, Target->Position);
+        Speed = (int16_t)Tanks_Clamp32(((int32_t)Tanks_DistancePixels(Player->Position, Target->Position) - DEMO_FIGHT_RANGE) * 4, -300, 600);
+    }
+    else
+    {
+        if((Player->AiThinkMilliseconds <= DeltaMilliseconds) || (Tanks_DistancePixels(Player->Position, Player->MoveTarget) < 42U))
+        {
+            Player->HomePosition = Target->Position;
+            Player->MoveTarget = Tanks_EnemyRandomOpenPoint(Player, 220);
+            Player->AiThinkMilliseconds = 2500U;
+        }
+        else
+        {
+            Player->AiThinkMilliseconds -= (uint16_t)DeltaMilliseconds;
+        }
+        Heading = Tanks_AngleTo(Player->Position, Player->MoveTarget);
+        Speed = 600;
+    }
+
+    Error = Tanks_NormalizeAngle((int32_t)Player->Heading - Heading);
+    return Tanks_SteerTank(Player, Heading, Speed, Visible) && (Error < 28) && (Error > -28);
+}
+
+static uint8_t Tanks_CountPlayerMines(void)
+{
+    uint8_t Count = 0U;
+
+    for(uint8_t Index = 0U; Index < TANKS_MAX_MINES; Index++)
+    {
+        Count += (Tanks_Game.Mines[Index].Active && (Tanks_Game.Mines[Index].Owner == PLAYER_OWNER)) ? 1U : 0U;
+    }
+
+    return Count;
+}
+
 static void Tanks_UpdatePlayer(uint32_t DeltaMilliseconds)
 {
     Tanks_TankTypeDef *Player = &Tanks_Game.Player;
+    bool Fire;
     if(!Player->Active)
     {
         return;
     }
-    Player->LeftTrack = Tanks_Game.Input.LeftTrack;
-    Player->RightTrack = Tanks_Game.Input.RightTrack;
+    if(Tanks_Game.Demo)
+    {
+        Fire = Tanks_DemoPilot(Player, DeltaMilliseconds);
+    }
+    else
+    {
+        Player->LeftTrack = Tanks_Game.Input.LeftTrack;
+        Player->RightTrack = Tanks_Game.Input.RightTrack;
+        Fire = Tanks_Game.Input.Primary.Pressed;
+    }
     if(!Tanks_MoveTank(Player, PLAYER_RADIUS, DeltaMilliseconds))
     {
         return;
@@ -995,9 +1258,15 @@ static void Tanks_UpdatePlayer(uint32_t DeltaMilliseconds)
     Player->TurretHeading = Player->Heading;
 
     /* A short tap fires exactly one shot immediately. Holding the button never charges or repeats. */
-    if(Tanks_Game.Input.Primary.Pressed)
+    if(Fire)
     {
         (void)Tanks_Fire(Player, PLAYER_OWNER);
+    }
+
+    /* Secondary lays a mine behind the tank, a few at a time. */
+    if(!Tanks_Game.Demo && Tanks_Game.Input.Secondary.Pressed && (Tanks_CountPlayerMines() < PLAYER_MAX_MINES))
+    {
+        (void)Tanks_DropMine(Player, PLAYER_OWNER);
     }
 
     if((Player->LinearVelocity > 18) || (Player->LinearVelocity < -18))
@@ -1036,7 +1305,19 @@ static Tanks_VectorTypeDef Tanks_PointAhead(Tanks_VectorTypeDef Position, int16_
 
 static bool Tanks_EnemyProbeBlocked(const Tanks_TankTypeDef *Enemy, int16_t Heading, int16_t Distance)
 {
-    return Tanks_PositionBlocked(Tanks_PointAhead(Enemy->Position, Heading, Distance), ENEMY_RADIUS, true);
+    const Tanks_VectorTypeDef Probe = Tanks_PointAhead(Enemy->Position, Heading, Distance);
+
+    /* The player's mines count as obstacles: tanks steer around them rather than drive over them. */
+    for(uint8_t Index = 0U; Index < TANKS_MAX_MINES; Index++)
+    {
+        const Tanks_MineTypeDef *Mine = &Tanks_Game.Mines[Index];
+        if(Mine->Active && (Mine->Owner == PLAYER_OWNER) && (Tanks_DistancePixels(Probe, Mine->Position) <= MINE_AVOID_DISTANCE))
+        {
+            return true;
+        }
+    }
+
+    return Tanks_PositionBlocked(Probe, ENEMY_RADIUS, true);
 }
 
 static Tanks_VectorTypeDef Tanks_EnemyRandomOpenPoint(const Tanks_TankTypeDef *Enemy, int16_t MaximumDistance)
@@ -1129,7 +1410,8 @@ static uint16_t Tanks_ClosestPathNode(Tanks_VectorTypeDef Position)
     return Best;
 }
 
-static Tanks_VectorTypeDef Tanks_PathWaypointToPlayer(const Tanks_TankTypeDef *Enemy)
+/* The next waypoint on the shortest path from the enemy to Target, going round the player's tank if AroundPlayer. */
+static Tanks_VectorTypeDef Tanks_PathWaypointTo(const Tanks_TankTypeDef *Enemy, Tanks_VectorTypeDef Target, bool AroundPlayer)
 {
     enum
     {
@@ -1141,10 +1423,10 @@ static Tanks_VectorTypeDef Tanks_PathWaypointToPlayer(const Tanks_TankTypeDef *E
     static uint16_t Queue[PATH_COUNT];
     static const int8_t Delta[4][2] = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } };
     const uint16_t Start = Tanks_ClosestPathNode(Enemy->Position);
-    const uint16_t Goal = Tanks_ClosestPathNode(Tanks_Game.Player.Position);
+    const uint16_t Goal = Tanks_ClosestPathNode(Target);
     uint16_t Read = 0U;
     uint16_t Write = 0U;
-    Tanks_VectorTypeDef Result = Tanks_Game.Player.Position;
+    Tanks_VectorTypeDef Result = Target;
     if((Start == UINT16_MAX) || (Goal == UINT16_MAX))
     {
         return Result;
@@ -1181,6 +1463,16 @@ static Tanks_VectorTypeDef Tanks_PathWaypointToPlayer(const Tanks_TankTypeDef *E
             if(!Tanks_PathNodePassable(NextX, NextY))
             {
                 continue;
+            }
+            if(AroundPlayer && Tanks_Game.Player.Active)
+            {
+                Tanks_VectorTypeDef Centre;
+                Centre.X = TANKS_FP((int32_t)(NextX + 1) * TANKS_TILE_SIZE);
+                Centre.Y = TANKS_FP((int32_t)(NextY + 1) * TANKS_TILE_SIZE);
+                if(Tanks_DistancePixels(Centre, Tanks_Game.Player.Position) < PATH_PLAYER_CLEARANCE)
+                {
+                    continue;
+                }
             }
             Parent[Next] = (int16_t)Current;
             Queue[Write++] = Next;
@@ -1282,11 +1574,9 @@ static int16_t Tanks_LeadHeading(const Tanks_TankTypeDef *Enemy, int32_t BulletS
     return Tanks_AngleTo(Enemy->Position, Tanks_PointAhead(Player->Position, Player->Heading, (int16_t)Travel));
 }
 
-static bool Tanks_DropEnemyMine(Tanks_TankTypeDef *Enemy, uint8_t Owner)
+/* Put a mine down at Position; Owner is 0 for the player, or the enemy's index + 1. */
+static bool Tanks_PlaceMine(Tanks_VectorTypeDef Position, uint8_t Owner, uint16_t LifeMilliseconds)
 {
-    Tanks_VectorTypeDef Position;
-    Position.X = Enemy->Position.X - ((Tanks_Sine(Enemy->Heading) * 24 * TANKS_FP_ONE) / TANKS_TRIG_ONE);
-    Position.Y = Enemy->Position.Y + ((Tanks_Cosine(Enemy->Heading) * 24 * TANKS_FP_ONE) / TANKS_TRIG_ONE);
     if(Tanks_TileAtPosition(Position) != TANKS_TILE_FLOOR)
     {
         return false;
@@ -1300,14 +1590,214 @@ static bool Tanks_DropEnemyMine(Tanks_TankTypeDef *Enemy, uint8_t Owner)
         }
         Mine->Position = Position;
         Mine->ArmMilliseconds = 700U;
-        Mine->LifeMilliseconds = 9000U;
+        Mine->LifeMilliseconds = LifeMilliseconds;
         Mine->Owner = Owner;
+        Mine->OwnerClear = false;
         Mine->Active = true;
-        Enemy->ReloadMilliseconds = 1250U;
         TanksAudio_PlayMineDropped(Position);
         return true;
     }
     return false;
+}
+
+/* Lay a mine just behind a tank. */
+static bool Tanks_DropMine(const Tanks_TankTypeDef *Tank, uint8_t Owner)
+{
+    Tanks_VectorTypeDef Position;
+    Position.X = Tank->Position.X - ((Tanks_Sine(Tank->Heading) * 24 * TANKS_FP_ONE) / TANKS_TRIG_ONE);
+    Position.Y = Tank->Position.Y + ((Tanks_Cosine(Tank->Heading) * 24 * TANKS_FP_ONE) / TANKS_TRIG_ONE);
+    return Tanks_PlaceMine(Position, Owner, 9000U);
+}
+
+/* Set a tank's tracks to turn towards DesiredHeading and drive at Speed. */
+static void Tanks_DriveTank(Tanks_TankTypeDef *Tank, int16_t DesiredHeading, int16_t Speed)
+{
+    const int16_t Error = Tanks_NormalizeAngle((int32_t)DesiredHeading - Tank->Heading);
+    if(Error > 620)
+    {
+        Tank->LeftTrack = 690;
+        Tank->RightTrack = -690;
+    }
+    else if(Error < -620)
+    {
+        Tank->LeftTrack = -690;
+        Tank->RightTrack = 690;
+    }
+    else
+    {
+        Tank->LeftTrack = (int16_t)Tanks_Clamp32(Speed + (Error * 2), -900, 900);
+        Tank->RightTrack = (int16_t)Tanks_Clamp32(Speed - (Error * 2), -900, 900);
+    }
+}
+
+/*
+ * Set a tank's tracks to head for DesiredHeading at Speed, turning aside from
+ * walls and pits ahead and backing out when stuck. Returns whether it may
+ * still fire: a tank that has to steer around something stops shooting.
+ */
+static bool Tanks_SteerTank(Tanks_TankTypeDef *Tank, int16_t DesiredHeading, int16_t Speed, bool MayFire)
+{
+    if((Speed > 0) && Tanks_EnemyProbeBlocked(Tank, DesiredHeading, 55))
+    {
+        const int16_t LeftHeading = Tanks_NormalizeAngle((int32_t)DesiredHeading - 560);
+        const int16_t RightHeading = Tanks_NormalizeAngle((int32_t)DesiredHeading + 560);
+        const bool LeftBlocked = Tanks_EnemyProbeBlocked(Tank, LeftHeading, 66);
+        const bool RightBlocked = Tanks_EnemyProbeBlocked(Tank, RightHeading, 66);
+        if(LeftBlocked && !RightBlocked)
+        {
+            DesiredHeading = RightHeading;
+        }
+        else if(RightBlocked && !LeftBlocked)
+        {
+            DesiredHeading = LeftHeading;
+        }
+        else
+        {
+            DesiredHeading = Tanks_NormalizeAngle((int32_t)Tank->Heading + Tank->AiTurnBias);
+        }
+        if(MayFire)
+        {
+            MayFire = false;
+            Speed = 0;
+        }
+    }
+    if(Tank->StuckMilliseconds > 300U)
+    {
+        DesiredHeading = Tanks_NormalizeAngle((int32_t)Tank->Heading + Tank->AiTurnBias);
+        Speed = -420;
+        Tank->AiThinkMilliseconds = 0U;
+        if(Tank->StuckMilliseconds > 900U)
+        {
+            Tank->AiTurnBias = (int16_t)-Tank->AiTurnBias;
+        }
+    }
+
+    Tanks_DriveTank(Tank, DesiredHeading, Speed);
+    return MayFire;
+}
+
+static Tanks_VectorTypeDef Tanks_MineSpotPosition(uint8_t Spot)
+{
+    Tanks_VectorTypeDef Position;
+    Position.X = TANKS_FP((int32_t)Tanks_Game.MineSpots[Spot][0] * TANKS_TILE_SIZE + (TANKS_TILE_SIZE / 2));
+    Position.Y = TANKS_FP((int32_t)Tanks_Game.MineSpots[Spot][1] * TANKS_TILE_SIZE + (TANKS_TILE_SIZE / 2));
+    return Position;
+}
+
+static bool Tanks_MineSpotMined(uint8_t Spot)
+{
+    const Tanks_VectorTypeDef Position = Tanks_MineSpotPosition(Spot);
+    for(uint8_t Index = 0U; Index < TANKS_MAX_MINES; Index++)
+    {
+        if(Tanks_Game.Mines[Index].Active && (Tanks_DistancePixels(Position, Tanks_Game.Mines[Index].Position) <= MINE_SPOT_PIXELS))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+/*
+ * The next spot to mine: of the spots with no mine yet that no other
+ * mine-layer is heading for, the one furthest from the player.
+ */
+static uint8_t Tanks_NextMineSpot(const Tanks_TankTypeDef *Enemy)
+{
+    uint8_t Best = NO_MINE_SPOT;
+    uint32_t BestDistance = 0U;
+    for(uint8_t Spot = 0U; Spot < Tanks_Game.MineSpotCount; Spot++)
+    {
+        bool Claimed = false;
+        uint32_t Distance;
+        if(Tanks_MineSpotMined(Spot))
+        {
+            continue;
+        }
+        for(uint8_t Index = 0U; Index < TANKS_MAX_ENEMIES; Index++)
+        {
+            const Tanks_TankTypeDef *Other = &Tanks_Game.Enemies[Index];
+            if((Other != Enemy) && Other->Active && (Other->Type == TANKS_ENEMY_MINELAYER) && (Other->MineSpot == Spot))
+            {
+                Claimed = true;
+            }
+        }
+        if(Claimed)
+        {
+            continue;
+        }
+        Distance = Tanks_DistancePixels(Tanks_Game.Player.Position, Tanks_MineSpotPosition(Spot));
+        if((Best == NO_MINE_SPOT) || (Distance > BestDistance))
+        {
+            BestDistance = Distance;
+            Best = Spot;
+        }
+    }
+    return Best;
+}
+
+/*
+ * The mine-layer never fights or flees the player. It races to the spot on
+ * the level's mine map furthest from the player that has no mine, plants
+ * one mine there, and moves on to the next, until every spot is mined. If a mine on
+ * the map goes off, it comes back to replace it. With nothing left to mine it
+ * patrols. Returns the speed and sets the heading, and whether it is making
+ * a straight run at a spot in plain sight (and needn't look out for walls).
+ */
+static int16_t Tanks_PlanMinelayer(Tanks_TankTypeDef *Enemy, uint8_t EnemyIndex, int16_t *DesiredHeading, bool *Direct)
+{
+    Tanks_VectorTypeDef Spot;
+    uint32_t Distance;
+    int16_t TurnNeeded;
+
+    if((Enemy->MineSpot >=Tanks_Game.MineSpotCount) || Tanks_MineSpotMined(Enemy->MineSpot))
+    {
+        Enemy->MineSpot = Tanks_NextMineSpot(Enemy);
+    }
+
+    if(Enemy->MineSpot == NO_MINE_SPOT)
+    {
+        if((Enemy->AiThinkMilliseconds == 0U) || (Tanks_DistancePixels(Enemy->Position, Enemy->MoveTarget) < 42U))
+        {
+            Enemy->MoveTarget = Tanks_EnemyRandomOpenPoint(Enemy, 260);
+            Enemy->AiThinkMilliseconds = 4000U;
+        }
+        *DesiredHeading = Tanks_AngleTo(Enemy->Position, Enemy->MoveTarget);
+        return 430;
+    }
+
+    Spot = Tanks_MineSpotPosition(Enemy->MineSpot);
+    Distance = Tanks_DistancePixels(Enemy->Position, Spot);
+    if(Distance <= MINELAYER_PLANT_PIXELS)
+    {
+        if(Tanks_PlaceMine(Spot, (uint8_t)(EnemyIndex + 1U), MINE_LIFE_FOREVER))
+        {
+            Enemy->Mines++;
+        }
+        Enemy->MineSpot = Tanks_NextMineSpot(Enemy);
+        *DesiredHeading = Enemy->Heading;
+        return MINELAYER_SPEED;
+    }
+
+    /* Far off, follow the shortest path; with the spot in plain sight, drive straight onto it. */
+    if((Distance < 90U) && Tanks_LineOfSight(Enemy->Position, Spot))
+    {
+        Enemy->MoveTarget = Spot;
+        *Direct = true;
+    }
+    else
+    {
+        Enemy->MoveTarget = Tanks_PathWaypointTo(Enemy, Spot, true);
+    }
+    *DesiredHeading = Tanks_AngleTo(Enemy->Position, Enemy->MoveTarget);
+
+    TurnNeeded = Tanks_NormalizeAngle((int32_t)*DesiredHeading - Enemy->Heading);
+    if((TurnNeeded > MINELAYER_PIVOT_ANGLE) || (TurnNeeded < -MINELAYER_PIVOT_ANGLE))
+    {
+        return 0;
+    }
+
+    /* Ease off on the last stretch so it stops on the spot rather than overshooting. */
+    return (int16_t)Tanks_Clamp32((int32_t)Distance * 12, 300, MINELAYER_SPEED);
 }
 
 static void Tanks_UpdateEnemy(Tanks_TankTypeDef *Enemy, uint8_t EnemyIndex, uint32_t DeltaMilliseconds)
@@ -1320,10 +1810,10 @@ static void Tanks_UpdateEnemy(Tanks_TankTypeDef *Enemy, uint8_t EnemyIndex, uint
     const uint32_t PlayerDistance = Tanks_Game.Player.Active ? Tanks_DistancePixels(Enemy->Position, Tanks_Game.Player.Position) : UINT32_MAX;
     int16_t DesiredHeading = Enemy->Heading;
     int16_t AimHeading = Tanks_AngleTo(Enemy->Position, Tanks_Game.Player.Position);
-    int16_t Error;
     int16_t AimError;
     int16_t Speed = 450;
     bool MayFire = false;
+    bool Direct = false;
 
     if(!Enemy->Awake || !Tanks_Game.Player.Active)
     {
@@ -1338,7 +1828,7 @@ static void Tanks_UpdateEnemy(Tanks_TankTypeDef *Enemy, uint8_t EnemyIndex, uint
     {
         Enemy->AiThinkMilliseconds -= (uint16_t)DeltaMilliseconds;
     }
-    else
+    else if(Type != TANKS_ENEMY_MINELAYER)
     {
         Tanks_SelectEnemyMode(Enemy, EnemyIndex, PlayerDistance);
     }
@@ -1360,7 +1850,7 @@ static void Tanks_UpdateEnemy(Tanks_TankTypeDef *Enemy, uint8_t EnemyIndex, uint
         }
         else
         {
-            Enemy->MoveTarget = Tanks_PathWaypointToPlayer(Enemy);
+            Enemy->MoveTarget = Tanks_PathWaypointTo(Enemy, Tanks_Game.Player.Position, false);
             DesiredHeading = Tanks_AngleTo(Enemy->Position, Enemy->MoveTarget);
             Speed = 650;
 
@@ -1382,6 +1872,11 @@ static void Tanks_UpdateEnemy(Tanks_TankTypeDef *Enemy, uint8_t EnemyIndex, uint
             }
         }
     }
+    else if(Type == TANKS_ENEMY_MINELAYER)
+    {
+        Speed = Tanks_PlanMinelayer(Enemy, EnemyIndex, &DesiredHeading, &Direct);
+        AimHeading = Enemy->Heading;
+    }
     else
     {
         /*
@@ -1390,13 +1885,13 @@ static void Tanks_UpdateEnemy(Tanks_TankTypeDef *Enemy, uint8_t EnemyIndex, uint
          * ricochet tank, a bounce along its heading would hit the player).
          */
         DesiredHeading = Tanks_AngleTo(Enemy->Position, Enemy->MoveTarget);
-        Speed = Type == TANKS_ENEMY_MINELAYER ? 520 : 430;
+        Speed = 430;
         if(Tanks_DistancePixels(Enemy->Position, Enemy->MoveTarget) < 42U)
         {
             Enemy->AiThinkMilliseconds = 0U;
         }
         AimHeading = Enemy->Heading;
-        if((Type != TANKS_ENEMY_MINELAYER) && (Enemy->ReloadMilliseconds == 0U))
+        if(Enemy->ReloadMilliseconds == 0U)
         {
             if(Ricochet)
             {
@@ -1424,64 +1919,15 @@ static void Tanks_UpdateEnemy(Tanks_TankTypeDef *Enemy, uint8_t EnemyIndex, uint
         Speed = 300;
     }
 
-    if((Speed > 0) && Tanks_EnemyProbeBlocked(Enemy, DesiredHeading, 55))
+    if(Direct)
     {
-        const int16_t LeftHeading = Tanks_NormalizeAngle((int32_t)DesiredHeading - 560);
-        const int16_t RightHeading = Tanks_NormalizeAngle((int32_t)DesiredHeading + 560);
-        const bool LeftBlocked = Tanks_EnemyProbeBlocked(Enemy, LeftHeading, 66);
-        const bool RightBlocked = Tanks_EnemyProbeBlocked(Enemy, RightHeading, 66);
-        if(LeftBlocked && !RightBlocked)
-        {
-            DesiredHeading = RightHeading;
-        }
-        else if(RightBlocked && !LeftBlocked)
-        {
-            DesiredHeading = LeftHeading;
-        }
-        else
-        {
-            DesiredHeading = Tanks_NormalizeAngle((int32_t)Enemy->Heading + Enemy->AiTurnBias);
-        }
-        if(MayFire)
-        {
-            MayFire = false;
-            Speed = 0;
-        }
-    }
-    if(Enemy->StuckMilliseconds > 300U)
-    {
-        DesiredHeading = Tanks_NormalizeAngle((int32_t)Enemy->Heading + Enemy->AiTurnBias);
-        Speed = -420;
-        Enemy->AiThinkMilliseconds = 0U;
-        if(Enemy->StuckMilliseconds > 900U)
-        {
-            Enemy->AiTurnBias = (int16_t)-Enemy->AiTurnBias;
-        }
-    }
-
-    Error = Tanks_NormalizeAngle((int32_t)DesiredHeading - Enemy->Heading);
-    if(Error > 620)
-    {
-        Enemy->LeftTrack = 690;
-        Enemy->RightTrack = -690;
-    }
-    else if(Error < -620)
-    {
-        Enemy->LeftTrack = -690;
-        Enemy->RightTrack = 690;
+        Tanks_DriveTank(Enemy, DesiredHeading, Speed);
     }
     else
     {
-        Enemy->LeftTrack = (int16_t)Tanks_Clamp32(Speed + (Error * 2), -900, 900);
-        Enemy->RightTrack = (int16_t)Tanks_Clamp32(Speed - (Error * 2), -900, 900);
+        MayFire = Tanks_SteerTank(Enemy, DesiredHeading, Speed, MayFire);
     }
     (void)Tanks_MoveTank(Enemy, ENEMY_RADIUS, DeltaMilliseconds);
-
-    if((Type == TANKS_ENEMY_MINELAYER) && (Enemy->ReloadMilliseconds == 0U) &&
-       ((Enemy->LinearVelocity > 12) || (Enemy->LinearVelocity < -12)))
-    {
-        (void)Tanks_DropEnemyMine(Enemy, (uint8_t)(EnemyIndex + 1U));
-    }
 
     AimError = Tanks_NormalizeAngle((int32_t)Enemy->Heading - AimHeading);
     if(AimError < 0)
@@ -1523,7 +1969,7 @@ static bool Tanks_BulletHitsTank(Tanks_BulletTypeDef *Bullet)
                 continue;
             }
             Mine->Active = false;
-            Tanks_SpawnExplosion(Mine->Position, 7U);
+            Tanks_Detonate(Mine->Position, MINE_BLAST_RADIUS, 14U);
             return true;
         }
         for(uint8_t Index = 0U; Index < TANKS_MAX_ENEMIES; Index++)
@@ -1625,20 +2071,7 @@ static void Tanks_ExplodeRocket(Tanks_BulletTypeDef *Bullet)
         return;
     }
     Bullet->Active = false;
-    Tanks_SpawnExplosion(Position, 16U);
-    if((Bullet->Owner != PLAYER_OWNER) && Tanks_Game.Player.Active &&
-       (Tanks_DistancePixels(Position, Tanks_Game.Player.Position) <= ROCKET_BLAST_RADIUS))
-    {
-        Tanks_DamagePlayer(1U);
-    }
-    for(uint8_t Index = 0U; Index < TANKS_MAX_MINES; Index++)
-    {
-        Tanks_MineTypeDef *Mine = &Tanks_Game.Mines[Index];
-        if(Mine->Active && (Tanks_DistancePixels(Position, Mine->Position) <= ROCKET_BLAST_RADIUS))
-        {
-            Mine->Active = false;
-        }
-    }
+    Tanks_Detonate(Position, ROCKET_BLAST_RADIUS, 16U);
 }
 
 static void Tanks_UpdateBullet(Tanks_BulletTypeDef *Bullet, uint32_t DeltaMilliseconds)
@@ -1650,7 +2083,7 @@ static void Tanks_UpdateBullet(Tanks_BulletTypeDef *Bullet, uint32_t DeltaMillis
 
     if(Bullet->Type == TANKS_PROJECTILE_ROCKET)
     {
-        /* Rockets fly straight, never ricochet, and damage a small area when they impact. */
+        /* Rockets fly straight, never ricochet, and explode on impact, destroying every tank in the blast. */
         Bullet->Velocity.X = (Tanks_Sine(Bullet->Heading) * 225 * TANKS_FP_ONE) / TANKS_TRIG_ONE;
         Bullet->Velocity.Y = (-Tanks_Cosine(Bullet->Heading) * 225 * TANKS_FP_ONE) / TANKS_TRIG_ONE;
         Candidate = Bullet->Position;
@@ -1674,11 +2107,23 @@ static void Tanks_UpdateBullet(Tanks_BulletTypeDef *Bullet, uint32_t DeltaMillis
             Particle->Colour = TANKS_COLOUR_SMOKE;
             Particle->Active = true;
         }
+        /* A rocket goes off on touching any tank but the one that fired it. */
         if(Tanks_Game.Player.Active &&
            (Tanks_DistancePixels(Bullet->Position, Tanks_Game.Player.Position) <= PLAYER_RADIUS + BULLET_RADIUS))
         {
             Tanks_ExplodeRocket(Bullet);
             return;
+        }
+        for(uint8_t Index = 0U; Index < TANKS_MAX_ENEMIES; Index++)
+        {
+            const Tanks_TankTypeDef *Enemy = &Tanks_Game.Enemies[Index];
+
+            if(Enemy->Active && (Bullet->Owner != (uint8_t)(Index + 1U)) &&
+               (Tanks_DistancePixels(Bullet->Position, Enemy->Position) <= ENEMY_RADIUS + BULLET_RADIUS))
+            {
+                Tanks_ExplodeRocket(Bullet);
+                return;
+            }
         }
         if(Bullet->LifeMilliseconds > DeltaMilliseconds)
         {
@@ -1751,6 +2196,48 @@ static void Tanks_UpdateBullet(Tanks_BulletTypeDef *Bullet, uint32_t DeltaMillis
     }
 }
 
+/* An armed mine goes off when any tank drives onto it. */
+/*
+ * Whether a tank, numbered Owner, is on the mine. Enemies know where their
+ * side's mines are and never set them off. The player can drive away from a
+ * mine just laid: it only counts once the player has been clear of it.
+ */
+static bool Tanks_MineTouchedBy(Tanks_MineTypeDef *Mine, const Tanks_TankTypeDef *Tank, uint8_t Owner, uint32_t Reach)
+{
+    const bool Touching = Tank->Active && (Tanks_DistancePixels(Mine->Position, Tank->Position) <= Reach);
+
+    if((Owner != PLAYER_OWNER) && (Mine->Owner != PLAYER_OWNER))
+    {
+        return false;
+    }
+
+    if((Owner == Mine->Owner) && !Mine->OwnerClear)
+    {
+        Mine->OwnerClear = !Touching;
+        return false;
+    }
+
+    return Touching;
+}
+
+static bool Tanks_MineTriggered(Tanks_MineTypeDef *Mine)
+{
+    if((Tanks_Game.Player.InvulnerableMilliseconds == 0U) && Tanks_MineTouchedBy(Mine, &Tanks_Game.Player, PLAYER_OWNER, 31U))
+    {
+        return true;
+    }
+
+    for(uint8_t Index = 0U; Index < TANKS_MAX_ENEMIES; Index++)
+    {
+        if(Tanks_MineTouchedBy(Mine, &Tanks_Game.Enemies[Index], (uint8_t)(Index + 1U), 29U))
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 static void Tanks_UpdateMines(uint32_t DeltaMilliseconds)
 {
     for(uint8_t MineIndex = 0U; MineIndex < TANKS_MAX_MINES; MineIndex++)
@@ -1760,7 +2247,10 @@ static void Tanks_UpdateMines(uint32_t DeltaMilliseconds)
         {
             continue;
         }
-        if(Mine->LifeMilliseconds > DeltaMilliseconds)
+        if(Mine->LifeMilliseconds == MINE_LIFE_FOREVER)
+        {
+        }
+        else if(Mine->LifeMilliseconds > DeltaMilliseconds)
         {
             Mine->LifeMilliseconds -= (uint16_t)DeltaMilliseconds;
         }
@@ -1780,18 +2270,26 @@ static void Tanks_UpdateMines(uint32_t DeltaMilliseconds)
             TanksAudio_PlayMineArmed(Mine->Position);
         }
         Mine->ArmMilliseconds = 0U;
-        if(Tanks_Game.Player.Active && (Tanks_Game.Player.InvulnerableMilliseconds == 0U) &&
-           (Tanks_DistancePixels(Mine->Position, Tanks_Game.Player.Position) <= 31U))
+        if(Tanks_MineTriggered(Mine))
         {
             Mine->Active = false;
-            Tanks_SpawnExplosion(Mine->Position, 14U);
-            Tanks_DamagePlayer(1U);
+            Tanks_Detonate(Mine->Position, MINE_BLAST_RADIUS, 14U);
         }
     }
 }
 
 static void Tanks_UpdateEffects(uint32_t DeltaMilliseconds)
 {
+    for(uint8_t Index = 0U; Index < TANKS_MAX_BLASTS; Index++)
+    {
+        Tanks_BlastTypeDef *Blast = &Tanks_Game.Blasts[Index];
+
+        if(Blast->Active)
+        {
+            Blast->LifeMilliseconds = (Blast->LifeMilliseconds > DeltaMilliseconds) ? (uint16_t)(Blast->LifeMilliseconds - DeltaMilliseconds) : 0U;
+            Blast->Active = Blast->LifeMilliseconds > 0U;
+        }
+    }
     for(uint8_t Index = 0U; Index < TANKS_MAX_PARTICLES; Index++)
     {
         Tanks_ParticleTypeDef *Particle = &Tanks_Game.Particles[Index];
@@ -1928,7 +2426,7 @@ void Tanks_Simulate(uint32_t DeltaMilliseconds)
     {
         Tanks_Game.CameraKickMilliseconds = 0U;
     }
-    if(Tanks_Game.Screen != TANKS_SCREEN_PLAYING)
+    if((Tanks_Game.Screen != TANKS_SCREEN_PLAYING) || Tanks_Game.Demo)
     {
         return;
     }
@@ -1949,6 +2447,91 @@ void Tanks_Simulate(uint32_t DeltaMilliseconds)
         else
         {
             Tanks_StartWave((uint16_t)(Tanks_Game.Wave + 1U));
+        }
+    }
+}
+
+/*
+ * The launcher preview's demo battle: one arena after another, the player's
+ * tank on autopilot against a single hunter on the enemy AI.
+ */
+void Tanks_StartDemo(void)
+{
+    static const Tanks_EnemyTypeDef Hunters[3] = { TANKS_ENEMY_HUNTER_DIRECT, TANKS_ENEMY_HUNTER_RICOCHET, TANKS_ENEMY_HUNTER_ROCKET };
+    /* Cover in the open field around the fort: X, Y, length (horizontal). */
+    static const uint8_t Cover[4][3] = { { 7U, 5U, 3U }, { 22U, 5U, 3U }, { 7U, 13U, 3U }, { 22U, 13U, 3U } };
+    const bool Swap = (Tanks_Game.DemoRound & 1U) != 0U;
+    Tanks_TankTypeDef *Enemy = NULL;
+
+    Tanks_Game.Demo = true;
+    Tanks_Game.DemoRound = (uint8_t)((Tanks_Game.DemoRound % CAMPAIGN_WAVES) + 1U);
+    Tanks_Game.DemoRestartMilliseconds = 0U;
+    Tanks_Game.Lives = 1U;
+    Tanks_StartWave(1U);
+    Tanks_Game.EnemyRound = CAMPAIGN_WAVES;
+    Tanks_Game.Screen = TANKS_SCREEN_PLAYING;
+    Tanks_Game.MineSpotCount = 0U;
+
+    /* An open field walled at its edges, with the fort in the middle and a little cover. */
+    for(uint8_t Y = 0U; Y < TANKS_MAP_HEIGHT; Y++)
+    {
+        for(uint8_t X = 0U; X < TANKS_MAP_WIDTH; X++)
+        {
+            const bool Border = (X == 0U) || (Y == 0U) || (X == TANKS_MAP_WIDTH - 1U) || (Y == TANKS_MAP_HEIGHT - 1U);
+            const bool Fort = (X >= TANKS_DEMO_FORT_X) && (X < TANKS_DEMO_FORT_X + TANKS_DEMO_FORT_WIDTH) &&
+                              (Y >= TANKS_DEMO_FORT_Y) && (Y < TANKS_DEMO_FORT_Y + TANKS_DEMO_FORT_HEIGHT);
+            Tanks_Game.Tiles[Y][X] = (Border || Fort) ? TANKS_TILE_WALL : TANKS_TILE_FLOOR;
+            Tanks_Game.TileDamage[Y][X] = 0U;
+        }
+    }
+    for(uint8_t Block = 0U; Block < 4U; Block++)
+    {
+        for(uint8_t Index = 0U; Index < Cover[Block][2]; Index++)
+        {
+            Tanks_Game.Tiles[Cover[Block][1]][Cover[Block][0] + Index] = TANKS_TILE_WALL;
+        }
+    }
+
+    /* The two tanks start in opposite corners, swapping sides each battle. */
+    Tanks_Game.Player.Position.X = TANKS_FP(((Swap ? 27 : 4) * TANKS_TILE_SIZE) + (TANKS_TILE_SIZE / 2));
+    Tanks_Game.Player.Position.Y = TANKS_FP(((Swap ? 3 : 15) * TANKS_TILE_SIZE) + (TANKS_TILE_SIZE / 2));
+    Tanks_Game.Player.Heading = Swap ? 1800 : 0;
+    Tanks_Game.Player.HomePosition = Tanks_Game.Player.Position;
+    Tanks_Game.Player.MoveTarget = Tanks_Game.Player.Position;
+
+    for(uint8_t Index = 0U; Index < TANKS_MAX_ENEMIES; Index++)
+    {
+        if(Tanks_Game.Enemies[Index].Active && (Enemy == NULL))
+        {
+            Enemy = &Tanks_Game.Enemies[Index];
+        }
+        else
+        {
+            Tanks_Game.Enemies[Index].Active = false;
+        }
+    }
+    if(Enemy != NULL)
+    {
+        Enemy->Type = (uint8_t)Hunters[Tanks_Game.DemoRound % 3U];
+        Enemy->Position.X = TANKS_FP(((Swap ? 4 : 27) * TANKS_TILE_SIZE) + (TANKS_TILE_SIZE / 2));
+        Enemy->Position.Y = TANKS_FP(((Swap ? 15 : 3) * TANKS_TILE_SIZE) + (TANKS_TILE_SIZE / 2));
+        Enemy->Heading = Swap ? 0 : 1800;
+        Enemy->HomePosition = Enemy->Position;
+        Enemy->MoveTarget = Enemy->Position;
+    }
+}
+
+void Tanks_UpdateDemo(uint32_t DeltaMilliseconds)
+{
+    Tanks_Simulate(DeltaMilliseconds);
+
+    if(!Tanks_Game.Player.Active || (Tanks_CountActiveEnemies() == 0U))
+    {
+        Tanks_Game.DemoRestartMilliseconds = (uint16_t)(Tanks_Game.DemoRestartMilliseconds + DeltaMilliseconds);
+
+        if(Tanks_Game.DemoRestartMilliseconds >= DEMO_RESTART_MS)
+        {
+            Tanks_StartDemo();
         }
     }
 }

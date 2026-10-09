@@ -1,6 +1,10 @@
 /**
  * @file tanks_render.c
- * @brief Fixed full-arena camera and low-cost vector artwork for TANKS.
+ * @brief Fixed full-arena camera and low-cost vector artwork for DualTrack.
+ *
+ * The look is a proving ground at night: dark concrete under a faint
+ * tactical grid, steel barriers with amber hazard dashes, and the player's
+ * two treads leaving trails that fade behind it.
  */
 
 #include "tanks_internal.h"
@@ -8,6 +12,18 @@
 #include "open_sans.h"
 
 #include <stddef.h>
+
+/* -------------------------------------------------------------------------- */
+/* Private configuration                                                      */
+/* -------------------------------------------------------------------------- */
+
+/* Spacing of the tactical grid on the arena floor, and of the barriers' hazard dashes. */
+#define TANKS_GRID_SIZE       (40)
+#define TANKS_HAZARD_SPACING  (16)
+#define TANKS_HAZARD_LENGTH   (8U)
+
+/* A tread mark is fresh for this long, then fades. */
+#define TANKS_TRAIL_FRESH_MS  (4500U)
 
 /* -------------------------------------------------------------------------- */
 /* Private functions                                                          */
@@ -67,7 +83,7 @@ void Tanks_WorldToScreen(Tanks_VectorTypeDef World, int16_t *ScreenX, int16_t *S
 
 static void Tanks_DrawOutsidePattern(Render_TargetTypeDef *Target)
 {
-    Render_Clear(Target, TANKS_COLOUR_FLOOR_DARK);
+    Render_Clear(Target, TANKS_COLOUR_OUTSIDE);
 }
 
 static uint8_t Tanks_RenderTileAt(int16_t X, int16_t Y)
@@ -79,20 +95,24 @@ static uint8_t Tanks_RenderTileAt(int16_t X, int16_t Y)
     return Tanks_Game.Tiles[Y][X];
 }
 
+/* Dark concrete under a faint tactical grid, with brighter marks where the lines cross. */
 static void Tanks_DrawArenaFloor(Render_TargetTypeDef *Target)
 {
     Render_Box(Target, TANKS_ARENA_SCREEN_X, TANKS_ARENA_SCREEN_Y, TANKS_WORLD_WIDTH, TANKS_WORLD_HEIGHT, TANKS_COLOUR_FLOOR);
-    for(uint8_t Row = 1U; Row < 5U; Row++)
+    for(int16_t X = TANKS_GRID_SIZE; X < (int16_t)TANKS_WORLD_WIDTH; X += TANKS_GRID_SIZE)
     {
-        const int16_t Y = (int16_t)((TANKS_WORLD_HEIGHT * Row) / 5U);
-        Render_Box(Target, 0, Y, TANKS_WORLD_WIDTH, 1U, TANKS_COLOUR_GROUT);
-        for(uint8_t Join = 0U; Join < 5U; Join++)
+        Render_Box(Target, (int16_t)(TANKS_ARENA_SCREEN_X + X), TANKS_ARENA_SCREEN_Y, 1U, TANKS_WORLD_HEIGHT, TANKS_COLOUR_GROUT);
+    }
+    for(int16_t Y = TANKS_GRID_SIZE; Y < (int16_t)TANKS_WORLD_HEIGHT; Y += TANKS_GRID_SIZE)
+    {
+        Render_Box(Target, TANKS_ARENA_SCREEN_X, (int16_t)(TANKS_ARENA_SCREEN_Y + Y), TANKS_WORLD_WIDTH, 1U, TANKS_COLOUR_GROUT);
+        for(int16_t X = TANKS_GRID_SIZE; X < (int16_t)TANKS_WORLD_WIDTH; X += TANKS_GRID_SIZE)
         {
-            const int16_t X = (int16_t)(((Join * 173U) + (Row * 79U)) % TANKS_WORLD_WIDTH);
-            Render_Box(Target, X, (int16_t)(Y - (TANKS_WORLD_HEIGHT / 5)), 1U, (uint16_t)(TANKS_WORLD_HEIGHT / 5), TANKS_COLOUR_FLOOR_DARK);
+            Render_Box(Target, (int16_t)(TANKS_ARENA_SCREEN_X + X - 3), (int16_t)(TANKS_ARENA_SCREEN_Y + Y), 7U, 1U, TANKS_COLOUR_FLOOR_LIGHT);
+            Render_Box(Target, (int16_t)(TANKS_ARENA_SCREEN_X + X), (int16_t)(TANKS_ARENA_SCREEN_Y + Y - 3), 1U, 7U, TANKS_COLOUR_FLOOR_LIGHT);
         }
     }
-    Render_Box(Target, 0, TANKS_WORLD_HEIGHT, RENDER_WIDTH, (uint16_t)(RENDER_HEIGHT - TANKS_WORLD_HEIGHT), TANKS_COLOUR_FLOOR_DARK);
+    Render_Box(Target, 0, TANKS_WORLD_HEIGHT, RENDER_WIDTH, (uint16_t)(RENDER_HEIGHT - TANKS_WORLD_HEIGHT), TANKS_COLOUR_OUTSIDE);
 }
 
 static void Tanks_DrawPitRun(Render_TargetTypeDef *Target, uint8_t StartX, uint8_t Y, uint8_t Length)
@@ -122,6 +142,21 @@ static void Tanks_DrawWallSegment(Render_TargetTypeDef *Target, uint8_t StartX, 
     Render_Box(Target, (int16_t)(ScreenX + 3), (int16_t)(ScreenY + 9), 4U, (uint16_t)(Height - 13U), TANKS_COLOUR_WALL_LIGHT);
     Render_Box(Target, (int16_t)(ScreenX + 3), (int16_t)(ScreenY + Height - 7U), (uint16_t)(Width - 6U), 4U, TANKS_COLOUR_WALL_SHADOW);
     Render_Box(Target, (int16_t)(ScreenX + Width - 7U), (int16_t)(ScreenY + 9), 4U, (uint16_t)(Height - 13U), TANKS_COLOUR_WALL_SHADOW);
+    /* Amber hazard dashes along the barrier's top edge. */
+    if(Vertical)
+    {
+        for(int16_t Offset = 9; Offset + (int16_t)TANKS_HAZARD_LENGTH < (int16_t)Height - 6; Offset += TANKS_HAZARD_SPACING)
+        {
+            Render_Box(Target, (int16_t)(ScreenX + (int16_t)(Width / 2U) - 1), (int16_t)(ScreenY + Offset), 3U, TANKS_HAZARD_LENGTH, TANKS_COLOUR_HAZARD);
+        }
+    }
+    else
+    {
+        for(int16_t Offset = 9; Offset + (int16_t)TANKS_HAZARD_LENGTH < (int16_t)Width - 6; Offset += TANKS_HAZARD_SPACING)
+        {
+            Render_Box(Target, (int16_t)(ScreenX + Offset), (int16_t)(ScreenY + (int16_t)(Height / 2U) - 1), TANKS_HAZARD_LENGTH, 3U, TANKS_COLOUR_HAZARD);
+        }
+    }
     for(uint8_t Block = 1U; Block < Length; Block++)
     {
         if(Vertical)
@@ -214,7 +249,16 @@ static void Tanks_DrawTrackMark(Render_TargetTypeDef *Target, const Tanks_TrackM
     {
         return;
     }
-    Tanks_DrawRotatedRect(Target, X, Y, 12, 1, Angle, TANKS_COLOUR_FLOOR_DARK);
+    /* One link of each tread, either side of the hull: two trails that fade with age. */
+    {
+        const uint8_t Colour = (Mark->LifeMilliseconds > TANKS_TRAIL_FRESH_MS) ? TANKS_COLOUR_TRAIL : TANKS_COLOUR_TRAIL_OLD;
+        Render_PointTypeDef Left;
+        Render_PointTypeDef Right;
+        Tanks_RotateLocalPoint(X, Y, -18, 0, Angle, &Left);
+        Tanks_RotateLocalPoint(X, Y, 18, 0, Angle, &Right);
+        Tanks_DrawRotatedRect(Target, Left.X, Left.Y, 3, 2, Angle, Colour);
+        Tanks_DrawRotatedRect(Target, Right.X, Right.Y, 3, 2, Angle, Colour);
+    }
 }
 
 static bool Tanks_RenderEnemyUsesRocket(Tanks_EnemyTypeDef Type)
@@ -251,8 +295,9 @@ static void Tanks_TankDimensions(const Tanks_TankTypeDef *Tank, bool Player, int
     }
 }
 
+/* Gun is false for an unarmed tank (the mine-layer), drawn without a barrel. */
 static void Tanks_DrawTankBody(Render_TargetTypeDef *Target, int16_t CentreX, int16_t CentreY, int16_t HullAngle, int16_t TurretAngle,
-                               int16_t HalfWidth, int16_t HalfHeight, uint8_t Body, uint8_t Light, uint8_t Dark, bool Boss)
+                               int16_t HalfWidth, int16_t HalfHeight, uint8_t Body, uint8_t Light, uint8_t Dark, bool Boss, bool Gun)
 {
     Render_PointTypeDef Hull[6];
     Render_PointTypeDef LeftCentre;
@@ -285,6 +330,10 @@ static void Tanks_DrawTankBody(Render_TargetTypeDef *Target, int16_t CentreX, in
 
     Render_FillCircle(Target, CentreX, CentreY, (uint16_t)(Boss ? 8 : 7), Dark);
     Render_FillCircle(Target, CentreX, (int16_t)(CentreY - 1), (uint16_t)(Boss ? 6 : 5), Light);
+    if(!Gun)
+    {
+        return;
+    }
     Tanks_RotateLocalPoint(CentreX, CentreY, 0, -4, HullAngle, &BarrelBase);
     Tanks_RotateLocalPoint(CentreX, CentreY, 0, (int16_t)-BarrelLength, HullAngle, &BarrelTip);
     Render_DrawLine(Target, BarrelBase.X, BarrelBase.Y, BarrelTip.X, BarrelTip.Y, (uint16_t)(2 * (Boss ? 4 : 3)), Dark);
@@ -313,19 +362,19 @@ static void Tanks_DrawTank(Render_TargetTypeDef *Target, const Tanks_TankTypeDef
         switch(Type)
         {
             case TANKS_ENEMY_RICOCHET:
-                Body = TANKS_COLOUR_SUCCESS;
+                Body = TANKS_COLOUR_PLAYER_LASER;
                 Light = TANKS_COLOUR_WHITE;
                 Dark = TANKS_COLOUR_TRACK;
                 break;
             case TANKS_ENEMY_MINELAYER:
-                Body = TANKS_COLOUR_MINE;
-                Light = TANKS_COLOUR_WARNING;
+                Body = TANKS_COLOUR_DANGER;
+                Light = TANKS_COLOUR_MINE;
                 Dark = TANKS_COLOUR_TRACK;
                 break;
             case TANKS_ENEMY_ROCKET:
-                Body = TANKS_COLOUR_DANGER;
-                Light = TANKS_COLOUR_FIRE_LIGHT;
-                Dark = TANKS_COLOUR_ENEMY_DARK;
+                Body = TANKS_COLOUR_MUTED;
+                Light = TANKS_COLOUR_WHITE;
+                Dark = TANKS_COLOUR_SMOKE_DARK;
                 break;
             case TANKS_ENEMY_HUNTER_DIRECT:
                 Body = TANKS_COLOUR_ENEMY_LIGHT;
@@ -333,14 +382,14 @@ static void Tanks_DrawTank(Render_TargetTypeDef *Target, const Tanks_TankTypeDef
                 Dark = TANKS_COLOUR_ENEMY_DARK;
                 break;
             case TANKS_ENEMY_HUNTER_RICOCHET:
-                Body = TANKS_COLOUR_PLAYER_LASER;
-                Light = TANKS_COLOUR_SUCCESS;
-                Dark = TANKS_COLOUR_TRACK;
+                Body = TANKS_COLOUR_HQ_LIGHT;
+                Light = TANKS_COLOUR_WHITE;
+                Dark = TANKS_COLOUR_HQ_DARK;
                 break;
             case TANKS_ENEMY_HUNTER_ROCKET:
-                Body = TANKS_COLOUR_BLACK;
-                Light = TANKS_COLOUR_DANGER;
-                Dark = TANKS_COLOUR_SMOKE_DARK;
+                Body = TANKS_COLOUR_FIRE;
+                Light = TANKS_COLOUR_FIRE_LIGHT;
+                Dark = TANKS_COLOUR_BLACK;
                 break;
             case TANKS_ENEMY_DUMB:
             default:
@@ -356,7 +405,7 @@ static void Tanks_DrawTank(Render_TargetTypeDef *Target, const Tanks_TankTypeDef
         }
     }
     Tanks_DrawTankBody(Target, CentreX, CentreY, HullAngle, TurretAngle, HalfWidth, HalfHeight, Body, Light, Dark,
-                       !Player && (Type == TANKS_ENEMY_HUNTER_ROCKET));
+                       !Player && (Type == TANKS_ENEMY_HUNTER_ROCKET), Player || (Type != TANKS_ENEMY_MINELAYER));
     if(!Player && (Type == TANKS_ENEMY_MINELAYER))
     {
         for(int16_t Offset = -7; Offset <= 7; Offset += 7)
@@ -407,7 +456,8 @@ static void Tanks_DrawWreck(Render_TargetTypeDef *Target, const Tanks_WreckTypeD
                        Wreck->Heading,
                        Tanks_NormalizeAngle((int32_t)Wreck->TurretHeading + 180),
                        HalfWidth, HalfHeight, TANKS_COLOUR_WRECK, TANKS_COLOUR_SMOKE_DARK, TANKS_COLOUR_BLACK,
-                       (Tank.Type == TANKS_ENEMY_HUNTER_ROCKET) || (Tank.Type == TANKS_ENEMY_HUNTER_RICOCHET));
+                       (Tank.Type == TANKS_ENEMY_HUNTER_ROCKET) || (Tank.Type == TANKS_ENEMY_HUNTER_RICOCHET),
+                       PlayerWreck || (Tank.Type != TANKS_ENEMY_MINELAYER));
     Render_FillCircle(Target, (int16_t)(X + 3), (int16_t)(Y - 2), (uint16_t)(4), TANKS_COLOUR_BLACK);
 }
 
@@ -540,13 +590,28 @@ static void Tanks_DrawWorldEntities(Render_TargetTypeDef *Target)
         }
         else
         {
-            /* A dark outline keeps the trail and shell visible against the sand. */
+            /* A dark outline keeps the trail and shell crisp against the grid. */
             Render_DrawLine(Target, TrailX, TrailY, X, Y, (uint16_t)(2 * (2)), TANKS_COLOUR_SHADOW);
             Render_DrawLine(Target, TrailX, TrailY, X, Y, (uint16_t)(2 * (1)), Colour);
             Render_FillCircle(Target, X, Y, (uint16_t)(5), TANKS_COLOUR_SHADOW);
             Render_FillCircle(Target, X, Y, (uint16_t)(3), Colour);
             Render_FillCircle(Target, X, Y, (uint16_t)(1), TANKS_COLOUR_WHITE);
         }
+    }
+    /* Shockwaves: a ring racing out to the blast radius, thinning as it goes. */
+    for(uint8_t Index = 0U; Index < TANKS_MAX_BLASTS; Index++)
+    {
+        const Tanks_BlastTypeDef *Blast = &Tanks_Game.Blasts[Index];
+        const uint32_t Elapsed = TANKS_BLAST_RING_MS - Blast->LifeMilliseconds;
+        int16_t X;
+        int16_t Y;
+        if(!Blast->Active)
+        {
+            continue;
+        }
+        Tanks_WorldToScreen(Blast->Position, &X, &Y);
+        Render_DrawCircle(Target, X, Y, (uint16_t)(8U + (((uint32_t)Blast->Radius - 8U) * Elapsed) / TANKS_BLAST_RING_MS),
+                          (uint16_t)(1U + ((3U * Blast->LifeMilliseconds) / TANKS_BLAST_RING_MS)), (Elapsed < (TANKS_BLAST_RING_MS / 2U)) ? TANKS_COLOUR_FIRE_LIGHT : TANKS_COLOUR_SMOKE);
     }
     for(uint8_t Index = 0U; Index < TANKS_MAX_PARTICLES; Index++)
     {
@@ -565,8 +630,8 @@ static void Tanks_DrawWorldEntities(Render_TargetTypeDef *Target)
 static const char *Tanks_RoundName(uint16_t Wave)
 {
     static const char *const Names[10] = {
-        "TRAINING ROOMS", "TWIN WINGS", "FOUR CHAMBERS", "NESTED HALLS", "SPLIT HOUSE",
-        "FIVE ROOMS", "CENTRAL COURT", "OFFSET SUITES", "ROCKET LAB", "COMMAND BUNKER"
+        "SHAKEDOWN YARD", "TWIN BAYS", "FOUR LOCKS", "NESTED DEPOT", "SPLIT HANGAR",
+        "FIVE CELLS", "CENTRAL PAD", "OFFSET BUNKERS", "LAUNCH RANGE", "CONTROL BLOCK"
     };
     return Names[(Wave - 1U) % 10U];
 }
@@ -582,21 +647,20 @@ static void Tanks_DrawHud(Render_TargetTypeDef *Target)
     Render_FillCircle(Target, 770, 24, (uint16_t)(3), TANKS_COLOUR_WHITE);
 }
 
+/* Sector start: a slim banner with the sector, its name, and one pip per enemy. */
 static void Tanks_DrawRoundOverlay(Render_TargetTypeDef *Target)
 {
     const uint8_t EnemyCount = Tanks_CountActiveEnemies();
-    char Number[8];
-    char Round[16];
-    char Enemies[16];
-    Tanks_FormatUnsigned(Number, sizeof(Number), Tanks_Game.Wave);
-    Tanks_JoinText(Round, sizeof(Round), "ROUND ", Number);
-    Tanks_FormatUnsigned(Number, sizeof(Number), EnemyCount);
-    Tanks_JoinText(Enemies, sizeof(Enemies), Number, EnemyCount == 1U ? " ENEMY" : " ENEMIES");
-    Render_Box(Target, 230, 140, 340U, 150U, TANKS_COLOUR_PANEL);
-    Render_Box(Target, 230, 140, 340U, 5U, TANKS_COLOUR_PLAYER_LIGHT);
-    Render_DrawTextAligned(Target, &OpenSans36, Round, 400, 160, RENDER_ALIGN_CENTRE, TANKS_COLOUR_TEXT);
-    Render_DrawTextAligned(Target, &OpenSans20, Tanks_RoundName(Tanks_Game.ArenaRound), 400, 212, RENDER_ALIGN_CENTRE, TANKS_COLOUR_PLAYER_LIGHT);
-    Render_DrawTextAligned(Target, &OpenSans20, Enemies, 400, 244, RENDER_ALIGN_CENTRE, TANKS_COLOUR_MUTED);
+    const int16_t PipStart = (int16_t)(400 - (((int16_t)EnemyCount - 1) * 9));
+    Render_Box(Target, 0, 168, RENDER_WIDTH, 112U, TANKS_COLOUR_PANEL);
+    Render_Box(Target, 0, 168, RENDER_WIDTH, 2U, TANKS_COLOUR_PLAYER);
+    Render_Box(Target, 0, 278, RENDER_WIDTH, 2U, TANKS_COLOUR_PLAYER);
+    Render_DrawTextf(Target, &OpenSans16, 140, 186, TANKS_COLOUR_PLAYER_LIGHT, "SECTOR %02u", (unsigned int)Tanks_Game.Wave);
+    Render_DrawTextAligned(Target, &OpenSans36, Tanks_RoundName(Tanks_Game.ArenaRound), 400, 200, RENDER_ALIGN_CENTRE, TANKS_COLOUR_TEXT);
+    for(uint8_t Index = 0U; Index < EnemyCount; Index++)
+    {
+        Tanks_DrawRotatedRect(Target, (int16_t)(PipStart + ((int16_t)Index * 18)), 258, 4, 4, 450, TANKS_COLOUR_ENEMY);
+    }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -625,9 +689,10 @@ void Tanks_DrawGame(Render_TargetTypeDef *Target)
     }
     else if(Tanks_Game.RoundComplete)
     {
-        Render_Box(Target, 252, 190, 296U, 90U, TANKS_COLOUR_PANEL);
-        Render_Box(Target, 252, 190, 296U, 6U, TANKS_COLOUR_SUCCESS);
-        Render_DrawTextAligned(Target, &OpenSans36, "ARENA CLEAR", 400, 208, RENDER_ALIGN_CENTRE, TANKS_COLOUR_SUCCESS);
+        Render_Box(Target, 0, 196, RENDER_WIDTH, 72U, TANKS_COLOUR_PANEL);
+        Render_Box(Target, 0, 196, RENDER_WIDTH, 2U, TANKS_COLOUR_SUCCESS);
+        Render_Box(Target, 0, 266, RENDER_WIDTH, 2U, TANKS_COLOUR_SUCCESS);
+        Render_DrawTextAligned(Target, &OpenSans36, "SECTOR SECURED", 400, 210, RENDER_ALIGN_CENTRE, TANKS_COLOUR_SUCCESS);
     }
     else if(Tanks_Game.MessageMilliseconds > 0U)
     {
@@ -638,7 +703,7 @@ void Tanks_DrawGame(Render_TargetTypeDef *Target)
 }
 
 /*
- * Service medal: a red, white and blue ribbon above a medal stamped with the
+ * Service medal: a teal, white and amber ribbon above a medal stamped with the
  * best round. Rounds 1-3 earn bronze, 4-6 silver and 7 onwards gold; with no
  * record yet the medal is plain grey and blank.
  */
@@ -676,7 +741,7 @@ static void Tanks_DrawMedal(Render_TargetTypeDef *Target, int16_t CentreX, int16
     Render_Box(Target, (int16_t)(RibbonX + 2), (int16_t)(RibbonY + 3), (uint16_t)RibbonWidth, (uint16_t)RibbonHeight, TANKS_COLOUR_SHADOW);
     Render_Box(Target, RibbonX, RibbonY, (uint16_t)Stripe, (uint16_t)RibbonHeight, TANKS_COLOUR_PLAYER);
     Render_Box(Target, (int16_t)(RibbonX + Stripe), RibbonY, (uint16_t)Stripe, (uint16_t)RibbonHeight, TANKS_COLOUR_WHITE);
-    Render_Box(Target, (int16_t)(RibbonX + (2 * Stripe)), RibbonY, (uint16_t)(RibbonWidth - (2 * Stripe)), (uint16_t)RibbonHeight, TANKS_COLOUR_HQ);
+    Render_Box(Target, (int16_t)(RibbonX + (2 * Stripe)), RibbonY, (uint16_t)(RibbonWidth - (2 * Stripe)), (uint16_t)RibbonHeight, TANKS_COLOUR_WARNING);
 
     Render_FillCircle(Target, (int16_t)(CentreX + 2), (int16_t)(CentreY + 3), (uint16_t)(Radius), TANKS_COLOUR_SHADOW);
     Render_FillCircle(Target, CentreX, CentreY, (uint16_t)(Radius), Rim);
@@ -694,9 +759,11 @@ void Tanks_DrawTitle(Render_TargetTypeDef *Target)
 {
     Tanks_TankTypeDef Preview = Tanks_Game.Player;
     Tanks_DrawOutsidePattern(Target);
-    Render_Box(Target, 200, 110, 400U, 260U, TANKS_COLOUR_PANEL);
-    Render_Box(Target, 200, 110, 400U, 6U, TANKS_COLOUR_PLAYER_LIGHT);
-    Render_DrawTextAligned(Target, &OpenSans36, "TANKS", 400, 136, RENDER_ALIGN_CENTRE, TANKS_COLOUR_TEXT);
+    Tanks_DrawArenaFloor(Target);
+    Render_Box(Target, 200, 100, 400U, 270U, TANKS_COLOUR_PANEL);
+    Render_Box(Target, 200, 100, 400U, 2U, TANKS_COLOUR_PLAYER);
+    Render_DrawTextAligned(Target, &OpenSans36, "DUALTRACK", 400, 116, RENDER_ALIGN_CENTRE, TANKS_COLOUR_TEXT);
+    Render_DrawTextAligned(Target, &OpenSans16, "TWO SLIDERS. TWO TREADS.", 400, 162, RENDER_ALIGN_CENTRE, TANKS_COLOUR_PLAYER_LIGHT);
     Preview.Active = true;
     Preview.Type = 0U;
     Preview.FlashMilliseconds = 0U;
@@ -724,7 +791,7 @@ static void Tanks_DrawRecordEntry(Render_TargetTypeDef *Target)
     const uint16_t Wave = (uint16_t)Tanks_Clamp32(Tanks_Game.Wave, 0, 99);
     const bool FrameLit = ((Tanks_Game.ScreenMilliseconds / 400U) & 1U) == 0U;
     Render_Box(Target, 220, 110, 360U, 230U, TANKS_COLOUR_PANEL);
-    Render_Box(Target, 220, 110, 360U, 6U, TANKS_COLOUR_WARNING);
+    Render_Box(Target, 220, 110, 360U, 2U, TANKS_COLOUR_WARNING);
     Render_DrawTextAligned(Target, &OpenSans28, "NEW RECORD", 400, 120, RENDER_ALIGN_CENTRE, TANKS_COLOUR_WARNING);
     Tanks_DrawMedal(Target, 400, 196, 22, Wave, &OpenSans20, 15);
     for(uint8_t Index = 0U; Index < TANKS_CALLSIGN_LENGTH; Index++)
@@ -765,32 +832,31 @@ void Tanks_DrawEndScreen(Render_TargetTypeDef *Target)
         return;
     }
     Render_Box(Target, 220, 130, 360U, 210U, TANKS_COLOUR_PANEL);
-    Render_Box(Target, 220, 130, 360U, 6U, TANKS_COLOUR_DANGER);
-    Render_DrawTextAligned(Target, &OpenSans36, "GAME OVER", 400, 152, RENDER_ALIGN_CENTRE, TANKS_COLOUR_DANGER);
+    Render_Box(Target, 220, 130, 360U, 2U, TANKS_COLOUR_DANGER);
+    Render_DrawTextAligned(Target, &OpenSans36, "SIGNAL LOST", 400, 152, RENDER_ALIGN_CENTRE, TANKS_COLOUR_DANGER);
     Tanks_FormatUnsigned(Number, sizeof(Number), Tanks_Game.Wave);
-    Tanks_JoinText(Round, sizeof(Round), "ROUND ", Number);
+    Tanks_JoinText(Round, sizeof(Round), "SECTOR ", Number);
     Render_DrawTextAligned(Target, &OpenSans20, Round, 400, 210, RENDER_ALIGN_CENTRE, TANKS_COLOUR_MUTED);
     Render_DrawTextAligned(Target, &OpenSans20, "PRIMARY: PLAY AGAIN", 400, 262, RENDER_ALIGN_CENTRE, TANKS_COLOUR_WARNING);
     Render_DrawTextAligned(Target, &OpenSans20, "SECONDARY: MENU", 400, 294, RENDER_ALIGN_CENTRE, TANKS_COLOUR_MUTED);
 }
 
-void Tanks_DrawSplashArtwork(Render_TargetTypeDef *Target, uint32_t ElapsedMilliseconds)
+/* The launcher preview: the demo battle around the fort, with the title inside it. */
+void Tanks_DrawSplashArtwork(Render_TargetTypeDef *Target)
 {
-    const Render_RectTypeDef Bounds = { TANKS_SPLASH_X, TANKS_SPLASH_Y, TANKS_SPLASH_WIDTH, TANKS_SPLASH_HEIGHT };
-    Tanks_TankTypeDef Preview = Tanks_Game.Player;
-    const int16_t PatrolX = (int16_t)(TANKS_SPLASH_X + 100 + ((ElapsedMilliseconds / 5U) % 480U));
-    Render_FillRect(Target, &Bounds, TANKS_COLOUR_OUTSIDE_DARK);
-    for(int16_t Offset = -300; Offset <= 300; Offset += 80)
+    int16_t PlayerX;
+    int16_t PlayerY;
+    Tanks_DrawArenaGeometry(Target);
+    Tanks_DrawWorldEntities(Target);
+    if(Tanks_Game.Player.Active)
     {
-        Tanks_DrawRotatedRect(Target, 400, (int16_t)(240 + Offset), 380, 18, 450, ((Offset / 80) & 1) != 0 ? TANKS_COLOUR_OUTSIDE : TANKS_COLOUR_OUTSIDE_LIGHT);
+        Tanks_WorldToScreen(Tanks_Game.Player.Position, &PlayerX, &PlayerY);
+        Tanks_DrawTank(Target, &Tanks_Game.Player, PlayerX, PlayerY, Tanks_Game.Player.Heading, Tanks_Game.Player.TurretHeading, true);
     }
-    Render_Box(Target, 90, 92, 620U, 292U, TANKS_COLOUR_FLOOR);
-    Render_Box(Target, 90, 92, 620U, 5U, TANKS_COLOUR_PLAYER_LIGHT);
-    Render_DrawTextAligned(Target, &OpenSans36, "TANKS", 400, 130, RENDER_ALIGN_CENTRE, TANKS_COLOUR_PANEL);
-    Preview.Active = true;
-    Preview.Type = 0U;
-    Preview.FlashMilliseconds = 0U;
-    Render_FillCircle(Target, (int16_t)(PatrolX + 145), 318, (uint16_t)(4), TANKS_COLOUR_DANGER);
-    Tanks_DrawTank(Target, &Preview, PatrolX, 318, 900, 900, true);
-    Render_DrawLine(Target, 118, 350, 682, 350, (uint16_t)(2 * (2)), TANKS_COLOUR_GROUT);
+
+    /* The title, inside the fort's walls. */
+    Render_Box(Target, (int16_t)((TANKS_DEMO_FORT_X + 1U) * TANKS_TILE_SIZE), (int16_t)((TANKS_DEMO_FORT_Y + 1U) * TANKS_TILE_SIZE),
+               (uint16_t)((TANKS_DEMO_FORT_WIDTH - 2U) * TANKS_TILE_SIZE), (uint16_t)((TANKS_DEMO_FORT_HEIGHT - 2U) * TANKS_TILE_SIZE), TANKS_COLOUR_PANEL);
+    Render_DrawTextAligned(Target, &OpenSans36, "DUALTRACK", (int16_t)((TANKS_DEMO_FORT_X + (TANKS_DEMO_FORT_WIDTH / 2U)) * TANKS_TILE_SIZE),
+                           (int16_t)(((TANKS_DEMO_FORT_Y + (TANKS_DEMO_FORT_HEIGHT / 2U)) * TANKS_TILE_SIZE) - 25), RENDER_ALIGN_CENTRE, TANKS_COLOUR_TEXT);
 }

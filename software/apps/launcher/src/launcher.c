@@ -943,6 +943,12 @@ void Launcher_Render(Render_TargetTypeDef *Target)
 
     Launcher_UpdateSimulation(DeltaTimeMilliseconds);
 
+    /* Starting an app hands the screen over: the launcher draws nothing more, not even a preview. */
+    if(Launcher_Paused)
+    {
+        return;
+    }
+
     switch(Launcher_State.Phase)
     {
         case LAUNCHER_PHASE_WHITE:

@@ -1,6 +1,6 @@
 /**
  * @file tanks_audio.h
- * @brief Generated sound effects and jingles for TANKS.
+ * @brief Generated sound effects and jingles for DualTrack.
  *
  * Everything is synthesized while it plays, so the game stores no audio
  * data. Three mixer channels are used:
@@ -47,7 +47,7 @@ typedef enum
 void TanksAudio_Start(void);
 
 /**
- * @brief Silence every TANKS sound, for pause and shutdown.
+ * @brief Silence every DualTrack sound, for pause and shutdown.
  */
 void TanksAudio_Stop(void);
 

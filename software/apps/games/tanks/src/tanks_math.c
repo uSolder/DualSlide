@@ -1,6 +1,6 @@
 /**
  * @file tanks_math.c
- * @brief Deterministic fixed-point mathematics for TANKS.
+ * @brief Deterministic fixed-point mathematics for DualTrack.
  */
 
 #include "tanks_internal.h"

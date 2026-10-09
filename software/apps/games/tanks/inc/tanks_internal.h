@@ -1,6 +1,6 @@
 /**
  * @file tanks_internal.h
- * @brief Shared private types and contracts for TANKS.
+ * @brief Shared private types and contracts for DualTrack.
  */
 
 #ifndef TANKS_INTERNAL_H
@@ -40,8 +40,10 @@ extern "C" {
 #define TANKS_MAX_BULLETS       (96U)
 #define TANKS_MAX_PARTICLES     (144U)
 #define TANKS_MAX_MINES         (24U)
+#define TANKS_MAX_MINE_SPOTS    (12U)
 #define TANKS_MAX_TRACK_MARKS   (120U)
 #define TANKS_MAX_WRECKS        (48U)
+#define TANKS_MAX_BLASTS        (6U)
 #define TANKS_MAX_FLOATING_TEXT (16U)
 #define TANKS_MAXIMUM_DELTA_MS  (50U)
 #define TANKS_SPLASH_X          (60)
@@ -99,6 +101,9 @@ typedef enum
     TANKS_COLOUR_BLACK,
     TANKS_COLOUR_WRECK,
     TANKS_COLOUR_SCORCH,
+    TANKS_COLOUR_HAZARD,
+    TANKS_COLOUR_TRAIL,
+    TANKS_COLOUR_TRAIL_OLD,
     TANKS_COLOUR_COUNT
 } Tanks_ColourTypeDef;
 
@@ -187,6 +192,7 @@ typedef struct
     uint16_t StuckMilliseconds;
     int16_t AiTurnBias;
     uint8_t Mines;
+    uint8_t MineSpot;
     uint8_t Type;
     uint8_t Group;
     uint8_t AiMode;
@@ -226,6 +232,7 @@ typedef struct
     uint16_t ArmMilliseconds;
     uint16_t LifeMilliseconds;
     uint8_t Owner;
+    bool OwnerClear;
     bool Active;
 } Tanks_MineTypeDef;
 
@@ -245,6 +252,17 @@ typedef struct
     uint8_t Type;
     bool Active;
 } Tanks_WreckTypeDef;
+
+/**
+ * @brief An explosion's shockwave: a ring that grows to the blast radius and fades.
+ */
+typedef struct
+{
+    Tanks_VectorTypeDef Position;
+    uint16_t Radius;
+    uint16_t LifeMilliseconds;
+    bool Active;
+} Tanks_BlastTypeDef;
 
 typedef struct
 {
@@ -273,14 +291,20 @@ typedef struct
 typedef struct
 {
     Tanks_ScreenTypeDef Screen;
+    bool Demo;
+    uint8_t DemoRound;
+    uint16_t DemoRestartMilliseconds;
     Tanks_InputStateTypeDef Input;
     Tanks_TankTypeDef Player;
     Tanks_TankTypeDef Enemies[TANKS_MAX_ENEMIES];
     Tanks_BulletTypeDef Bullets[TANKS_MAX_BULLETS];
     Tanks_ParticleTypeDef Particles[TANKS_MAX_PARTICLES];
     Tanks_MineTypeDef Mines[TANKS_MAX_MINES];
+    uint8_t MineSpots[TANKS_MAX_MINE_SPOTS][2];
+    uint8_t MineSpotCount;
     Tanks_TrackMarkTypeDef TrackMarks[TANKS_MAX_TRACK_MARKS];
     Tanks_WreckTypeDef Wrecks[TANKS_MAX_WRECKS];
+    Tanks_BlastTypeDef Blasts[TANKS_MAX_BLASTS];
     Tanks_FloatingTextTypeDef FloatingText[TANKS_MAX_FLOATING_TEXT];
     Tanks_RecordTypeDef Record;
     uint8_t Tiles[TANKS_MAP_HEIGHT][TANKS_MAP_WIDTH];
@@ -334,6 +358,8 @@ void Tanks_ResetBattlefield(void);
 void Tanks_StartNewGame(void);
 void Tanks_StartWave(uint16_t Wave);
 void Tanks_Simulate(uint32_t DeltaMilliseconds);
+void Tanks_StartDemo(void);
+void Tanks_UpdateDemo(uint32_t DeltaMilliseconds);
 void Tanks_ShowMessage(const char *Text, uint16_t Milliseconds);
 void Tanks_SpawnExplosion(Tanks_VectorTypeDef Position, uint8_t Strength);
 void Tanks_AwardScore(Tanks_VectorTypeDef Position, uint16_t BaseScore);
@@ -349,8 +375,17 @@ void Tanks_SaveUnclaimedRecord(void);
 void Tanks_DrawGame(Render_TargetTypeDef *Target);
 void Tanks_DrawTitle(Render_TargetTypeDef *Target);
 void Tanks_DrawEndScreen(Render_TargetTypeDef *Target);
-void Tanks_DrawSplashArtwork(Render_TargetTypeDef *Target, uint32_t ElapsedMilliseconds);
+void Tanks_DrawSplashArtwork(Render_TargetTypeDef *Target);
+
+/* The demo arena's central fort, in tiles; the preview draws the title inside it. */
+#define TANKS_DEMO_FORT_X       (10U)
+#define TANKS_DEMO_FORT_Y       (8U)
+#define TANKS_DEMO_FORT_WIDTH   (12U)
+#define TANKS_DEMO_FORT_HEIGHT  (4U)
 void Tanks_WorldToScreen(Tanks_VectorTypeDef World, int16_t *ScreenX, int16_t *ScreenY);
+
+/** How long a shockwave ring takes to reach the blast radius and fade. */
+#define TANKS_BLAST_RING_MS     (260U)
 
 #ifdef __cplusplus
 }

@@ -1,6 +1,6 @@
 /**
  * @file tanks.h
- * @brief Public application interface for TANKS on DualSlide.
+ * @brief Public application interface for DualTrack on DualSlide.
  */
 
 #ifndef TANKS_H

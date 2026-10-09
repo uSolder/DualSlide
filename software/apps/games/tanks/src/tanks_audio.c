@@ -1,6 +1,6 @@
 /**
  * @file tanks_audio.c
- * @brief Generated sound effects and jingles for TANKS.
+ * @brief Generated sound effects and jingles for DualTrack.
  *
  * Three mixer synths run while the game is open:
  *
@@ -39,7 +39,7 @@
 
 #define TA_SILENT                           (0.0001f)
 
-/* Overall level of every TANKS sound. */
+/* Overall level of every DualTrack sound. */
 #define TA_MASTER_LEVEL                     (0.36f)
 
 /* Every generator is high-passed here, keeping the speaker within its excursion limit. */
@@ -323,80 +323,75 @@ typedef struct
 /* Jingles                                                                    */
 /* -------------------------------------------------------------------------- */
 
-#define TA_C5 (523.25f)
-#define TA_E5 (659.26f)
-#define TA_G4 (392.00f)
-#define TA_G5 (783.99f)
-#define TA_A5 (880.00f)
-#define TA_B5 (987.77f)
-#define TA_C6 (1046.50f)
-#define TA_C7 (2093.00f)
+#define TA_GS4 (415.30f)
+#define TA_A4  (440.00f)
+#define TA_CS5 (554.37f)
+#define TA_D5  (587.33f)
+#define TA_E5  (659.26f)
+#define TA_FS5 (739.99f)
+#define TA_GS5 (830.61f)
+#define TA_A5  (880.00f)
+#define TA_B5  (987.77f)
+#define TA_CS6 (1108.73f)
+#define TA_E6  (1318.51f)
+#define TA_A6  (1760.00f)
+#define TA_E7  (2637.02f)
 
-/* New room: a snare roll building into a short call to arms. */
+/* Sector start: a rising chime as the systems come online, landing on a low stab. */
 static const TanksAudio_NoteTypeDef TanksAudio_WaveIntroNotes[] = {
-    { 0.00f, 0.0f, 0.1f, TA_INSTRUMENT_SNARE, 0.35f },
-    { 0.16f, 0.0f, 0.1f, TA_INSTRUMENT_SNARE, 0.38f },
-    { 0.30f, 0.0f, 0.1f, TA_INSTRUMENT_SNARE, 0.42f },
-    { 0.42f, 0.0f, 0.1f, TA_INSTRUMENT_SNARE, 0.46f },
-    { 0.52f, 0.0f, 0.1f, TA_INSTRUMENT_SNARE, 0.5f },
-    { 0.60f, 0.0f, 0.1f, TA_INSTRUMENT_SNARE, 0.55f },
-    { 0.67f, 0.0f, 0.1f, TA_INSTRUMENT_SNARE, 0.6f },
-    { 0.73f, 0.0f, 0.1f, TA_INSTRUMENT_SNARE, 0.65f },
-    { 0.78f, 0.0f, 0.1f, TA_INSTRUMENT_SNARE, 0.7f },
-    { 0.83f, 0.0f, 0.1f, TA_INSTRUMENT_SNARE, 0.75f },
-    { 0.87f, 0.0f, 0.1f, TA_INSTRUMENT_SNARE, 0.8f },
-    { 0.91f, 0.0f, 0.1f, TA_INSTRUMENT_SNARE, 0.85f },
-    { 1.05f, TA_G4, 0.1f, TA_INSTRUMENT_BRASS, 0.8f },
-    { 1.20f, TA_G4, 0.1f, TA_INSTRUMENT_BRASS, 0.8f },
-    { 1.35f, TA_C5, 0.55f, TA_INSTRUMENT_BRASS, 1.0f },
-    { 1.35f, TA_E5, 0.55f, TA_INSTRUMENT_BRASS, 0.6f },
-    { 1.35f, 0.0f, 0.1f, TA_INSTRUMENT_SNARE, 1.0f },
+    { 0.00f, TA_A5, 0.25f, TA_INSTRUMENT_BELL, 0.45f },
+    { 0.14f, TA_E6, 0.25f, TA_INSTRUMENT_BELL, 0.4f },
+    { 0.28f, TA_A6, 0.35f, TA_INSTRUMENT_BELL, 0.35f },
+    { 0.46f, TA_A4, 0.12f, TA_INSTRUMENT_BRASS, 0.7f },
+    { 0.46f, TA_E5, 0.12f, TA_INSTRUMENT_BRASS, 0.45f },
+    { 0.70f, TA_A4, 0.5f, TA_INSTRUMENT_BRASS, 0.85f },
+    { 0.70f, TA_E5, 0.5f, TA_INSTRUMENT_BRASS, 0.55f },
+    { 0.70f, TA_A5, 0.5f, TA_INSTRUMENT_BRASS, 0.35f },
+    { 0.70f, 0.0f, 0.1f, TA_INSTRUMENT_SNARE, 0.6f },
 };
 
-/* Arena clear: a quick rising arpeggio landing on a bright chord. */
+/* Sector secured: a quick climb up the A major chord with a bright chime on top. */
 static const TanksAudio_NoteTypeDef TanksAudio_ArenaClearNotes[] = {
-    { 0.00f, TA_C5, 0.09f, TA_INSTRUMENT_BRASS, 0.8f },
-    { 0.10f, TA_E5, 0.09f, TA_INSTRUMENT_BRASS, 0.8f },
-    { 0.20f, TA_G5, 0.09f, TA_INSTRUMENT_BRASS, 0.8f },
-    { 0.30f, TA_C6, 0.55f, TA_INSTRUMENT_BRASS, 1.0f },
-    { 0.30f, TA_G5, 0.55f, TA_INSTRUMENT_BRASS, 0.55f },
-    { 0.30f, 0.0f, 0.1f, TA_INSTRUMENT_SNARE, 0.8f },
-    { 0.30f, TA_C7, 0.6f, TA_INSTRUMENT_BELL, 0.35f },
+    { 0.00f, TA_CS5, 0.08f, TA_INSTRUMENT_BRASS, 0.75f },
+    { 0.09f, TA_E5, 0.08f, TA_INSTRUMENT_BRASS, 0.75f },
+    { 0.18f, TA_A5, 0.5f, TA_INSTRUMENT_BRASS, 1.0f },
+    { 0.18f, TA_E5, 0.5f, TA_INSTRUMENT_BRASS, 0.5f },
+    { 0.18f, TA_A6, 0.6f, TA_INSTRUMENT_BELL, 0.3f },
+    { 0.40f, TA_E7, 0.5f, TA_INSTRUMENT_BELL, 0.18f },
 };
 
-/* Tank lost: a sagging "wah, wah, wah, waah" after the explosion clears. */
+/* Tank lost: a chime and a stab that sink a semitone at a time. */
 static const TanksAudio_NoteTypeDef TanksAudio_TankLostNotes[] = {
-    { 0.50f, 659.26f, 0.2f, TA_INSTRUMENT_BRASS, 0.7f },
-    { 0.75f, 622.25f, 0.2f, TA_INSTRUMENT_BRASS, 0.7f },
-    { 1.00f, 587.33f, 0.2f, TA_INSTRUMENT_BRASS, 0.7f },
-    { 1.25f, 554.37f, 0.6f, TA_INSTRUMENT_BRASS, 0.75f },
+    { 0.45f, TA_A5, 0.2f, TA_INSTRUMENT_BELL, 0.4f },
+    { 0.45f, TA_A4, 0.18f, TA_INSTRUMENT_BRASS, 0.6f },
+    { 0.70f, TA_GS4, 0.6f, TA_INSTRUMENT_BRASS, 0.7f },
+    { 0.70f, TA_GS5, 0.4f, TA_INSTRUMENT_BELL, 0.3f },
 };
 
-/* Game over: a slow minor descent settling on an uneasy chord. */
+/* Signal lost: a slow fall through A minor, fading on a hollow fifth. */
 static const TanksAudio_NoteTypeDef TanksAudio_GameOverNotes[] = {
-    { 0.60f, 659.26f, 0.3f, TA_INSTRUMENT_BRASS, 0.8f },
-    { 1.00f, 523.25f, 0.3f, TA_INSTRUMENT_BRASS, 0.8f },
-    { 1.40f, 440.00f, 0.3f, TA_INSTRUMENT_BRASS, 0.8f },
-    { 1.80f, 415.30f, 0.9f, TA_INSTRUMENT_BRASS, 0.85f },
-    { 1.80f, 329.63f, 0.9f, TA_INSTRUMENT_BRASS, 0.45f },
-    { 1.80f, 0.0f, 0.1f, TA_INSTRUMENT_SNARE, 0.5f },
+    { 0.55f, TA_E5, 0.3f, TA_INSTRUMENT_BRASS, 0.75f },
+    { 0.95f, TA_D5, 0.3f, TA_INSTRUMENT_BRASS, 0.75f },
+    { 1.35f, TA_CS5, 0.3f, TA_INSTRUMENT_BRASS, 0.75f },
+    { 1.75f, TA_A4, 1.0f, TA_INSTRUMENT_BRASS, 0.85f },
+    { 1.75f, TA_E5, 1.0f, TA_INSTRUMENT_BRASS, 0.45f },
+    { 1.75f, TA_A5, 1.2f, TA_INSTRUMENT_BELL, 0.25f },
 };
 
-/* Victory: a rising call, then a lifted answer resolving on a full chord. */
+/* Every sector secured: the chime climbs twice, then the full chord rings out. */
 static const TanksAudio_NoteTypeDef TanksAudio_VictoryNotes[] = {
-    { 0.00f, TA_C5, 0.1f, TA_INSTRUMENT_BRASS, 0.8f },
-    { 0.12f, TA_E5, 0.1f, TA_INSTRUMENT_BRASS, 0.8f },
-    { 0.24f, TA_G5, 0.1f, TA_INSTRUMENT_BRASS, 0.8f },
-    { 0.36f, TA_C6, 0.35f, TA_INSTRUMENT_BRASS, 1.0f },
-    { 0.36f, TA_G5, 0.35f, TA_INSTRUMENT_BRASS, 0.5f },
-    { 0.36f, 0.0f, 0.1f, TA_INSTRUMENT_SNARE, 0.8f },
-    { 0.80f, TA_A5, 0.12f, TA_INSTRUMENT_BRASS, 0.85f },
-    { 0.95f, TA_B5, 0.12f, TA_INSTRUMENT_BRASS, 0.85f },
-    { 1.10f, TA_C6, 0.9f, TA_INSTRUMENT_BRASS, 1.0f },
-    { 1.10f, TA_G5, 0.9f, TA_INSTRUMENT_BRASS, 0.55f },
-    { 1.10f, TA_E5, 0.9f, TA_INSTRUMENT_BRASS, 0.45f },
-    { 1.10f, 0.0f, 0.1f, TA_INSTRUMENT_SNARE, 1.0f },
-    { 1.10f, TA_C7, 0.8f, TA_INSTRUMENT_BELL, 0.35f },
+    { 0.00f, TA_A5, 0.2f, TA_INSTRUMENT_BELL, 0.4f },
+    { 0.10f, TA_CS6, 0.2f, TA_INSTRUMENT_BELL, 0.4f },
+    { 0.20f, TA_E6, 0.3f, TA_INSTRUMENT_BELL, 0.4f },
+    { 0.30f, TA_A4, 0.25f, TA_INSTRUMENT_BRASS, 0.8f },
+    { 0.30f, TA_CS5, 0.25f, TA_INSTRUMENT_BRASS, 0.55f },
+    { 0.70f, TA_FS5, 0.12f, TA_INSTRUMENT_BRASS, 0.8f },
+    { 0.84f, TA_GS5, 0.12f, TA_INSTRUMENT_BRASS, 0.8f },
+    { 1.00f, TA_A5, 0.9f, TA_INSTRUMENT_BRASS, 1.0f },
+    { 1.00f, TA_E5, 0.9f, TA_INSTRUMENT_BRASS, 0.55f },
+    { 1.00f, TA_CS5, 0.9f, TA_INSTRUMENT_BRASS, 0.45f },
+    { 1.00f, 0.0f, 0.1f, TA_INSTRUMENT_SNARE, 0.7f },
+    { 1.00f, TA_E7, 0.8f, TA_INSTRUMENT_BELL, 0.25f },
 };
 
 #define TA_JINGLE(Notes) { (Notes), (uint32_t)(sizeof(Notes) / sizeof((Notes)[0])) }

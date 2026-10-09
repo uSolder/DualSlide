@@ -25,32 +25,33 @@
 
 Tanks_GameTypeDef Tanks_Game;
 
+/* A proving ground at night: dark concrete, steel barriers, amber hazard markings. */
 const Display_ColourTypeDef Tanks_Palette[TANKS_COLOUR_COUNT] = {
-    0x0060472EU, /* outside */
-    0x00826745U, /* outside light */
-    0x003A291BU, /* outside dark */
-    0x00D7B875U, /* floor */
-    0x00E8CF98U, /* floor light */
-    0x00B98E52U, /* floor dark */
-    0x00C69A5CU, /* grout */
-    0x00B98542U, /* wall */
-    0x00E7C878U, /* wall light */
-    0x006A421FU, /* wall shadow */
+    0x000E141CU, /* outside */
+    0x0018222EU, /* outside light */
+    0x00080C12U, /* outside dark */
+    0x001B2633U, /* floor */
+    0x00233243U, /* floor light */
+    0x00131B25U, /* floor dark */
+    0x00253548U, /* grout: the tactical grid */
+    0x00414D5EU, /* wall: steel */
+    0x00657488U, /* wall light */
+    0x00262E39U, /* wall shadow */
     0x0005070CU, /* pit */
-    0x00212836U, /* pit edge */
-    0x00D83D3DU, /* player */
-    0x00FF7A70U, /* player light */
-    0x00891F25U, /* player dark */
-    0x006B4AA5U, /* enemy */
-    0x00A989D4U, /* enemy light */
-    0x003B255FU, /* enemy dark */
-    0x00161A21U, /* track */
-    0x00424A57U, /* track light */
-    0x001E68DDU, /* HQ */
-    0x0068A7FFU, /* HQ light */
-    0x000F3C8FU, /* HQ dark */
+    0x005A4212U, /* pit edge: dim amber */
+    0x0026C9BFU, /* player: teal */
+    0x0094F6EEU, /* player light */
+    0x000D5F5BU, /* player dark */
+    0x00D07A2CU, /* enemy: orange */
+    0x00F4B46CU, /* enemy light */
+    0x00603211U, /* enemy dark */
+    0x000A0E13U, /* track */
+    0x00394352U, /* track light */
+    0x003A7BEAU, /* HQ */
+    0x0079A8FFU, /* HQ light */
+    0x00163E8FU, /* HQ dark */
     0x00FFF2A8U, /* bullet */
-    0x00FF9A8FU, /* player laser */
+    0x00A46BFFU, /* player laser: violet */
     0x00FF776FU, /* enemy laser */
     0x00F06832U, /* fire */
     0x00FFD166U, /* fire light */
@@ -58,20 +59,21 @@ const Display_ColourTypeDef Tanks_Palette[TANKS_COLOUR_COUNT] = {
     0x0031353DU, /* smoke dark */
     0x00E2B84FU, /* mine */
     0x00F8FAFFU, /* text */
-    0x00B8C3D8U, /* muted */
-    0x00101A2DU, /* panel */
-    0x003C5D91U, /* panel edge */
+    0x00A9B6CBU, /* muted */
+    0x000C121BU, /* panel */
+    0x00314A6EU, /* panel edge */
     0x00FF4D5AU, /* danger */
     0x00FFBD4AU, /* warning */
     0x0057E389U, /* success */
-    0x00101620U, /* shadow */
+    0x0006090EU, /* shadow */
     0x00FFFFFFU, /* white */
     0x00000000U, /* black */
     0x00191B20U, /* wreck */
-    0x003B2B2CU  /* scorch */
+    0x002E2423U, /* scorch */
+    0x00B08A2AU, /* hazard: barrier markings */
+    0x003E5A6EU, /* trail: fresh tread marks */
+    0x00263646U  /* trail old: fading tread marks */
 };
-
-static uint32_t Tanks_SplashElapsedMilliseconds;
 
 /* -------------------------------------------------------------------------- */
 /* Private functions                                                          */
@@ -179,7 +181,7 @@ static bool Tanks_Init(void)
     Tanks_Game.Message[0] = '\0';
     Tanks_Game.Paused = false;
     Tanks_Game.Initialized = true;
-    Tanks_SplashElapsedMilliseconds = 0U;
+    Tanks_Game.Demo = false;
     Tanks_LoadRecord();
     Tanks_ResetBattlefield();
     TanksAudio_Start();
@@ -211,8 +213,20 @@ static bool Tanks_DrawSplashScreen(Render_TargetTypeDef *Target)
     {
         return false;
     }
-    Tanks_SplashElapsedMilliseconds += 33U;
-    Tanks_DrawSplashArtwork(Target, Tanks_SplashElapsedMilliseconds);
+    /*
+     * A live battle between two tanks, run a frame at a time while the preview
+     * shows. It shares the game's state, so it never runs while the game does.
+     */
+    if(!Tanks_Game.Initialized)
+    {
+        if(!Tanks_Game.Demo)
+        {
+            Tanks_StartDemo();
+        }
+        Tanks_UpdateDemo(16U);
+        Tanks_UpdateDemo(17U);
+    }
+    Tanks_DrawSplashArtwork(Target);
     return true;
 }
 
