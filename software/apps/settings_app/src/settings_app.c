@@ -16,8 +16,8 @@
 #include "settings_app.h"
 
 #include "app_manager.h"
+#include "controls.h"
 #include "display.h"
-#include "input.h"
 #include "open_sans.h"
 #include "open_sans_bold.h"
 #include "render.h"
@@ -31,16 +31,6 @@
 /* -------------------------------------------------------------------------- */
 /* Private configuration                                                      */
 /* -------------------------------------------------------------------------- */
-
-#define INPUT_RIGHT_SLIDER_NUMBER          ((Input_NumberTypeDef)2U)
-#define INPUT_PRIMARY_BUTTON_NUMBER        ((Input_NumberTypeDef)3U)
-#define INPUT_SECONDARY_BUTTON_NUMBER      ((Input_NumberTypeDef)4U)
-
-#define SETTINGS_APP_SLIDER_MINIMUM        (0)
-#define SETTINGS_APP_SLIDER_MAXIMUM        (65535)
-
-/* How far a slider must move before it takes control. */
-#define SETTINGS_APP_SLIDER_TAKEOVER       (2000)
 
 /* Menu rows. */
 #define SETTINGS_APP_ROW_X                 (100)
@@ -94,28 +84,8 @@ typedef enum
 
 typedef struct
 {
-    bool AnchorValid;
-    bool TakenOver;
-    int32_t Anchor;
-} SettingsApp_SliderTypeDef;
-
-/**
- * @brief One button. A press already held when the page opened, or one that
- *        became part of the two-button gesture, is claimed and does nothing.
- */
-typedef struct
-{
-    bool Down;
-    bool Claimed;
-    uint32_t HeldMilliseconds;
-} SettingsApp_ButtonTypeDef;
-
-typedef struct
-{
     SettingsApp_RowTypeDef Row;
-    SettingsApp_SliderTypeDef Slider;
-    SettingsApp_ButtonTypeDef Primary;
-    SettingsApp_ButtonTypeDef Secondary;
+    bool EraseDone;
     bool EraseSucceeded;
     uint32_t MessageMilliseconds;
     uint8_t VolumeBlipStep;
@@ -161,73 +131,27 @@ static const Sound_TypeDef SettingsApp_Blip = { SOUND_LAYERS(SettingsApp_BlipLay
 /* Sliders                                                                   */
 /* ------------------------------------------------------------------------- */
 
-static void SettingsApp_ResetSlider(void)
-{
-    SettingsApp_State.Slider = (SettingsApp_SliderTypeDef){ 0 };
-}
-
-/* Returns true once the slider has moved far enough from where it was to take control. */
-static bool SettingsApp_SliderTakenOver(SettingsApp_SliderTypeDef *Slider, int32_t Value)
-{
-    if(Slider->TakenOver)
-    {
-        return true;
-    }
-
-    if(!Slider->AnchorValid)
-    {
-        Slider->Anchor = Value;
-        Slider->AnchorValid = true;
-        return false;
-    }
-
-    if(((Value - Slider->Anchor) >= SETTINGS_APP_SLIDER_TAKEOVER) || ((Slider->Anchor - Value) >= SETTINGS_APP_SLIDER_TAKEOVER))
-    {
-        Slider->TakenOver = true;
-    }
-
-    return Slider->TakenOver;
-}
-
-/* Full slider travel onto a percentage range, low at the bottom of the travel. */
-static uint8_t SettingsApp_SliderToPercent(int32_t Value, uint32_t Minimum, uint32_t Maximum)
-{
-    if(Value < SETTINGS_APP_SLIDER_MINIMUM)
-    {
-        Value = SETTINGS_APP_SLIDER_MINIMUM;
-    }
-    else if(Value > SETTINGS_APP_SLIDER_MAXIMUM)
-    {
-        Value = SETTINGS_APP_SLIDER_MAXIMUM;
-    }
-
-    return (uint8_t)(Minimum + ((((uint32_t)Value * (Maximum - Minimum)) + (SETTINGS_APP_SLIDER_MAXIMUM / 2U)) / SETTINGS_APP_SLIDER_MAXIMUM));
-}
-
 /* ------------------------------------------------------------------------- */
 /* Input                                                                     */
 /* ------------------------------------------------------------------------- */
 
-/* The right slider sets the selected row's value. */
+/* The right slider sets the selected row's value, once it has been moved. */
 static void SettingsApp_UpdateSlider(void)
 {
-    int32_t Value;
     uint8_t Percent;
 
-    if((SettingsApp_State.Row == SETTINGS_APP_ROW_ERASE) ||
-       !Input_GetValue(INPUT_RIGHT_SLIDER_NUMBER, &Value) ||
-       !SettingsApp_SliderTakenOver(&SettingsApp_State.Slider, Value))
+    if((SettingsApp_State.Row == SETTINGS_APP_ROW_ERASE) || !Controls_SliderMoved(CONTROLS_RIGHT_SLIDER))
     {
         return;
     }
 
     if(SettingsApp_State.Row == SETTINGS_APP_ROW_BRIGHTNESS)
     {
-        System_SetBrightness(SettingsApp_SliderToPercent(Value, SYSTEM_BRIGHTNESS_MINIMUM_PERCENT, SYSTEM_PERCENT_MAXIMUM));
+        System_SetBrightness((uint8_t)Controls_SliderBetween(CONTROLS_RIGHT_SLIDER, SYSTEM_BRIGHTNESS_MINIMUM_PERCENT, SYSTEM_PERCENT_MAXIMUM));
         return;
     }
 
-    Percent = SettingsApp_SliderToPercent(Value, 0U, SYSTEM_PERCENT_MAXIMUM);
+    Percent = (uint8_t)Controls_SliderBetween(CONTROLS_RIGHT_SLIDER, 0, SYSTEM_PERCENT_MAXIMUM);
 
     if(Percent != System_GetVolume())
     {
@@ -242,74 +166,43 @@ static void SettingsApp_UpdateSlider(void)
     }
 }
 
-/* Returns true when an unclaimed press of the button has just been released. */
-static bool SettingsApp_UpdateButton(SettingsApp_ButtonTypeDef *Button, Input_NumberTypeDef Input, uint32_t DeltaTimeMilliseconds)
-{
-    int32_t Value;
-    const bool Down = Input_GetValue(Input, &Value) && (Value != 0);
-    const bool Released = !Down && Button->Down && !Button->Claimed;
-
-    if(Down && !Button->Down)
-    {
-        Button->Claimed = false;
-        Button->HeldMilliseconds = 0U;
-    }
-    else if(Down && (Button->HeldMilliseconds < UINT32_MAX - DeltaTimeMilliseconds))
-    {
-        Button->HeldMilliseconds += DeltaTimeMilliseconds;
-    }
-
-    Button->Down = Down;
-
-    return Released;
-}
-
-static void SettingsApp_ClaimButtons(void)
-{
-    SettingsApp_State.Primary = (SettingsApp_ButtonTypeDef){ .Down = true, .Claimed = true };
-    SettingsApp_State.Secondary = (SettingsApp_ButtonTypeDef){ .Down = true, .Claimed = true };
-}
-
+/* A new row leaves its setting alone until the slider is moved. */
 static void SettingsApp_SelectRow(int Direction)
 {
     SettingsApp_State.Row = (SettingsApp_RowTypeDef)(((int)SettingsApp_State.Row + (int)SETTINGS_APP_ROW_COUNT + Direction) % (int)SETTINGS_APP_ROW_COUNT);
-    SettingsApp_ResetSlider();
+    Controls_ResetSliderMoved(CONTROLS_RIGHT_SLIDER);
 }
 
-/* True while primary is erasing: held, unclaimed, on the erase row. */
+/* True while primary is erasing: held on the erase row, and not yet used up by an erase. */
 static bool SettingsApp_Erasing(void)
 {
-    return (SettingsApp_State.Row == SETTINGS_APP_ROW_ERASE) && SettingsApp_State.Primary.Down && !SettingsApp_State.Primary.Claimed;
+    return (SettingsApp_State.Row == SETTINGS_APP_ROW_ERASE) && Controls_IsDown(CONTROLS_PRIMARY) && !SettingsApp_State.EraseDone;
 }
 
-static void SettingsApp_UpdateButtons(uint32_t DeltaTimeMilliseconds)
+/* Holding both buttons is the system gesture: controls.h stops reporting them, which also cancels an erase. */
+static void SettingsApp_UpdateButtons(void)
 {
-    const bool PrimaryReleased = SettingsApp_UpdateButton(&SettingsApp_State.Primary, INPUT_PRIMARY_BUTTON_NUMBER, DeltaTimeMilliseconds);
-    const bool SecondaryReleased = SettingsApp_UpdateButton(&SettingsApp_State.Secondary, INPUT_SECONDARY_BUTTON_NUMBER, DeltaTimeMilliseconds);
-
-    /* Both together belong to the system gesture, and cancel an erase. */
-    if(SettingsApp_State.Primary.Down && SettingsApp_State.Secondary.Down)
+    if(Controls_WasPressed(CONTROLS_PRIMARY))
     {
-        SettingsApp_State.Primary.Claimed = true;
-        SettingsApp_State.Secondary.Claimed = true;
-        return;
+        SettingsApp_State.EraseDone = false;
     }
 
-    if(SettingsApp_Erasing() && (SettingsApp_State.Primary.HeldMilliseconds >= SETTINGS_APP_ERASE_HOLD_MS))
+    if(SettingsApp_Erasing() && (Controls_HeldMilliseconds(CONTROLS_PRIMARY) >= SETTINGS_APP_ERASE_HOLD_MS))
     {
-        SettingsApp_State.Primary.Claimed = true;
+        SettingsApp_State.EraseDone = true;
         SettingsApp_State.EraseSucceeded = System_EraseSavedData();
         SettingsApp_State.MessageMilliseconds = SETTINGS_APP_MESSAGE_MS;
         return;
     }
 
     /* On the erase row, letting go of a hold cancels it rather than moving on. */
-    if(PrimaryReleased && ((SettingsApp_State.Row != SETTINGS_APP_ROW_ERASE) || (SettingsApp_State.Primary.HeldMilliseconds < SETTINGS_APP_TAP_MS)))
+    if(Controls_WasReleased(CONTROLS_PRIMARY) && !SettingsApp_State.EraseDone &&
+       ((SettingsApp_State.Row != SETTINGS_APP_ROW_ERASE) || (Controls_HeldMilliseconds(CONTROLS_PRIMARY) < SETTINGS_APP_TAP_MS)))
     {
         SettingsApp_SelectRow(1);
     }
 
-    if(SecondaryReleased)
+    if(Controls_WasReleased(CONTROLS_SECONDARY))
     {
         SettingsApp_SelectRow(-1);
     }
@@ -387,7 +280,7 @@ static void SettingsApp_DrawEraseRow(Render_TargetTypeDef *Target)
 
     if(SettingsApp_Erasing())
     {
-        Progress = (SettingsApp_State.Primary.HeldMilliseconds * 1000U) / SETTINGS_APP_ERASE_HOLD_MS;
+        Progress = (Controls_HeldMilliseconds(CONTROLS_PRIMARY) * 1000U) / SETTINGS_APP_ERASE_HOLD_MS;
     }
 
     SettingsApp_DrawRowBar(Target, RowY, Progress, COLOUR_RED);
@@ -458,17 +351,13 @@ static void SettingsApp_DrawSplashScene(Render_TargetTypeDef *Target)
 }
 
 /* -------------------------------------------------------------------------- */
-/* Public functions                                                           */
+/* Application functions                                                      */
 /* -------------------------------------------------------------------------- */
 
 static bool SettingsApp_Init(void)
 {
     SettingsApp_State = (SettingsApp_StateTypeDef){ 0 };
     SettingsApp_State.VolumeBlipStep = (uint8_t)(System_GetVolume() / 10U);
-
-    /* The hold that started this page is still down; letting go must do nothing. */
-    SettingsApp_ClaimButtons();
-    SettingsApp_ResetSlider();
 
     SettingsApp_Paused = false;
     SettingsApp_Initialized = true;
@@ -485,7 +374,7 @@ static void SettingsApp_Update(uint32_t DeltaTimeMilliseconds)
 
     SettingsApp_State.MessageMilliseconds = (SettingsApp_State.MessageMilliseconds > DeltaTimeMilliseconds) ? (SettingsApp_State.MessageMilliseconds - DeltaTimeMilliseconds) : 0U;
 
-    SettingsApp_UpdateButtons(DeltaTimeMilliseconds);
+    SettingsApp_UpdateButtons();
     SettingsApp_UpdateSlider();
 }
 
@@ -521,9 +410,6 @@ static void SettingsApp_Resume(void)
 {
     if(SettingsApp_Initialized)
     {
-        /* After a pause, the slider takes control again only once moved. */
-        SettingsApp_ResetSlider();
-        SettingsApp_ClaimButtons();
         SettingsApp_Paused = false;
     }
 }

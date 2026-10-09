@@ -12,8 +12,8 @@
 #include "pong.h"
 
 #include "app_manager.h"
+#include "controls.h"
 #include "display.h"
-#include "input.h"
 #include "open_sans.h"
 #include "pong_audio.h"
 
@@ -23,10 +23,6 @@
 /* Private configuration                                                      */
 /* -------------------------------------------------------------------------- */
 
-#define INPUT_LEFT_SLIDER_NUMBER            ((Input_NumberTypeDef)1U)
-#define INPUT_RIGHT_SLIDER_NUMBER           ((Input_NumberTypeDef)2U)
-#define INPUT_PRIMARY_BUTTON_NUMBER         ((Input_NumberTypeDef)3U)
-#define INPUT_SECONDARY_BUTTON_NUMBER       ((Input_NumberTypeDef)4U)
 #define PADDLE_WIDTH                        (8U)
 #define PADDLE_NORMAL_HEIGHT                (84U)
 #define PADDLE_EXPANDED_HEIGHT              (124U)
@@ -53,9 +49,9 @@
 #define PONG_SPLASH_TITLE_X                 (PONG_SPLASH_X + ((int16_t)PONG_SPLASH_WIDTH / 2) - 62)
 #define PONG_SPLASH_TITLE_Y                 (PONG_SPLASH_Y + ((int16_t)PONG_SPLASH_HEIGHT / 2) - 18)
 #define PONG_SLIDER_TOP_TRIGGER             (1000)
-#define PONG_SLIDER_BOTTOM_TRIGGER          (65535 - 1000)
+#define PONG_SLIDER_BOTTOM_TRIGGER          (CONTROLS_SLIDER_RAW_MAXIMUM - 1000)
 #define PONG_SLIDER_TOP_RELEASE             (1500)
-#define PONG_SLIDER_BOTTOM_RELEASE          (65535 - 1500)
+#define PONG_SLIDER_BOTTOM_RELEASE          (CONTROLS_SLIDER_RAW_MAXIMUM - 1500)
 
 /* -------------------------------------------------------------------------- */
 /* Private types                                                              */
@@ -133,8 +129,6 @@ typedef struct
 {
     int16_t LeftY;
     int16_t RightY;
-    bool PrimaryDown;
-    bool SecondaryDown;
     bool RightSliderArmed;
 } Pong_InputTypeDef;
 
@@ -255,11 +249,11 @@ static int16_t Pong_SliderToY(int32_t Value, int16_t PaddleHeight)
     {
         Value = 0;
     }
-    if(Value > 65535)
+    if(Value > CONTROLS_SLIDER_RAW_MAXIMUM)
     {
-        Value = 65535;
+        Value = CONTROLS_SLIDER_RAW_MAXIMUM;
     }
-    return (int16_t)(MaximumY - ((Value * (MaximumY - 12)) / 65535));
+    return (int16_t)(MaximumY - ((Value * (MaximumY - 12)) / CONTROLS_SLIDER_RAW_MAXIMUM));
 }
 
 static int16_t Pong_PaddleHeight(bool Left)
@@ -962,16 +956,13 @@ static void Pong_ChangeSelectedMenuValue(void)
 }
 
 /* -------------------------------------------------------------------------- */
-/* Public functions                                                           */
+/* Application functions                                                      */
 /* -------------------------------------------------------------------------- */
 
 static bool Pong_Init(void)
 {
     Pong_Input.LeftY = ((int16_t)RENDER_HEIGHT - PADDLE_NORMAL_HEIGHT) / 2;
     Pong_Input.RightY = Pong_Input.LeftY;
-    /* The launcher starts games on a held button: it must be let go before it counts. */
-    Pong_Input.PrimaryDown = true;
-    Pong_Input.SecondaryDown = true;
     Pong_Input.RightSliderArmed = false;
     Pong_Game.Screen = PONG_SCREEN_MENU;
     Pong_Game.TwoPlayer = false;
@@ -993,51 +984,37 @@ static bool Pong_Init(void)
 
 static void Pong_Update(uint32_t DeltaTimeMilliseconds)
 {
-    int32_t Value;
-    bool Primary = false;
-    bool Secondary = false;
+    const int32_t Left = Controls_SliderRaw(CONTROLS_LEFT_SLIDER);
+    const int32_t Right = Controls_SliderRaw(CONTROLS_RIGHT_SLIDER);
     if(!Pong_Initialized || Pong_Paused)
     {
         return;
     }
-    if(Pong_Game.TwoPlayer && Input_GetValue(INPUT_LEFT_SLIDER_NUMBER, &Value) && (Pong_Game.LeftFreezeMilliseconds == 0U))
+    if(Pong_Game.TwoPlayer && (Pong_Game.LeftFreezeMilliseconds == 0U))
     {
-        Pong_Input.LeftY = Pong_SliderToY(Pong_Game.LeftInvertMilliseconds > 0U ? (65535 - Value) : Value, Pong_PaddleHeight(true));
+        Pong_Input.LeftY = Pong_SliderToY(Pong_Game.LeftInvertMilliseconds > 0U ? (CONTROLS_SLIDER_RAW_MAXIMUM - Left) : Left, Pong_PaddleHeight(true));
     }
-    if(Input_GetValue(INPUT_RIGHT_SLIDER_NUMBER, &Value))
+    if((Pong_Game.Screen != PONG_SCREEN_MENU) && (Pong_Game.RightFreezeMilliseconds == 0U))
     {
-        if((Pong_Game.Screen != PONG_SCREEN_MENU) && (Pong_Game.RightFreezeMilliseconds == 0U))
-        {
-            Pong_Input.RightY = Pong_SliderToY(Pong_Game.RightInvertMilliseconds > 0U ? (65535 - Value) : Value, Pong_PaddleHeight(false));
-        }
-        else if(Pong_Game.Screen == PONG_SCREEN_MENU)
-        {
-            (void)Pong_ProcessMenuHardStops(Value);
-        }
+        Pong_Input.RightY = Pong_SliderToY(Pong_Game.RightInvertMilliseconds > 0U ? (CONTROLS_SLIDER_RAW_MAXIMUM - Right) : Right, Pong_PaddleHeight(false));
     }
-    if(Input_GetValue(INPUT_PRIMARY_BUTTON_NUMBER, &Value))
+    else if(Pong_Game.Screen == PONG_SCREEN_MENU)
     {
-        Primary = Value != 0;
+        (void)Pong_ProcessMenuHardStops(Right);
     }
-    if(Input_GetValue(INPUT_SECONDARY_BUTTON_NUMBER, &Value))
-    {
-        Secondary = Value != 0;
-    }
-    if(Secondary && !Pong_Input.SecondaryDown && (Pong_Game.Screen == PONG_SCREEN_MENU))
+    if(Controls_WasPressed(CONTROLS_SECONDARY) && (Pong_Game.Screen == PONG_SCREEN_MENU))
     {
         Pong_ChangeSelectedMenuValue();
     }
-    if(Secondary && !Pong_Input.SecondaryDown && (Pong_Game.Screen == PONG_SCREEN_GAME_OVER))
+    else if(Controls_WasPressed(CONTROLS_SECONDARY) && (Pong_Game.Screen == PONG_SCREEN_GAME_OVER))
     {
         Pong_Game.Screen = PONG_SCREEN_MENU;
         Pong_Input.RightSliderArmed = false;
     }
-    if(Primary && !Pong_Input.PrimaryDown && ((Pong_Game.Screen == PONG_SCREEN_MENU) || (Pong_Game.Screen == PONG_SCREEN_GAME_OVER)))
+    if(Controls_WasPressed(CONTROLS_PRIMARY) && ((Pong_Game.Screen == PONG_SCREEN_MENU) || (Pong_Game.Screen == PONG_SCREEN_GAME_OVER)))
     {
         Pong_ResetMatch();
     }
-    Pong_Input.PrimaryDown = Primary;
-    Pong_Input.SecondaryDown = Secondary;
     Pong_PendingDeltaTimeMilliseconds += DeltaTimeMilliseconds;
 }
 
@@ -1099,7 +1076,7 @@ static void Pong_UpdateSplash(void)
 }
 
 /* -------------------------------------------------------------------------- */
-/* Public functions                                                           */
+/* Application functions                                                      */
 /* -------------------------------------------------------------------------- */
 
 static bool Pong_DrawSplashScreen(Render_TargetTypeDef *Target)

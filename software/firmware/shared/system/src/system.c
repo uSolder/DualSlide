@@ -17,9 +17,11 @@
 
 #include "app_manager.h"
 #include "audio.h"
+#include "controls.h"
 #include "display.h"
 #include "input.h"
 #include "mixer.h"
+#include "save.h"
 #include "sound.h"
 #include "storage.h"
 #include "system_tasks.h"
@@ -51,7 +53,7 @@ _Static_assert(USB_AUDIO_OUTPUT_CHANNEL_COUNT == 1U, "USB audio output must be m
 #define SYSTEM_INPUT_BATTERY_DEPLETED        ((Input_NumberTypeDef)7U)
 #define SYSTEM_BUTTON_HOLD_TIME_MILLISECONDS (1500ULL)
 
-#define SYSTEM_SETTINGS_STORAGE_KEY                (0x53455453UL) /* "SETS" */
+#define SYSTEM_SETTINGS_SAVE_NAME                  "SETS"
 #define SYSTEM_SETTINGS_SAVE_DATA_VERSION          (1U)
 #define SYSTEM_SETTINGS_DEFAULT_BRIGHTNESS_PERCENT (100U)
 #define SYSTEM_SETTINGS_DEFAULT_VOLUME_PERCENT     (100U)
@@ -82,9 +84,6 @@ static System_ButtonChordStateTypeDef System_ButtonChordState;
 
 static uint8_t System_BrightnessPercent = SYSTEM_SETTINGS_DEFAULT_BRIGHTNESS_PERCENT;
 static uint8_t System_VolumePercent = SYSTEM_SETTINGS_DEFAULT_VOLUME_PERCENT;
-static uint8_t System_SavedBrightnessPercent;
-static uint8_t System_SavedVolumePercent;
-static bool System_SettingsStored;
 
 /* -------------------------------------------------------------------------- */
 /* Private functions                                                          */
@@ -187,16 +186,11 @@ static void System_InitSettings(void)
 
     System_BrightnessPercent = SYSTEM_SETTINGS_DEFAULT_BRIGHTNESS_PERCENT;
     System_VolumePercent = SYSTEM_SETTINGS_DEFAULT_VOLUME_PERCENT;
-    System_SettingsStored = false;
 
-    if((Storage_Read(SYSTEM_SETTINGS_STORAGE_KEY, &SaveData, sizeof(SaveData), NULL) == STORAGE_RESULT_OK) &&
-       (SaveData.Version == SYSTEM_SETTINGS_SAVE_DATA_VERSION))
+    if(Save_Load(SYSTEM_SETTINGS_SAVE_NAME, &SaveData, sizeof(SaveData)) && (SaveData.Version == SYSTEM_SETTINGS_SAVE_DATA_VERSION))
     {
         System_BrightnessPercent = System_ClampBrightness(SaveData.BrightnessPercent);
         System_VolumePercent = (SaveData.VolumePercent > SYSTEM_PERCENT_MAXIMUM) ? SYSTEM_PERCENT_MAXIMUM : SaveData.VolumePercent;
-        System_SavedBrightnessPercent = System_BrightnessPercent;
-        System_SavedVolumePercent = System_VolumePercent;
-        System_SettingsStored = true;
     }
 
     (void)Display_SetBrightness(System_BrightnessPercent);
@@ -238,6 +232,8 @@ int System_Run(void)
     {
         return 1;
     }
+
+    Controls_Init();
 
     /* Before the application manager, so applications can play sounds from Init. */
     Mixer_Init();
@@ -291,6 +287,8 @@ int System_Run(void)
             SystemTasks_PowerOff();
             Running = false;
         }
+
+        Controls_Update(DeltaTimeMilliseconds);
 
         /* Both buttons held: back to the menu, or off when already there. */
         if(System_UpdateButtonChord(&System_ButtonChordState, FrameStartTimeMilliseconds))
@@ -357,24 +355,8 @@ bool System_SaveSettings(void)
         .Reserved = { 0U, 0U }
     };
 
-    /* Flash wears with every write, so unchanged settings are not rewritten. */
-    if(System_SettingsStored &&
-       (System_SavedBrightnessPercent == System_BrightnessPercent) &&
-       (System_SavedVolumePercent == System_VolumePercent))
-    {
-        return true;
-    }
-
-    if(Storage_Write(SYSTEM_SETTINGS_STORAGE_KEY, &SaveData, sizeof(SaveData)) != STORAGE_RESULT_OK)
-    {
-        return false;
-    }
-
-    System_SavedBrightnessPercent = System_BrightnessPercent;
-    System_SavedVolumePercent = System_VolumePercent;
-    System_SettingsStored = true;
-
-    return true;
+    /* Only written when changed, as flash wears with every write. */
+    return Save_Store(SYSTEM_SETTINGS_SAVE_NAME, &SaveData, sizeof(SaveData));
 }
 
 bool System_EraseSavedData(void)
@@ -383,8 +365,6 @@ bool System_EraseSavedData(void)
     {
         return false;
     }
-
-    System_SettingsStored = false;
 
     return System_SaveSettings();
 }

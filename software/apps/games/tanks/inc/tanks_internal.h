@@ -6,7 +6,7 @@
 #ifndef TANKS_INTERNAL_H
 #define TANKS_INTERNAL_H
 
-#include "input.h"
+#include "controls.h"
 #include "tanks.h"
 
 #include <stdbool.h>
@@ -15,13 +15,6 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-#define TANKS_INPUT_LEFT_TRACK  ((Input_NumberTypeDef)1U)
-#define TANKS_INPUT_RIGHT_TRACK ((Input_NumberTypeDef)2U)
-#define TANKS_INPUT_PRIMARY     ((Input_NumberTypeDef)3U)
-#define TANKS_INPUT_SECONDARY   ((Input_NumberTypeDef)4U)
-#define TANKS_INPUT_FIRE        TANKS_INPUT_PRIMARY
-#define TANKS_INPUT_SPECIAL     TANKS_INPUT_SECONDARY
 
 #define TANKS_FP_SHIFT      (8)
 #define TANKS_FP_ONE        (1 << TANKS_FP_SHIFT)
@@ -160,10 +153,8 @@ typedef struct
 typedef struct
 {
     bool Down;
-    bool PreviousDown;
     bool Pressed;
     bool Released;
-    bool HeldFromLaunch;
 } Tanks_ButtonTypeDef;
 
 typedef struct
@@ -276,8 +267,6 @@ typedef struct
     bool Entering;
     uint8_t Index;
     uint8_t Letter;
-    bool IgnorePrimary;
-    bool IgnoreSecondary;
     char Callsign[TANKS_CALLSIGN_LENGTH + 1U];
 } Tanks_RecordTypeDef;
 

@@ -8,7 +8,6 @@
 
 #include "app_manager.h"
 #include "display.h"
-#include "input.h"
 
 #include <stddef.h>
 
@@ -80,7 +79,7 @@ static uint32_t Tanks_SplashElapsedMilliseconds;
 
 static int16_t Tanks_SliderToTrack(int32_t Value)
 {
-    int32_t Offset = Tanks_Clamp32(Value, 0, 65535) - 32768;
+    int32_t Offset = Tanks_Clamp32(Value, 0, CONTROLS_SLIDER_RAW_MAXIMUM) - 32768;
     if((Offset >= -TRACK_DEAD_ZONE) && (Offset <= TRACK_DEAD_ZONE))
     {
         return 0;
@@ -111,47 +110,21 @@ static int16_t Tanks_FilterTrack(int16_t Current, int16_t Target, uint32_t Delta
     return (int16_t)Tanks_Clamp32((int32_t)Current + Step, -1000, 1000);
 }
 
-static void Tanks_UpdateButton(Tanks_ButtonTypeDef *Button, bool Down)
+static void Tanks_ReadButton(Tanks_ButtonTypeDef *Button, Controls_ButtonTypeDef Control)
 {
-    Button->PreviousDown = Button->Down;
-    Button->Down = Down;
-    Button->Pressed = Button->Down && !Button->PreviousDown;
-    Button->Released = !Button->Down && Button->PreviousDown;
-
-    /* The launcher starts games on a held button: that press does nothing. */
-    if(Button->HeldFromLaunch)
-    {
-        Button->HeldFromLaunch = Down;
-        Button->Pressed = false;
-        Button->Released = false;
-    }
+    Button->Down = Controls_IsDown(Control);
+    Button->Pressed = Controls_WasPressed(Control);
+    Button->Released = Controls_WasReleased(Control);
 }
 
 static void Tanks_ReadInput(uint32_t DeltaMilliseconds)
 {
-    int32_t Value;
-    bool Primary = false;
-    bool Secondary = false;
-    if(Input_GetValue(TANKS_INPUT_LEFT_TRACK, &Value))
-    {
-        Tanks_Game.Input.LeftTarget = Tanks_SliderToTrack(Value);
-    }
-    if(Input_GetValue(TANKS_INPUT_RIGHT_TRACK, &Value))
-    {
-        Tanks_Game.Input.RightTarget = Tanks_SliderToTrack(Value);
-    }
-    if(Input_GetValue(TANKS_INPUT_PRIMARY, &Value))
-    {
-        Primary = Value != 0;
-    }
-    if(Input_GetValue(TANKS_INPUT_SECONDARY, &Value))
-    {
-        Secondary = Value != 0;
-    }
+    Tanks_Game.Input.LeftTarget = Tanks_SliderToTrack(Controls_SliderRaw(CONTROLS_LEFT_SLIDER));
+    Tanks_Game.Input.RightTarget = Tanks_SliderToTrack(Controls_SliderRaw(CONTROLS_RIGHT_SLIDER));
     Tanks_Game.Input.LeftTrack = Tanks_FilterTrack(Tanks_Game.Input.LeftTrack, Tanks_Game.Input.LeftTarget, DeltaMilliseconds);
     Tanks_Game.Input.RightTrack = Tanks_FilterTrack(Tanks_Game.Input.RightTrack, Tanks_Game.Input.RightTarget, DeltaMilliseconds);
-    Tanks_UpdateButton(&Tanks_Game.Input.Primary, Primary);
-    Tanks_UpdateButton(&Tanks_Game.Input.Secondary, Secondary);
+    Tanks_ReadButton(&Tanks_Game.Input.Primary, CONTROLS_PRIMARY);
+    Tanks_ReadButton(&Tanks_Game.Input.Secondary, CONTROLS_SECONDARY);
 }
 
 static void Tanks_HandleScreenInput(void)
@@ -184,7 +157,7 @@ static void Tanks_HandleScreenInput(void)
 }
 
 /* -------------------------------------------------------------------------- */
-/* Public functions                                                           */
+/* Application functions                                                      */
 /* -------------------------------------------------------------------------- */
 
 static bool Tanks_Init(void)
@@ -201,11 +174,7 @@ static bool Tanks_Init(void)
     Tanks_Game.Input.RightTarget = 0;
     Tanks_Game.Input.LeftTrack = 0;
     Tanks_Game.Input.RightTrack = 0;
-    Tanks_Game.Input.Primary.Down = false;
-    Tanks_Game.Input.Primary.PreviousDown = false;
-    Tanks_Game.Input.Primary.Pressed = false;
-    Tanks_Game.Input.Primary.Released = false;
-    Tanks_Game.Input.Primary.HeldFromLaunch = true;
+    Tanks_Game.Input.Primary = (Tanks_ButtonTypeDef){ 0 };
     Tanks_Game.Input.Secondary = Tanks_Game.Input.Primary;
     Tanks_Game.Message[0] = '\0';
     Tanks_Game.Paused = false;
@@ -303,8 +272,6 @@ static void Tanks_Resume(void)
 {
     TanksAudio_Start();
     Tanks_Game.Paused = false;
-    Tanks_Game.Input.Primary.Down = false;
-    Tanks_Game.Input.Secondary.Down = false;
 }
 
 static void Tanks_Shutdown(void)

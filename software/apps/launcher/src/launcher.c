@@ -18,6 +18,7 @@
 
 #include "app_manager.h"
 #include "avenir_next_demi_usolder.h"
+#include "controls.h"
 #include "display.h"
 #include "input.h"
 #include "open_sans.h"
@@ -71,10 +72,6 @@
 /* Baseline position of the centered opening-screen uSolder wordmark. */
 #define LAUNCHER_STARTUP_BRAND_TEXT_Y             (200)
 
-#define INPUT_LEFT_SLIDER_NUMBER      ((Input_NumberTypeDef)1U)
-#define INPUT_RIGHT_SLIDER_NUMBER     ((Input_NumberTypeDef)2U)
-#define INPUT_PRIMARY_BUTTON_NUMBER   ((Input_NumberTypeDef)3U)
-#define INPUT_SECONDARY_BUTTON_NUMBER ((Input_NumberTypeDef)4U)
 #define INPUT_BATTERY_NUMBER          ((Input_NumberTypeDef)5U)
 #define INPUT_USB_POWER_NUMBER        ((Input_NumberTypeDef)6U)
 
@@ -103,17 +100,6 @@ typedef enum
     LAUNCHER_SCREEN_CONTENT_PREVIEW
 } Launcher_ScreenContentTypeDef;
 
-/**
- * @brief One button, and whether the two-button gesture (or a press left over
- *        from before) has claimed it.
- */
-typedef struct
-{
-    bool Down;
-    bool Released;
-    bool Claimed;
-} Launcher_ButtonTypeDef;
-
 typedef struct
 {
     uint32_t ElapsedMilliseconds;
@@ -124,8 +110,6 @@ typedef struct
     Launcher_PreviewTransitionTypeDef PreviewTransition;
     uint32_t PreviewTransitionElapsedMilliseconds;
     uint32_t ChannelOsdMilliseconds;
-    Launcher_ButtonTypeDef Primary;
-    Launcher_ButtonTypeDef Secondary;
     bool USBPowerPresent;
     bool StartupChannelChangeStarted;
     bool StartupChannelChangeCompleted;
@@ -358,17 +342,6 @@ static void Launcher_DrawBatteryVoltage(Render_TargetTypeDef *Target)
     Render_DrawText(Target, &OpenSansBold20, BatteryText, TextX, LAUNCHER_SCREEN_TAB_LABEL_Y, TextColour);
 }
 
-/*
- * Treat both buttons as already pressed, so letting go of a press left over
- * from before (the power button at start-up, or the two-button gesture that
- * returned here) does nothing.
- */
-static void Launcher_ClaimButtons(void)
-{
-    Launcher_State.Primary = (Launcher_ButtonTypeDef){ .Down = true, .Claimed = true };
-    Launcher_State.Secondary = (Launcher_ButtonTypeDef){ .Down = true, .Claimed = true };
-}
-
 static void Launcher_Reset(void)
 {
     Launcher_State.ElapsedMilliseconds = 0U;
@@ -379,7 +352,6 @@ static void Launcher_Reset(void)
     Launcher_State.PreviewTransition = LAUNCHER_PREVIEW_TRANSITION_NONE;
     Launcher_State.PreviewTransitionElapsedMilliseconds = 0U;
     Launcher_State.ChannelOsdMilliseconds = 0U;
-    Launcher_ClaimButtons();
     Launcher_State.USBPowerPresent = false;
     Launcher_State.StartupChannelChangeStarted = false;
     Launcher_State.StartupChannelChangeCompleted = false;
@@ -448,48 +420,25 @@ static void Launcher_UpdateChannel(void)
     Launcher_State.PreviewTransitionElapsedMilliseconds = 0U;
 }
 
-static void Launcher_TrackButton(Launcher_ButtonTypeDef *Button, Input_NumberTypeDef Input)
-{
-    int32_t Value;
-    const bool Down = Input_GetValue(Input, &Value) && (Value != 0);
-
-    if(Down && !Button->Down)
-    {
-        Button->Claimed = false;
-    }
-
-    Button->Released = !Down && Button->Down;
-    Button->Down = Down;
-}
-
 /*
  * A press of secondary tunes the next channel; a press of primary starts the
  * tuned one. Each acts when let go, so a press that becomes the two-button
- * gesture does neither.
+ * gesture (which controls.h stops reporting) does neither.
  */
 static void Launcher_UpdateButtons(void)
 {
-    Launcher_TrackButton(&Launcher_State.Primary, INPUT_PRIMARY_BUTTON_NUMBER);
-    Launcher_TrackButton(&Launcher_State.Secondary, INPUT_SECONDARY_BUTTON_NUMBER);
-
-    if(Launcher_State.Primary.Down && Launcher_State.Secondary.Down)
-    {
-        Launcher_State.Primary.Claimed = true;
-        Launcher_State.Secondary.Claimed = true;
-    }
-
     if((Launcher_State.Phase != LAUNCHER_PHASE_MENU) || (NUM_APPS == 0U))
     {
         return;
     }
 
-    if(Launcher_State.Primary.Released && !Launcher_State.Primary.Claimed)
+    if(Controls_WasReleased(CONTROLS_PRIMARY))
     {
         (void)AppManager_StartApplication((uint16_t)Launcher_State.TunedApplication);
         return;
     }
 
-    if(Launcher_State.Secondary.Released && !Launcher_State.Secondary.Claimed)
+    if(Controls_WasReleased(CONTROLS_SECONDARY))
     {
         Launcher_TuneNextChannel();
     }
@@ -896,7 +845,7 @@ static void Launcher_DrawMenuScreen(Render_TargetTypeDef *Target, Launcher_Scree
         LAUNCHER_CHANNEL_TAB_X,
         LAUNCHER_BUTTON_TAB_WIDTH,
         "CH +",
-        (Launcher_State.Secondary.Down && !Launcher_State.Secondary.Claimed) ? COLOUR_BLUE : COLOUR_BLUE_DARK);
+        Controls_IsDown(CONTROLS_SECONDARY) ? COLOUR_BLUE : COLOUR_BLUE_DARK);
     Launcher_DrawScreenTab(
         Target,
         LAUNCHER_CHARGING_INDICATOR_X,
@@ -909,7 +858,7 @@ static void Launcher_DrawMenuScreen(Render_TargetTypeDef *Target, Launcher_Scree
         LAUNCHER_START_TAB_X,
         LAUNCHER_BUTTON_TAB_WIDTH,
         "START",
-        (Launcher_State.Primary.Down && !Launcher_State.Primary.Claimed) ? COLOUR_RED : COLOUR_RED_DARK);
+        Controls_IsDown(CONTROLS_PRIMARY) ? COLOUR_RED : COLOUR_RED_DARK);
     Launcher_DrawBrandName(Target);
 }
 
@@ -1034,8 +983,6 @@ void Launcher_Pause(void)
 
 void Launcher_Resume(void)
 {
-    /* The buttons that brought us back are still held; letting go must do nothing. */
-    Launcher_ClaimButtons();
     Launcher_Paused = false;
 }
 

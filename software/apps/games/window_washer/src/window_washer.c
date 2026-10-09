@@ -7,11 +7,11 @@
 
 #include "app_manager.h"
 #include "audio.h"
+#include "controls.h"
 #include "display.h"
-#include "input.h"
 #include "open_sans.h"
 #include "render.h"
-#include "storage.h"
+#include "save.h"
 #include "window_washer_audio.h"
 
 #include <stddef.h>
@@ -21,10 +21,6 @@
 /* Private configuration                                                      */
 /* -------------------------------------------------------------------------- */
 
-#define INPUT_LEFT_SLIDER_NUMBER      ((Input_NumberTypeDef)1U)
-#define INPUT_RIGHT_SLIDER_NUMBER     ((Input_NumberTypeDef)2U)
-#define INPUT_PRIMARY_BUTTON_NUMBER   ((Input_NumberTypeDef)3U)
-#define INPUT_SECONDARY_BUTTON_NUMBER ((Input_NumberTypeDef)4U)
 
 #define BUILDING_LEFT_X         (70)
 #define BUILDING_RIGHT_X        ((int16_t)RENDER_WIDTH - 70)
@@ -94,7 +90,7 @@
 #define FALL_RESTART_DELAY_MILLISECONDS        (500U)
 
 #define INPUT_SLIDER_MINIMUM (0)
-#define INPUT_SLIDER_MAXIMUM (65535)
+#define INPUT_SLIDER_MAXIMUM (CONTROLS_SLIDER_RAW_MAXIMUM)
 #define INPUT_SLIDER_CENTRE  ((INPUT_SLIDER_MAXIMUM + 1) / 2)
 
 #define SCORE_PANEL_WIDTH              (174U)
@@ -109,7 +105,7 @@
 #define SCORE_POINTS_PER_FLOOR         (1U)
 #define SCORE_POINTS_PER_DIRT          (10U)
 
-#define WINDOW_WASHER_HIGH_SCORE_STORAGE_KEY (0x57574853UL) /* "WWHS" */
+#define WINDOW_WASHER_HIGH_SCORE_SAVE_NAME "WWHS"
 #define WINDOW_WASHER_SAVE_DATA_VERSION       (2U)
 
 /* High-score initials: the right slider picks a letter, primary sets it, secondary steps back. */
@@ -240,8 +236,6 @@ typedef struct
     bool Active;
     uint8_t Index;
     uint8_t Selected;
-    bool PrimaryDown;
-    bool SecondaryDown;
     uint32_t BlinkMilliseconds;
     char Letters[INITIALS_LENGTH + 1U];
 } WindowWasher_InitialsEntryTypeDef;
@@ -370,7 +364,7 @@ static void WindowWasher_SaveHighScore(void)
     };
 
     WindowWasher_CopyInitials(SaveData.Initials, WindowWasher_HighScoreInitials);
-    (void)Storage_Write(WINDOW_WASHER_HIGH_SCORE_STORAGE_KEY, &SaveData, sizeof(SaveData));
+    (void)Save_Store(WINDOW_WASHER_HIGH_SCORE_SAVE_NAME, &SaveData, sizeof(SaveData));
 }
 
 /*
@@ -381,13 +375,11 @@ static void WindowWasher_LoadHighScore(void)
 {
     static const char NoInitials[INITIALS_LENGTH + 1U] = "---";
     WindowWasher_SaveDataTypeDef SaveData;
-    Storage_ResultTypeDef Result;
 
     WindowWasher_HighScore = 0U;
     WindowWasher_CopyInitials(WindowWasher_HighScoreInitials, NoInitials);
-    Result = Storage_Read(WINDOW_WASHER_HIGH_SCORE_STORAGE_KEY, &SaveData, sizeof(SaveData), NULL);
 
-    if((Result == STORAGE_RESULT_OK) && (SaveData.Version == WINDOW_WASHER_SAVE_DATA_VERSION) &&
+    if(Save_Load(WINDOW_WASHER_HIGH_SCORE_SAVE_NAME, &SaveData, sizeof(SaveData)) && (SaveData.Version == WINDOW_WASHER_SAVE_DATA_VERSION) &&
        (SaveData.HighScore <= SCORE_MAXIMUM) && WindowWasher_InitialsAreValid(SaveData.Initials))
     {
         WindowWasher_HighScore = SaveData.HighScore;
@@ -779,19 +771,11 @@ static uint8_t WindowWasher_SliderToLetter(int32_t Value, uint8_t Current)
     return (uint8_t)Letter;
 }
 
-static bool WindowWasher_ReadButton(Input_NumberTypeDef Button)
-{
-    int32_t Value;
-
-    return Input_GetValue(Button, &Value) && (Value != 0);
-}
-
 /* A new high score: ask for initials before the next round starts. */
 static void WindowWasher_StartInitialsEntry(void)
 {
     static const char NoInitials[INITIALS_LENGTH + 1U] = "---";
     WindowWasher_InitialsEntryTypeDef *Entry = &WindowWasher_InitialsEntry;
-    int32_t Value;
 
     Entry->Active = true;
     Entry->Index = 0U;
@@ -799,14 +783,7 @@ static void WindowWasher_StartInitialsEntry(void)
     Entry->BlinkMilliseconds = 0U;
     WindowWasher_CopyInitials(Entry->Letters, NoInitials);
 
-    if(Input_GetValue(INPUT_RIGHT_SLIDER_NUMBER, &Value))
-    {
-        Entry->Selected = WindowWasher_SliderToLetter(Value, 0U);
-    }
-
-    /* A button already held when the entry appears must be released first. */
-    Entry->PrimaryDown = WindowWasher_ReadButton(INPUT_PRIMARY_BUTTON_NUMBER);
-    Entry->SecondaryDown = WindowWasher_ReadButton(INPUT_SECONDARY_BUTTON_NUMBER);
+    Entry->Selected = WindowWasher_SliderToLetter(Controls_SliderRaw(CONTROLS_RIGHT_SLIDER), 0U);
 }
 
 /* Record the new high score under the entered initials, then start the next round. */
@@ -823,18 +800,12 @@ static void WindowWasher_FinishInitialsEntry(void)
 static void WindowWasher_UpdateInitialsEntry(uint32_t DeltaTimeMilliseconds)
 {
     WindowWasher_InitialsEntryTypeDef *Entry = &WindowWasher_InitialsEntry;
-    const bool Primary = WindowWasher_ReadButton(INPUT_PRIMARY_BUTTON_NUMBER);
-    const bool Secondary = WindowWasher_ReadButton(INPUT_SECONDARY_BUTTON_NUMBER);
-    int32_t Value;
 
     Entry->BlinkMilliseconds += DeltaTimeMilliseconds;
+    Entry->Selected = WindowWasher_SliderToLetter(Controls_SliderRaw(CONTROLS_RIGHT_SLIDER), Entry->Selected);
 
-    if(Input_GetValue(INPUT_RIGHT_SLIDER_NUMBER, &Value))
-    {
-        Entry->Selected = WindowWasher_SliderToLetter(Value, Entry->Selected);
-    }
-
-    if(Primary && !Entry->PrimaryDown)
+    /* Only fresh presses count, so a button held as the entry appears does nothing. */
+    if(Controls_WasPressed(CONTROLS_PRIMARY))
     {
         Entry->Letters[Entry->Index] = (char)('A' + Entry->Selected);
         Entry->Index++;
@@ -846,15 +817,12 @@ static void WindowWasher_UpdateInitialsEntry(uint32_t DeltaTimeMilliseconds)
             return;
         }
     }
-    else if(Secondary && !Entry->SecondaryDown && (Entry->Index > 0U))
+    else if(Controls_WasPressed(CONTROLS_SECONDARY) && (Entry->Index > 0U))
     {
         Entry->Index--;
         Entry->Letters[Entry->Index] = INITIALS_EMPTY;
         Entry->BlinkMilliseconds = 0U;
     }
-
-    Entry->PrimaryDown = Primary;
-    Entry->SecondaryDown = Secondary;
 }
 
 static bool WindowWasher_FigureHitsBalcony(const WindowWasher_GameTypeDef *Game, const WindowWasher_PlatformTypeDef *Platform, const WindowWasher_FigureTypeDef *Figure)
@@ -2252,7 +2220,7 @@ static void WindowWasher_DrawInitialsEntry(Render_TargetTypeDef *Target, const W
 }
 
 /* -------------------------------------------------------------------------- */
-/* Public functions                                                           */
+/* Application functions                                                      */
 /* -------------------------------------------------------------------------- */
 
 static bool WindowWasher_Init(void)
@@ -2276,23 +2244,13 @@ static bool WindowWasher_Init(void)
 
 static void WindowWasher_Update(uint32_t DeltaTimeMilliseconds)
 {
-    int32_t LeftSliderValue;
-    int32_t RightSliderValue;
-
     if(!WindowWasher_Initialized || WindowWasher_Paused)
     {
         return;
     }
 
-    if(Input_GetValue(INPUT_LEFT_SLIDER_NUMBER, &LeftSliderValue))
-    {
-        WindowWasher_Input.LeftSlider = WindowWasher_ConvertSliderValue(LeftSliderValue);
-    }
-
-    if(Input_GetValue(INPUT_RIGHT_SLIDER_NUMBER, &RightSliderValue))
-    {
-        WindowWasher_Input.RightSlider = WindowWasher_ConvertSliderValue(RightSliderValue);
-    }
+    WindowWasher_Input.LeftSlider = WindowWasher_ConvertSliderValue(Controls_SliderRaw(CONTROLS_LEFT_SLIDER));
+    WindowWasher_Input.RightSlider = WindowWasher_ConvertSliderValue(Controls_SliderRaw(CONTROLS_RIGHT_SLIDER));
 
     if(WindowWasher_InitialsEntry.Active)
     {

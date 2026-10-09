@@ -11,8 +11,8 @@
 
 #include "tanks_internal.h"
 
-#include "input.h"
-#include "storage.h"
+#include "controls.h"
+#include "save.h"
 
 #include <stddef.h>
 
@@ -20,13 +20,12 @@
 /* Private configuration                                                      */
 /* -------------------------------------------------------------------------- */
 
-#define TANKS_RECORD_STORAGE_KEY      (0x544B5257UL) /* "TKRW" */
+#define TANKS_RECORD_SAVE_NAME        "TKRW"
 #define TANKS_RECORD_VERSION          (1U)
 #define TANKS_RECORD_MAXIMUM_WAVE     (99U)
 #define TANKS_CALLSIGN_LETTERS        (26U)
 #define TANKS_CALLSIGN_HYSTERESIS     (600)
 #define TANKS_CALLSIGN_EMPTY          ('-')
-#define TANKS_SLIDER_MAXIMUM          (65535)
 
 /* -------------------------------------------------------------------------- */
 /* Private types                                                              */
@@ -78,7 +77,7 @@ static void Tanks_SaveRecord(void)
         .BestWave = Tanks_Game.Record.BestWave
     };
     Tanks_CopyCallsign(Save.Callsign, Tanks_Game.Record.BestCallsign);
-    (void)Storage_Write(TANKS_RECORD_STORAGE_KEY, &Save, sizeof(Save));
+    (void)Save_Store(TANKS_RECORD_SAVE_NAME, &Save, sizeof(Save));
 }
 
 /*
@@ -87,8 +86,8 @@ static void Tanks_SaveRecord(void)
  */
 static uint8_t Tanks_SliderToLetter(int32_t Value, uint8_t Current)
 {
-    const int32_t Span = (TANKS_SLIDER_MAXIMUM + 1) / (int32_t)TANKS_CALLSIGN_LETTERS;
-    const int32_t Clamped = Tanks_Clamp32(Value, 0, TANKS_SLIDER_MAXIMUM);
+    const int32_t Span = (CONTROLS_SLIDER_RAW_MAXIMUM + 1) / (int32_t)TANKS_CALLSIGN_LETTERS;
+    const int32_t Clamped = Tanks_Clamp32(Value, 0, CONTROLS_SLIDER_RAW_MAXIMUM);
     int32_t Letter = Clamped / Span;
     if(Letter >= (int32_t)TANKS_CALLSIGN_LETTERS)
     {
@@ -120,7 +119,7 @@ void Tanks_LoadRecord(void)
     Record->BestWave = 0U;
     Record->Entering = false;
     Tanks_CopyCallsign(Record->BestCallsign, Tanks_NoCallsign);
-    if((Storage_Read(TANKS_RECORD_STORAGE_KEY, &Save, sizeof(Save), NULL) == STORAGE_RESULT_OK) &&
+    if(Save_Load(TANKS_RECORD_SAVE_NAME, &Save, sizeof(Save)) &&
        (Save.Version == TANKS_RECORD_VERSION) && (Save.BestWave <= TANKS_RECORD_MAXIMUM_WAVE) && Tanks_CallsignIsValid(Save.Callsign))
     {
         Record->BestWave = (uint16_t)Save.BestWave;
@@ -131,7 +130,6 @@ void Tanks_LoadRecord(void)
 void Tanks_CheckRecord(void)
 {
     Tanks_RecordTypeDef *Record = &Tanks_Game.Record;
-    int32_t Value;
     if(Tanks_RecordWave() <= Record->BestWave)
     {
         return;
@@ -140,34 +138,18 @@ void Tanks_CheckRecord(void)
     Record->Index = 0U;
     Record->Letter = 0U;
     Tanks_CopyCallsign(Record->Callsign, Tanks_NoCallsign);
-    if(Input_GetValue(TANKS_INPUT_RIGHT_TRACK, &Value))
-    {
-        Record->Letter = Tanks_SliderToLetter(Value, 0U);
-    }
+    Record->Letter = Tanks_SliderToLetter(Controls_SliderRaw(CONTROLS_RIGHT_SLIDER), 0U);
 
     /* A button held when the game ended (still firing, say) must not set a letter as it is let go. */
-    Record->IgnorePrimary = Tanks_Game.Input.Primary.Down;
-    Record->IgnoreSecondary = Tanks_Game.Input.Secondary.Down;
+    Controls_IgnoreHeldButtons();
 }
 
 void Tanks_UpdateRecordEntry(void)
 {
     Tanks_RecordTypeDef *Record = &Tanks_Game.Record;
-    const bool Primary = Tanks_Game.Input.Primary.Released && !Record->IgnorePrimary;
-    const bool Secondary = Tanks_Game.Input.Secondary.Released && !Record->IgnoreSecondary;
-    int32_t Value;
-    if(Tanks_Game.Input.Primary.Released)
-    {
-        Record->IgnorePrimary = false;
-    }
-    if(Tanks_Game.Input.Secondary.Released)
-    {
-        Record->IgnoreSecondary = false;
-    }
-    if(Input_GetValue(TANKS_INPUT_RIGHT_TRACK, &Value))
-    {
-        Record->Letter = Tanks_SliderToLetter(Value, Record->Letter);
-    }
+    const bool Primary = Controls_WasReleased(CONTROLS_PRIMARY);
+    const bool Secondary = Controls_WasReleased(CONTROLS_SECONDARY);
+    Record->Letter = Tanks_SliderToLetter(Controls_SliderRaw(CONTROLS_RIGHT_SLIDER), Record->Letter);
     if(Primary)
     {
         Record->Callsign[Record->Index] = (char)('A' + Record->Letter);

@@ -5,6 +5,7 @@
 
 #include "app_manager.h"
 
+#include "controls.h"
 #include "launcher.h"
 #include "mixer.h"
 #include "music.h"
@@ -122,6 +123,14 @@ static void AppManager_FillPalette(const AppManager_AppTypeDef *Application, Dis
     }
 }
 
+/* A newly shown app starts with fresh controls: buttons still held do nothing, sliders read as unmoved. */
+static void AppManager_ResetControls(void)
+{
+    Controls_IgnoreHeldButtons();
+    Controls_ResetSliderMoved(CONTROLS_LEFT_SLIDER);
+    Controls_ResetSliderMoved(CONTROLS_RIGHT_SLIDER);
+}
+
 /* Acquire a frame, let Draw fill it, and present it. */
 static void AppManager_RenderFrame(void (*Draw)(Render_TargetTypeDef *Target))
 {
@@ -187,6 +196,8 @@ bool AppManager_StartApplication(uint16_t ApplicationIndex)
         AppManager_FillPalette(Application, Palette);
         (void)Display_SetPalette(APP_MANAGER_SPLASH_PALETTE_START_INDEX, Palette, APP_MANAGER_SPLASH_PALETTE_ENTRY_COUNT);
     }
+
+    AppManager_ResetControls();
 
     if(!Application->Init())
     {
@@ -353,6 +364,8 @@ void AppManager_Resume(void)
         return;
     }
 
+    AppManager_ResetControls();
+
     if(AppManager_State == APP_MANAGER_STATE_LAUNCHER)
     {
         if(AppManager_LauncherInterface.Resume != NULL)
@@ -395,6 +408,7 @@ void AppManager_OpenLauncher(void)
 
     AppManager_State = APP_MANAGER_STATE_LAUNCHER;
     AppManager_ActiveApplicationIndex = 0U;
+    AppManager_ResetControls();
 
     if(!AppManager_Paused && (AppManager_LauncherInterface.Resume != NULL))
     {
