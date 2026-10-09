@@ -53,7 +53,8 @@ static const AppManager_RuntimeInterfaceTypeDef AppManager_LauncherInterface =
     .Shutdown = Launcher_Shutdown
 };
 
-static const AppManager_AppTypeDef *const AppManager_Applications[NUM_APPS] =
+/* Every app the launcher offers, in channel order. To add a game, add it here. */
+static const AppManager_AppTypeDef *const AppManager_Applications[] =
 {
     &WindowWasher_App,
     &TemplateGame_App,
@@ -96,7 +97,7 @@ static bool AppManager_Paused;
 
 static bool AppManager_IsApplicationIndexValid(uint16_t ApplicationIndex)
 {
-    return ApplicationIndex < NUM_APPS;
+    return ApplicationIndex < AppManager_GetAppCount();
 }
 
 static const AppManager_AppTypeDef *AppManager_GetApplication(uint16_t ApplicationIndex)
@@ -414,6 +415,11 @@ void AppManager_OpenLauncher(void)
     {
         AppManager_LauncherInterface.Resume();
     }
+}
+
+uint16_t AppManager_GetAppCount(void)
+{
+    return (uint16_t)(sizeof(AppManager_Applications) / sizeof(AppManager_Applications[0]));
 }
 
 bool AppManager_IsLauncherActive(void)

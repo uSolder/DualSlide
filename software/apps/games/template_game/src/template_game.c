@@ -10,7 +10,10 @@
  *
  * 1. Add game state near the module-level variables, and reset it in
  *    TemplateGame_Init().
- * 2. Read controls and update gameplay in TemplateGame_Update().
+ * 2. Read the controls and update gameplay in TemplateGame_Update(), with
+ *    controls.h: Controls_WasPressed(CONTROLS_PRIMARY) for a button press,
+ *    Controls_SliderBetween(CONTROLS_RIGHT_SLIDER, Bottom, Top) for a
+ *    slider position, and so on.
  * 3. Draw the whole screen in TemplateGame_Render() with the render.h
  *    functions: Render_Clear(), Render_Box(), Render_FillCircle(),
  *    Render_DrawLine(), Render_DrawTextAligned(), Render_DrawTextf() and so
@@ -27,8 +30,10 @@
  *    through music.h; songs and instruments are generated with the scripts
  *    in tools/music_converter. Everything stops automatically when the game
  *    exits.
- * 7. Register the game: add &TemplateGame_App to the list in app_manager.c
- *    and raise NUM_APPS in app_manager.h.
+ * 7. Keep high scores and progress with save.h: put them in one structure,
+ *    then Save_Load("NAME", &Data, sizeof(Data)) in Init and Save_Store()
+ *    with the same arguments whenever they change.
+ * 8. Register the game: add &TemplateGame_App to the list in app_manager.c.
  */
 
 #include "template_game.h"

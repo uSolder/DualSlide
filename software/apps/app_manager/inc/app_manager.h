@@ -24,8 +24,10 @@ extern "C" {
 
 /**
  * @brief Number of applications registered with the application manager.
+ *
+ * Counted from the list in app_manager.c, so adding an app there is enough.
  */
-#define NUM_APPS (5U)
+#define NUM_APPS (AppManager_GetAppCount())
 
 /**
  * @brief Splash-screen position within the logical render target.
@@ -100,6 +102,11 @@ typedef struct
 
 /** Fills an AppManager_AppTypeDef's Palette and PaletteCount from an array of colours. */
 #define APP_PALETTE(Array) .Palette = (Array), .PaletteCount = (uint16_t)(sizeof(Array) / sizeof((Array)[0]))
+
+/**
+ * @brief Return the number of registered applications (see NUM_APPS).
+ */
+uint16_t AppManager_GetAppCount(void);
 
 /**
  * @brief Initializes the application manager.
