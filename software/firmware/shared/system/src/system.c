@@ -13,6 +13,7 @@
 #include "display.h"
 #include "input.h"
 #include "mixer.h"
+#include "settings.h"
 #include "storage.h"
 #include "system_tasks.h"
 #include "system_time.h"
@@ -173,6 +174,9 @@ int System_Run(void)
 
     /* Before the application manager, so applications can play sounds from Init. */
     Mixer_Init();
+
+    /* Saved brightness and volume, once the display and mixer are ready. */
+    Settings_Init();
 
     if(!AppManager_Init())
     {

@@ -361,6 +361,17 @@ bool Display_PresentFrame(Display_FrameTypeDef *Frame)
     return true;
 }
 
+/* Squared, so equal steps look like equal changes in brightness; 0 is the dimmest lit level. */
+bool Display_SetBrightness(uint8_t Percent)
+{
+    const uint32_t Clamped = (Percent > 100U) ? 100U : Percent;
+    const uint32_t Level = (Clamped * Clamped) / 10U;
+
+    Board_SetBacklightPermille((uint16_t)((Level == 0U) ? 1U : Level));
+
+    return true;
+}
+
 void Display_WaitForFrame(void)
 {
     uint32_t VerticalBlankCount;

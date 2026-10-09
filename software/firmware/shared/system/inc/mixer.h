@@ -136,6 +136,15 @@ bool Mixer_StopApplicationChannels(void);
 bool Mixer_SetVolume(Mixer_ChannelTypeDef Channel, uint16_t Volume);
 
 /**
+ * @brief Set the master volume, applied to the mix of every channel.
+ *
+ * @param Volume 0 (silent) to MIXER_VOLUME_MAX (original level).
+ *
+ * @return true if the volume was accepted; otherwise false.
+ */
+bool Mixer_SetMasterVolume(uint16_t Volume);
+
+/**
  * @brief Return whether a mixer channel is producing sound.
  *
  * A clip played once stops being reported shortly after its last sample.

@@ -176,6 +176,20 @@ bool Display_PresentFrame(Display_FrameTypeDef *Frame)
            SDL_RenderTexture(State->Renderer, State->Texture, NULL, NULL) &&
            SDL_RenderPresent(State->Renderer);
 }
+/* The simulator has no backlight; it dims the window's image instead. */
+bool Display_SetBrightness(uint8_t Percent)
+{
+    const uint32_t Clamped = (Percent > 100U) ? 100U : Percent;
+    const Uint8 Level = (Uint8)((Clamped * Clamped * 255U) / 10000U);
+
+    if(Windows_DisplayState.Texture == NULL)
+    {
+        return false;
+    }
+
+    return SDL_SetTextureColorMod(Windows_DisplayState.Texture, Level, Level, Level);
+}
+
 void Display_WaitForFrame(void)
 {
     static uint64_t PreviousFrameTicks;

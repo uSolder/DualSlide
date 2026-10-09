@@ -61,6 +61,16 @@ const GPIO_PinTypeDef *Board_GetSecondaryButtonInput(void);
 const GPIO_PinTypeDef *Board_GetUSBPowerInput(void);
 
 /**
+ * @brief Sets the LCD backlight level.
+ *
+ * Levels above off map onto the duty range the backlight driver can follow,
+ * so even the lowest level stays lit.
+ *
+ * @param Permille 0 (off), or 1 (dimmest) to 1000 (full); larger values are clamped.
+ */
+void Board_SetBacklightPermille(uint16_t Permille);
+
+/**
  * @brief Commands the board to turn off its main power rail.
  */
 void Board_PowerOff(void);

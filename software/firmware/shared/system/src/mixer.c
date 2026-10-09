@@ -76,6 +76,9 @@ static uint32_t Mixer_RequestWriteIndex;
 static uint32_t Mixer_RequestReadIndex;
 
 static Mixer_ChannelStateTypeDef Mixer_Channels[MIXER_CHANNEL_COUNT];
+
+/* Master volume, written by the main loop and read once per audio block. */
+static uint32_t Mixer_MasterVolume = MIXER_VOLUME_MAX;
 static bool Mixer_ChannelPlaying[MIXER_CHANNEL_COUNT];
 
 static int32_t Mixer_MixBuffer[MIXER_BLOCK_SAMPLES];
@@ -220,6 +223,18 @@ void Mixer_Init(void)
     Mixer_RequestReadIndex = 0U;
 }
 
+bool Mixer_SetMasterVolume(uint16_t Volume)
+{
+    if(Volume > MIXER_VOLUME_MAX)
+    {
+        return false;
+    }
+
+    __atomic_store_n(&Mixer_MasterVolume, (uint32_t)Volume, __ATOMIC_RELAXED);
+
+    return true;
+}
+
 bool Mixer_PlaySound(Mixer_ChannelTypeDef Channel, const Mixer_SoundTypeDef *Sound, bool Loop)
 {
     Mixer_RequestTypeDef Request = { 0 };
@@ -315,6 +330,8 @@ void Mixer_FillAudioBuffer(Audio_SampleTypeDef *Samples, uint32_t FrameCount, vo
         return;
     }
 
+    const uint32_t MasterVolume = __atomic_load_n(&Mixer_MasterVolume, __ATOMIC_RELAXED);
+
     Mixer_ApplyRequests();
 
     while(Offset < FrameCount)
@@ -350,10 +367,10 @@ void Mixer_FillAudioBuffer(Audio_SampleTypeDef *Samples, uint32_t FrameCount, vo
             }
         }
 
-        /* Saturate the sum so overlapping loud sources clip instead of wrapping. */
+        /* Apply the master volume, then saturate so overlapping loud sources clip instead of wrapping. */
         for(uint32_t Index = 0U; Index < BlockSamples; Index++)
         {
-            int32_t Sample = Mixer_MixBuffer[Index];
+            int32_t Sample = (int32_t)(((int64_t)Mixer_MixBuffer[Index] * (int64_t)MasterVolume) / (int64_t)MIXER_VOLUME_MAX);
 
             if(Sample > MIXER_SAMPLE_MAXIMUM)
             {

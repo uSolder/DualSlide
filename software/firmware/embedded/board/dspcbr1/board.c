@@ -159,17 +159,32 @@ static const GPIO_ConfigTypeDef Board_LCDResetConfig =
     .InitialLevel = GPIO_LEVEL_HIGH
 };
 
-static const GPIO_PinTypeDef Board_LCDBacklightPin =
+/*
+ * The LCD backlight is an AP3019A LED boost driver whose CTRL pin is PWM'd
+ * from PB4 (TIM3 channel 1). Its datasheet allows CTRL PWM up to 2 kHz, and
+ * it soft-starts for about 300 us every time CTRL goes high, so a shorter
+ * on-pulse never lights the LEDs. At 500 Hz, the minimum duty keeps every
+ * on-pulse at 400 us or longer. The backlight starts dark and turns on once
+ * the panel is initialised.
+ */
+#define BOARD_BACKLIGHT_PWM_FREQUENCY_HZ    (500U)
+#define BOARD_BACKLIGHT_MINIMUM_PERMILLE    (200U)
+
+static Timer_HandleTypeDef Board_LCDBacklightTimer =
 {
-    .Pin = PB4
+    .Timer = TIM3_CH1,
+    .FrequencyHz = BOARD_BACKLIGHT_PWM_FREQUENCY_HZ,
+    .UpdateCallback = NULL,
+    .CallbackContext = NULL
 };
 
-static const GPIO_ConfigTypeDef Board_LCDBacklightConfig =
+static Timer_PWMChannelTypeDef Board_LCDBacklightChannel =
 {
-    .Mode = GPIO_MODE_OUTPUT,
-    .OutputType = GPIO_OUTPUT_PUSH_PULL,
-    .Pull = GPIO_PULL_NONE,
-    .InitialLevel = GPIO_LEVEL_LOW
+    .Timer = &Board_LCDBacklightTimer,
+    .Output = TIM3_CH1,
+    .Pin = PB4,
+    .Polarity = TIMER_PWM_POLARITY_ACTIVE_HIGH,
+    .DutyPermille = 0U
 };
 
 static const GPIO_PinTypeDef Board_RedLEDPin =
@@ -393,9 +408,24 @@ const GPIO_PinTypeDef *Board_GetSecondaryButtonInput(void)
     return &Board_SecondaryButtonPin;
 }
 
+void Board_SetBacklightPermille(uint16_t Permille)
+{
+    uint32_t Duty = 0U;
+
+    /* Any level above off maps onto the duty range the AP3019A can follow. */
+    if(Permille > 0U)
+    {
+        const uint32_t Level = (Permille > 1000U) ? 1000U : Permille;
+
+        Duty = BOARD_BACKLIGHT_MINIMUM_PERMILLE + (((1000U - BOARD_BACKLIGHT_MINIMUM_PERMILLE) * Level) / 1000U);
+    }
+
+    (void)Timer_SetPWMDutyPermille(&Board_LCDBacklightChannel, (uint16_t)Duty);
+}
+
 void Board_PowerOff(void)
 {
-    GPIO_Clear(&Board_LCDBacklightPin);
+    Board_SetBacklightPermille(0U);
     GPIO_Clear(&Board_RedLEDPin);
 
     /* Bring the speaker down gently while the supply is still latched on. */
@@ -544,7 +574,10 @@ static void Board_InitInterfaces(void)
         Board_InitFailure();
     }
 
-    if(GPIO_Init(&Board_LCDBacklightPin, &Board_LCDBacklightConfig) != GPIO_RESULT_OK)
+    if((Timer_Init(&Board_LCDBacklightTimer) != TIMER_RESULT_OK) ||
+       (Timer_PWMChannelInit(&Board_LCDBacklightChannel) != TIMER_RESULT_OK) ||
+       (Timer_OutputEnable(&Board_LCDBacklightChannel) != TIMER_RESULT_OK) ||
+       (Timer_Start(&Board_LCDBacklightTimer) != TIMER_RESULT_OK))
     {
         Board_InitFailure();
     }
@@ -577,10 +610,7 @@ static void Board_InitDevices(void)
         Board_InitFailure();
     }
 
-    if(GPIO_Set(&Board_LCDBacklightPin) != GPIO_RESULT_OK)
-    {
-        Board_InitFailure();
-    }
+    Board_SetBacklightPermille(1000U);
 }
 
 static uint16_t Board_GetADCInputMillivolts(const ADC_InputTypeDef *Input)

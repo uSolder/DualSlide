@@ -97,6 +97,17 @@ bool Display_PresentFrame(Display_FrameTypeDef *Frame);
  */
 void Display_WaitForFrame(void);
 
+/**
+ * @brief Set the screen brightness.
+ *
+ * The backend maps the percentage onto a perceptual curve, so equal steps
+ * look like equal changes in brightness.
+ *
+ * @param Percent 0 (darkest) to 100 (full brightness); larger values are clamped.
+ * @return true when the brightness was applied; otherwise false.
+ */
+bool Display_SetBrightness(uint8_t Percent);
+
 #ifdef __cplusplus
 }
 #endif
