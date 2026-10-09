@@ -1516,7 +1516,6 @@ static void WindowWasher_DrawBuilding(Render_TargetTypeDef *Target, const Window
     }
 }
 
-static uint16_t WindowWasher_MeasureTextWidth(const Font *FontAsset, const char *Text);
 
 static void WindowWasher_DrawHotelEntrance(Render_TargetTypeDef *Target, const WindowWasher_GameTypeDef *Game)
 {
@@ -1755,7 +1754,7 @@ static void WindowWasher_DrawHotelEntrance(Render_TargetTypeDef *Target, const W
             Name[INITIALS_LENGTH + Index] = Suffix[Index];
         }
 
-        NameX = (int16_t)(((int16_t)RENDER_WIDTH - (int16_t)WindowWasher_MeasureTextWidth(&OpenSans20, Name) - 1) / 2);
+        NameX = (int16_t)(((int16_t)RENDER_WIDTH - (int16_t)Render_TextWidth(&OpenSans20, Name) - 1) / 2);
         Render_DrawText(Target, &OpenSans20, Name, NameX, (int16_t)(SignInset.Y - 2), COLOUR_SCORE_SHADOW);
         Render_DrawText(Target, &OpenSans20, Name, (int16_t)(NameX + 1), (int16_t)(SignInset.Y - 2), COLOUR_SCORE_SHADOW);
     }
@@ -1905,74 +1904,7 @@ static void WindowWasher_DrawWasher(Render_TargetTypeDef *Target, const WindowWa
 
 static void WindowWasher_FormatScore(uint32_t Score, char *Buffer, size_t BufferSize)
 {
-    char Digits[10];
-    size_t DigitCount = 0U;
-    size_t OutputIndex = 0U;
-
-    if((Buffer == NULL) || (BufferSize == 0U))
-    {
-        return;
-    }
-
-    do
-    {
-        Digits[DigitCount++] = (char)('0' + (Score % 10U));
-        Score /= 10U;
-    }
-    while((Score > 0U) && (DigitCount < sizeof(Digits)));
-
-    while((DigitCount < SCORE_MINIMUM_DIGITS) && (DigitCount < sizeof(Digits)))
-    {
-        Digits[DigitCount++] = '0';
-    }
-
-    while((DigitCount > 0U) && ((OutputIndex + 1U) < BufferSize))
-    {
-        Buffer[OutputIndex++] = Digits[--DigitCount];
-    }
-
-    Buffer[OutputIndex] = '\0';
-}
-
-/**
- * @brief Measure the horizontal advance of a single-line string.
- */
-static uint16_t WindowWasher_MeasureTextWidth(const Font *FontAsset, const char *Text)
-{
-    uint32_t Codepoint;
-    uint32_t GlyphIndex;
-    uint32_t Width = 0U;
-
-    if((FontAsset == NULL) || (FontAsset->glyphs == NULL) || (Text == NULL))
-    {
-        return 0U;
-    }
-
-    while(*Text != '\0')
-    {
-        Codepoint = (uint8_t)*Text;
-        Text++;
-
-        if((Codepoint == (uint32_t)'\n') || (Codepoint == (uint32_t)'\r'))
-        {
-            continue;
-        }
-
-        if((Codepoint < FontAsset->firstCodepoint) || ((Codepoint - FontAsset->firstCodepoint) >= (uint32_t)FontAsset->glyphCount))
-        {
-            Codepoint = (uint32_t)'?';
-
-            if((Codepoint < FontAsset->firstCodepoint) || ((Codepoint - FontAsset->firstCodepoint) >= (uint32_t)FontAsset->glyphCount))
-            {
-                continue;
-            }
-        }
-
-        GlyphIndex = Codepoint - FontAsset->firstCodepoint;
-        Width += FontAsset->glyphs[GlyphIndex].advance;
-    }
-
-    return (Width > UINT16_MAX) ? UINT16_MAX : (uint16_t)Width;
+    (void)Render_FormatText(Buffer, (uint32_t)BufferSize, "%0*u", (int)SCORE_MINIMUM_DIGITS, (unsigned int)Score);
 }
 
 /**
@@ -1981,7 +1913,7 @@ static uint16_t WindowWasher_MeasureTextWidth(const Font *FontAsset, const char 
 static void WindowWasher_DrawSplashPlaque(Render_TargetTypeDef *Target, const Render_RectTypeDef *Bounds, uint64_t ElapsedMilliseconds)
 {
     static const char Title[] = "WINDOW WASHER";
-    const uint16_t TextWidth = WindowWasher_MeasureTextWidth(&OpenSans36, Title);
+    const uint16_t TextWidth = Render_TextWidth(&OpenSans36, Title);
     const uint16_t PlaqueWidth = (uint16_t)(TextWidth + 62U);
     const uint16_t PlaqueHeight = 64U;
     const int16_t PlaqueX = (int16_t)(Bounds->X + (((int16_t)Bounds->Width - (int16_t)PlaqueWidth) / 2));
@@ -2222,8 +2154,8 @@ static void WindowWasher_DrawScore(Render_TargetTypeDef *Target, const WindowWas
 
     WindowWasher_FormatScore((Game->Score > WindowWasher_HighScore) ? Game->Score : WindowWasher_HighScore, &HighScoreText[HighScoreIndex], sizeof(HighScoreText) - HighScoreIndex);
 
-    ScoreWidth = WindowWasher_MeasureTextWidth(&OpenSans20, ScoreText);
-    HighScoreWidth = WindowWasher_MeasureTextWidth(&OpenSans20, HighScoreText);
+    ScoreWidth = Render_TextWidth(&OpenSans20, ScoreText);
+    HighScoreWidth = Render_TextWidth(&OpenSans20, HighScoreText);
 
     ScoreX = (int16_t)(SCORE_PANEL_X + 25 + (((int16_t)SCORE_CURRENT_AREA_WIDTH - 25 - (int16_t)ScoreWidth) / 2));
 
@@ -2249,7 +2181,7 @@ static void WindowWasher_DrawScore(Render_TargetTypeDef *Target, const WindowWas
 
 static void WindowWasher_DrawCentredText(Render_TargetTypeDef *Target, const Font *FontAsset, const char *Text, int16_t CentreX, int16_t Y, Render_ColourIndexTypeDef Colour, bool Shadow)
 {
-    const int16_t X = (int16_t)(CentreX - ((int16_t)WindowWasher_MeasureTextWidth(FontAsset, Text) / 2));
+    const int16_t X = (int16_t)(CentreX - ((int16_t)Render_TextWidth(FontAsset, Text) / 2));
 
     if(Shadow)
     {
@@ -2323,7 +2255,7 @@ static void WindowWasher_DrawInitialsEntry(Render_TargetTypeDef *Target, const W
 /* Public functions                                                           */
 /* -------------------------------------------------------------------------- */
 
-bool WindowWasher_Init(void)
+static bool WindowWasher_Init(void)
 {
     WindowWasher_Input.LeftSlider = 0;
     WindowWasher_Input.RightSlider = 0;
@@ -2342,7 +2274,7 @@ bool WindowWasher_Init(void)
     return true;
 }
 
-void WindowWasher_Update(uint32_t DeltaTimeMilliseconds)
+static void WindowWasher_Update(uint32_t DeltaTimeMilliseconds)
 {
     int32_t LeftSliderValue;
     int32_t RightSliderValue;
@@ -2371,27 +2303,7 @@ void WindowWasher_Update(uint32_t DeltaTimeMilliseconds)
     WindowWasher_PendingDeltaTimeMilliseconds += DeltaTimeMilliseconds;
 }
 
-bool WindowWasher_GetSplashScreenPalette(Display_ColourTypeDef *Palette)
-{
-    if(Palette == NULL)
-    {
-        return false;
-    }
-
-    for(uint16_t PaletteIndex = 0U; PaletteIndex < APP_MANAGER_SPLASH_PALETTE_ENTRY_COUNT; PaletteIndex++)
-    {
-        Palette[PaletteIndex] = 0U;
-    }
-
-    for(uint16_t PaletteIndex = 0U; PaletteIndex < (uint16_t)(sizeof(WindowWasher_Palette) / sizeof(WindowWasher_Palette[0])); PaletteIndex++)
-    {
-        Palette[PaletteIndex] = WindowWasher_Palette[PaletteIndex];
-    }
-
-    return true;
-}
-
-bool WindowWasher_DrawSplashScreen(Render_TargetTypeDef *Target)
+static bool WindowWasher_DrawSplashScreen(Render_TargetTypeDef *Target)
 {
     WindowWasher_GameTypeDef SplashGame = { 0 };
     WindowWasher_PlatformTypeDef SplashPlatform;
@@ -2439,10 +2351,8 @@ bool WindowWasher_DrawSplashScreen(Render_TargetTypeDef *Target)
     return true;
 }
 
-void WindowWasher_Render(void)
+static void WindowWasher_Render(Render_TargetTypeDef *Target)
 {
-    Display_FrameTypeDef *Frame;
-    Render_TargetTypeDef Target;
     WindowWasher_PlatformTypeDef Platform;
 
     if(!WindowWasher_Initialized || WindowWasher_Paused)
@@ -2450,19 +2360,7 @@ void WindowWasher_Render(void)
         return;
     }
 
-    Frame = Display_AcquireFrame();
-
-    if(Frame == NULL)
-    {
-        return;
-    }
-
     Platform = WindowWasher_MakePlatform(&WindowWasher_Game, &WindowWasher_Input);
-
-    Target.Pixels = Frame->Pixels;
-    Target.Width = Frame->Width;
-    Target.Height = Frame->Height;
-    Target.StridePixels = Frame->StridePixels;
 
     {
         uint32_t DeltaTimeMilliseconds = WindowWasher_PendingDeltaTimeMilliseconds;
@@ -2487,38 +2385,35 @@ void WindowWasher_Render(void)
         WindowWasherAudio_Update(CartSpeed, WindowWasher_Game.ElapsedMilliseconds);
     }
 
-    Render_ResetClipRect();
-    Render_Clear(&Target, COLOUR_SKY);
+    Render_Clear(Target, COLOUR_SKY);
 
-    WindowWasher_DrawBackground(&Target, &WindowWasher_Game);
-    WindowWasher_DrawBuilding(&Target, &WindowWasher_Game);
-    WindowWasher_DrawHotelEntrance(&Target, &WindowWasher_Game);
-    WindowWasher_DrawBalconies(&Target, &WindowWasher_Game);
-    WindowWasher_DrawPlatform(&Target, &Platform);
-    WindowWasher_DrawWasher(&Target, &Platform, &WindowWasher_Figure, WindowWasher_Game.Crashed);
-    WindowWasher_DrawScore(&Target, &WindowWasher_Game);
+    WindowWasher_DrawBackground(Target, &WindowWasher_Game);
+    WindowWasher_DrawBuilding(Target, &WindowWasher_Game);
+    WindowWasher_DrawHotelEntrance(Target, &WindowWasher_Game);
+    WindowWasher_DrawBalconies(Target, &WindowWasher_Game);
+    WindowWasher_DrawPlatform(Target, &Platform);
+    WindowWasher_DrawWasher(Target, &Platform, &WindowWasher_Figure, WindowWasher_Game.Crashed);
+    WindowWasher_DrawScore(Target, &WindowWasher_Game);
 
     if(WindowWasher_InitialsEntry.Active)
     {
-        WindowWasher_DrawInitialsEntry(&Target, &WindowWasher_Game);
+        WindowWasher_DrawInitialsEntry(Target, &WindowWasher_Game);
     }
-
-    (void)Display_PresentFrame(Frame);
 }
 
-void WindowWasher_Pause(void)
+static void WindowWasher_Pause(void)
 {
     WindowWasherAudio_Stop();
     WindowWasher_Paused = true;
 }
 
-void WindowWasher_Resume(void)
+static void WindowWasher_Resume(void)
 {
     WindowWasherAudio_Resume();
     WindowWasher_Paused = false;
 }
 
-void WindowWasher_Shutdown(void)
+static void WindowWasher_Shutdown(void)
 {
     WindowWasherAudio_Stop();
 
@@ -2537,3 +2432,19 @@ void WindowWasher_Shutdown(void)
     WindowWasher_Paused = false;
     WindowWasher_PendingDeltaTimeMilliseconds = 0U;
 }
+
+/* -------------------------------------------------------------------------- */
+/* Application                                                                */
+/* -------------------------------------------------------------------------- */
+
+const AppManager_AppTypeDef WindowWasher_App =
+{
+    .Init = WindowWasher_Init,
+    .Update = WindowWasher_Update,
+    .Render = WindowWasher_Render,
+    .DrawSplashScreen = WindowWasher_DrawSplashScreen,
+    .Pause = WindowWasher_Pause,
+    .Resume = WindowWasher_Resume,
+    .Shutdown = WindowWasher_Shutdown,
+    APP_PALETTE(WindowWasher_Palette)
+};

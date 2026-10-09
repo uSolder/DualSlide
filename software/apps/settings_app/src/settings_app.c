@@ -157,56 +157,6 @@ static const Sound_TypeDef SettingsApp_Blip = { SOUND_LAYERS(SettingsApp_BlipLay
 /* Private functions                                                          */
 /* -------------------------------------------------------------------------- */
 
-static uint16_t SettingsApp_MeasureTextWidth(const Font *FontAsset, const char *Text)
-{
-    uint32_t Codepoint;
-    uint32_t Width = 0U;
-
-    if((FontAsset == NULL) || (FontAsset->glyphs == NULL) || (Text == NULL))
-    {
-        return 0U;
-    }
-
-    while(*Text != '\0')
-    {
-        Codepoint = (uint8_t)*Text;
-        Text++;
-
-        if((Codepoint < FontAsset->firstCodepoint) || ((Codepoint - FontAsset->firstCodepoint) >= (uint32_t)FontAsset->glyphCount))
-        {
-            continue;
-        }
-
-        Width += FontAsset->glyphs[Codepoint - FontAsset->firstCodepoint].advance;
-    }
-
-    return (Width > UINT16_MAX) ? UINT16_MAX : (uint16_t)Width;
-}
-
-static void SettingsApp_DrawCentredText(Render_TargetTypeDef *Target, const Font *FontAsset, const char *Text, int16_t CentreX, int16_t Y, uint8_t Colour)
-{
-    Render_DrawText(Target, FontAsset, Text, (int16_t)(CentreX - ((int16_t)SettingsApp_MeasureTextWidth(FontAsset, Text) / 2)), Y, Colour);
-}
-
-static void SettingsApp_FormatPercent(uint8_t Percent, char *Buffer)
-{
-    uint8_t Length = 0U;
-
-    if(Percent >= 100U)
-    {
-        Buffer[Length++] = (char)('0' + (Percent / 100U));
-    }
-
-    if(Percent >= 10U)
-    {
-        Buffer[Length++] = (char)('0' + ((Percent / 10U) % 10U));
-    }
-
-    Buffer[Length++] = (char)('0' + (Percent % 10U));
-    Buffer[Length++] = '%';
-    Buffer[Length] = '\0';
-}
-
 /* ------------------------------------------------------------------------- */
 /* Sliders                                                                   */
 /* ------------------------------------------------------------------------- */
@@ -409,7 +359,7 @@ static void SettingsApp_DrawRowValue(Render_TargetTypeDef *Target, int16_t RowY,
 {
     const int16_t RightX = (int16_t)(SETTINGS_APP_ROW_X + (int16_t)SETTINGS_APP_ROW_WIDTH - SETTINGS_APP_ROW_PADDING);
 
-    Render_DrawText(Target, FontAsset, Text, (int16_t)(RightX - (int16_t)SettingsApp_MeasureTextWidth(FontAsset, Text)), (int16_t)(RowY + TextY), Colour);
+    Render_DrawText(Target, FontAsset, Text, (int16_t)(RightX - (int16_t)Render_TextWidth(FontAsset, Text)), (int16_t)(RowY + TextY), Colour);
 }
 
 /* The bar spans the setting's range: empty at Minimum, full at 100%. */
@@ -419,7 +369,7 @@ static void SettingsApp_DrawLevelRow(Render_TargetTypeDef *Target, SettingsApp_R
     const uint8_t ValueColour = (SettingsApp_State.Row == Row) ? Colour : COLOUR_GREY;
     char Text[5];
 
-    SettingsApp_FormatPercent(Percent, Text);
+    (void)Render_FormatText(Text, sizeof(Text), "%u%%", (unsigned int)Percent);
     SettingsApp_DrawRowValue(Target, RowY, &OpenSansBold28, Text, 12, ValueColour);
     SettingsApp_DrawRowBar(Target, RowY, ((uint32_t)(Percent - Minimum) * 1000U) / (SYSTEM_PERCENT_MAXIMUM - Minimum), ValueColour);
 }
@@ -450,7 +400,7 @@ static void SettingsApp_DrawScene(Render_TargetTypeDef *Target)
     const char *Hint = "RIGHT SLIDER: ADJUST";
 
     Render_FillRect(Target, &Screen, COLOUR_BACKGROUND);
-    SettingsApp_DrawCentredText(Target, &OpenSansBold36, "SETTINGS", CentreX, 24, COLOUR_WHITE);
+    Render_DrawTextAligned(Target, &OpenSansBold36, "SETTINGS", CentreX, 24, RENDER_ALIGN_CENTRE, COLOUR_WHITE);
 
     SettingsApp_DrawLevelRow(Target, SETTINGS_APP_ROW_VOLUME, "VOLUME", System_GetVolume(), 0U, COLOUR_CYAN);
     SettingsApp_DrawLevelRow(Target, SETTINGS_APP_ROW_BRIGHTNESS, "BRIGHTNESS", System_GetBrightness(), SYSTEM_BRIGHTNESS_MINIMUM_PERCENT, COLOUR_YELLOW);
@@ -461,8 +411,8 @@ static void SettingsApp_DrawScene(Render_TargetTypeDef *Target)
         Hint = SettingsApp_Erasing() ? "KEEP HOLDING TO ERASE" : "HOLD PRIMARY FOR 5 SECONDS TO ERASE";
     }
 
-    SettingsApp_DrawCentredText(Target, &OpenSansBold20, Hint, CentreX, 396, COLOUR_WHITE);
-    SettingsApp_DrawCentredText(Target, &OpenSans16, "PRIMARY: NEXT     SECONDARY: BACK     HOLD BOTH: MENU", CentreX, 436, COLOUR_GREY);
+    Render_DrawTextAligned(Target, &OpenSansBold20, Hint, CentreX, 396, RENDER_ALIGN_CENTRE, COLOUR_WHITE);
+    Render_DrawTextAligned(Target, &OpenSans16, "PRIMARY: NEXT     SECONDARY: BACK     HOLD BOTH: MENU", CentreX, 436, RENDER_ALIGN_CENTRE, COLOUR_GREY);
 }
 
 /* The launcher card: a gear above the title. */
@@ -504,22 +454,15 @@ static void SettingsApp_DrawSplashScene(Render_TargetTypeDef *Target)
         (void)Render_DrawPolygon(Target, Points, 24U, (Ring == 0U) ? COLOUR_GREY : COLOUR_BACKGROUND);
     }
 
-    SettingsApp_DrawCentredText(Target, &OpenSansBold36, "SETTINGS", CentreX, (int16_t)(APP_MANAGER_SPLASH_SCREEN_Y + 250), COLOUR_WHITE);
+    Render_DrawTextAligned(Target, &OpenSansBold36, "SETTINGS", CentreX, (int16_t)(APP_MANAGER_SPLASH_SCREEN_Y + 250), RENDER_ALIGN_CENTRE, COLOUR_WHITE);
 }
 
 /* -------------------------------------------------------------------------- */
 /* Public functions                                                           */
 /* -------------------------------------------------------------------------- */
 
-bool SettingsApp_Init(void)
+static bool SettingsApp_Init(void)
 {
-    Display_ColourTypeDef Palette[APP_MANAGER_SPLASH_PALETTE_ENTRY_COUNT];
-
-    if(!SettingsApp_GetSplashScreenPalette(Palette) || !Display_SetPalette(0U, Palette, APP_MANAGER_SPLASH_PALETTE_ENTRY_COUNT))
-    {
-        return false;
-    }
-
     SettingsApp_State = (SettingsApp_StateTypeDef){ 0 };
     SettingsApp_State.VolumeBlipStep = (uint8_t)(System_GetVolume() / 10U);
 
@@ -533,7 +476,7 @@ bool SettingsApp_Init(void)
     return true;
 }
 
-void SettingsApp_Update(uint32_t DeltaTimeMilliseconds)
+static void SettingsApp_Update(uint32_t DeltaTimeMilliseconds)
 {
     if(!SettingsApp_Initialized || SettingsApp_Paused)
     {
@@ -546,27 +489,7 @@ void SettingsApp_Update(uint32_t DeltaTimeMilliseconds)
     SettingsApp_UpdateSlider();
 }
 
-bool SettingsApp_GetSplashScreenPalette(Display_ColourTypeDef *Palette)
-{
-    if(Palette == NULL)
-    {
-        return false;
-    }
-
-    for(uint16_t Index = 0U; Index < APP_MANAGER_SPLASH_PALETTE_ENTRY_COUNT; Index++)
-    {
-        Palette[Index] = 0U;
-    }
-
-    for(uint16_t Index = 0U; Index < (uint16_t)(sizeof(SettingsApp_Palette) / sizeof(SettingsApp_Palette[0])); Index++)
-    {
-        Palette[Index] = SettingsApp_Palette[Index];
-    }
-
-    return true;
-}
-
-bool SettingsApp_DrawSplashScreen(Render_TargetTypeDef *Target)
+static bool SettingsApp_DrawSplashScreen(Render_TargetTypeDef *Target)
 {
     if((Target == NULL) || (Target->Pixels == NULL))
     {
@@ -578,41 +501,23 @@ bool SettingsApp_DrawSplashScreen(Render_TargetTypeDef *Target)
     return true;
 }
 
-void SettingsApp_Render(void)
+static void SettingsApp_Render(Render_TargetTypeDef *Target)
 {
-    Display_FrameTypeDef *Frame;
-    Render_TargetTypeDef Target;
-
     if(!SettingsApp_Initialized || SettingsApp_Paused)
     {
         return;
     }
 
-    Frame = Display_AcquireFrame();
-
-    if(Frame == NULL)
-    {
-        return;
-    }
-
-    Target.Pixels = Frame->Pixels;
-    Target.Width = Frame->Width;
-    Target.Height = Frame->Height;
-    Target.StridePixels = Frame->StridePixels;
-
-    Render_ResetClipRect();
-    SettingsApp_DrawScene(&Target);
-
-    (void)Display_PresentFrame(Frame);
+    SettingsApp_DrawScene(Target);
 }
 
-void SettingsApp_Pause(void)
+static void SettingsApp_Pause(void)
 {
     (void)System_SaveSettings();
     SettingsApp_Paused = true;
 }
 
-void SettingsApp_Resume(void)
+static void SettingsApp_Resume(void)
 {
     if(SettingsApp_Initialized)
     {
@@ -623,9 +528,25 @@ void SettingsApp_Resume(void)
     }
 }
 
-void SettingsApp_Shutdown(void)
+static void SettingsApp_Shutdown(void)
 {
     (void)System_SaveSettings();
     SettingsApp_Initialized = false;
     SettingsApp_Paused = false;
 }
+
+/* -------------------------------------------------------------------------- */
+/* Application                                                                */
+/* -------------------------------------------------------------------------- */
+
+const AppManager_AppTypeDef SettingsApp_App =
+{
+    .Init = SettingsApp_Init,
+    .Update = SettingsApp_Update,
+    .Render = SettingsApp_Render,
+    .DrawSplashScreen = SettingsApp_DrawSplashScreen,
+    .Pause = SettingsApp_Pause,
+    .Resume = SettingsApp_Resume,
+    .Shutdown = SettingsApp_Shutdown,
+    APP_PALETTE(SettingsApp_Palette)
+};

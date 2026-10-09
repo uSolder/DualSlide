@@ -6,6 +6,8 @@
 #ifndef LAUNCHER_H
 #define LAUNCHER_H
 
+#include "render.h"
+
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -28,9 +30,9 @@ bool Launcher_Init(void);
 void Launcher_Update(uint32_t DeltaTimeMilliseconds);
 
 /**
- * @brief Renders one launcher frame.
+ * @brief Draws one launcher frame into Target.
  */
-void Launcher_Render(void);
+void Launcher_Render(Render_TargetTypeDef *Target);
 
 /**
  * @brief Pauses the launcher.

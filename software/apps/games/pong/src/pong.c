@@ -638,37 +638,6 @@ static void Pong_UpdatePlaying(uint32_t DeltaTimeMilliseconds)
     }
 }
 
-static void Pong_DrawRect(Render_TargetTypeDef *Target, int16_t X, int16_t Y, uint16_t Width, uint16_t Height, Render_ColourIndexTypeDef Colour)
-{
-    const Render_RectTypeDef Rect = { X, Y, Width, Height };
-    Render_FillRect(Target, &Rect, Colour);
-}
-
-static int16_t Pong_TextWidth(const Font *FontData, const char *Text)
-{
-    int16_t Width = 0;
-    while(*Text != '\0')
-    {
-        const FontGlyph *Glyph = Font_GetGlyph(FontData, (uint8_t)*Text);
-        if(Glyph != NULL)
-        {
-            Width = (int16_t)(Width + Glyph->advance);
-        }
-        Text++;
-    }
-    return Width;
-}
-
-static void Pong_DrawCenteredText(Render_TargetTypeDef *Target, const Font *FontData, const char *Text, int16_t CenterX, int16_t Y, Render_ColourIndexTypeDef Colour)
-{
-    Render_DrawText(Target, FontData, Text, (int16_t)(CenterX - (Pong_TextWidth(FontData, Text) / 2)), Y, Colour);
-}
-
-static void Pong_DrawRightAlignedText(Render_TargetTypeDef *Target, const Font *FontData, const char *Text, int16_t RightX, int16_t Y, Render_ColourIndexTypeDef Colour)
-{
-    Render_DrawText(Target, FontData, Text, (int16_t)(RightX - Pong_TextWidth(FontData, Text)), Y, Colour);
-}
-
 static int16_t Pong_TextVerticalPosition(const Font *FontData, const char *Text, int16_t BoxY, uint16_t BoxHeight)
 {
     int16_t MinimumY = 127;
@@ -692,17 +661,11 @@ static int16_t Pong_TextVerticalPosition(const Font *FontData, const char *Text,
     return (int16_t)(BoxY + (((int16_t)BoxHeight - (MaximumY - MinimumY)) / 2) - FontData->ascent - MinimumY);
 }
 
-static void Pong_DrawNumber(Render_TargetTypeDef *Target, uint8_t Number, int16_t X, int16_t Y, Render_ColourIndexTypeDef Colour)
-{
-    char Text[2] = { (char)('0' + Number), '\0' };
-    Render_DrawText(Target, &OpenSans36, Text, X, Y, Colour);
-}
-
 static void Pong_DrawPaddle(Render_TargetTypeDef *Target, bool Left, int16_t Y, int16_t Height, Render_ColourIndexTypeDef BaseColour, bool Flashing)
 {
     const int16_t BaseX = Left ? PADDLE_MARGIN : ((int16_t)RENDER_WIDTH - PADDLE_MARGIN - (int16_t)PADDLE_WIDTH);
     const Render_ColourIndexTypeDef Colour = Flashing ? COLOUR_PADDLE_FLASH : BaseColour;
-    Pong_DrawRect(Target, BaseX, Y, PADDLE_WIDTH, (uint16_t)Height, Colour);
+    Render_Box(Target, BaseX, Y, PADDLE_WIDTH, (uint16_t)Height, Colour);
 }
 
 static void Pong_UpdateTimedEffect(uint32_t *Timer, uint32_t DeltaTimeMilliseconds)
@@ -770,16 +733,8 @@ static void Pong_DrawEffectDurationBar(Render_TargetTypeDef *Target)
     }
     if(RemainingMilliseconds > 0U)
     {
-        Pong_DrawRect(Target, 0, (int16_t)RENDER_HEIGHT - 4, (uint16_t)(((uint32_t)RENDER_WIDTH * RemainingMilliseconds) / DurationMilliseconds), 4U, Colour);
+        Render_Box(Target, 0, (int16_t)RENDER_HEIGHT - 4, (uint16_t)(((uint32_t)RENDER_WIDTH * RemainingMilliseconds) / DurationMilliseconds), 4U, Colour);
     }
-}
-
-static void Pong_DrawDisc(Render_TargetTypeDef *Target, int16_t X, int16_t Y, uint16_t Diameter, Render_ColourIndexTypeDef Colour)
-{
-    const uint16_t CornerSize = (Diameter + 3U) / 4U;
-    Pong_DrawRect(Target, X + (int16_t)CornerSize, Y, Diameter - (2U * CornerSize), CornerSize, Colour);
-    Pong_DrawRect(Target, X, Y + (int16_t)CornerSize, Diameter, Diameter - (2U * CornerSize), Colour);
-    Pong_DrawRect(Target, X + (int16_t)CornerSize, Y + (int16_t)Diameter - (int16_t)CornerSize, Diameter - (2U * CornerSize), CornerSize, Colour);
 }
 
 static void Pong_DrawDotMatrix(Render_TargetTypeDef *Target, int16_t X, int16_t Y, uint16_t Width, uint16_t Height)
@@ -798,7 +753,7 @@ static void Pong_DrawDotMatrix(Render_TargetTypeDef *Target, int16_t X, int16_t 
         }
         for(; DotX < (int16_t)(X + Width); DotX += 28)
         {
-            Pong_DrawRect(Target, DotX, DotY, 2U, 2U, COLOUR_LINE);
+            Render_Box(Target, DotX, DotY, 2U, 2U, COLOUR_LINE);
         }
     }
 }
@@ -811,16 +766,16 @@ static void Pong_DrawCourt(Render_TargetTypeDef *Target)
     Pong_DrawDotMatrix(Target, 0, 0, RENDER_WIDTH, RENDER_HEIGHT);
     if(Pong_Game.LeftShieldMilliseconds > 0U)
     {
-        Pong_DrawRect(Target, 28, 48, 4U, RENDER_HEIGHT - 96U, COLOUR_SHIELD_GLOW);
+        Render_Box(Target, 28, 48, 4U, RENDER_HEIGHT - 96U, COLOUR_SHIELD_GLOW);
     }
     if(Pong_Game.RightShieldMilliseconds > 0U)
     {
-        Pong_DrawRect(Target, (int16_t)RENDER_WIDTH - 32, 48, 4U, RENDER_HEIGHT - 96U, COLOUR_SHIELD_GLOW);
+        Render_Box(Target, (int16_t)RENDER_WIDTH - 32, 48, 4U, RENDER_HEIGHT - 96U, COLOUR_SHIELD_GLOW);
     }
     Pong_DrawPaddle(Target, true, Pong_Input.LeftY, LeftHeight, COLOUR_LEFT_PADDLE, Pong_Game.LeftPaddleFlashMilliseconds > 0U);
     Pong_DrawPaddle(Target, false, Pong_Input.RightY, RightHeight, COLOUR_RIGHT_PADDLE, Pong_Game.RightPaddleFlashMilliseconds > 0U);
-    Pong_DrawNumber(Target, Pong_Game.LeftScore, (int16_t)RENDER_WIDTH / 2 - 60, 34, COLOUR_LEFT_PADDLE);
-    Pong_DrawNumber(Target, Pong_Game.RightScore, (int16_t)RENDER_WIDTH / 2 + 36, 34, COLOUR_RIGHT_PADDLE);
+    Render_DrawTextf(Target, &OpenSans36, (int16_t)RENDER_WIDTH / 2 - 60, 34, COLOUR_LEFT_PADDLE, "%u", (unsigned int)(Pong_Game.LeftScore));
+    Render_DrawTextf(Target, &OpenSans36, (int16_t)RENDER_WIDTH / 2 + 36, 34, COLOUR_RIGHT_PADDLE, "%u", (unsigned int)(Pong_Game.RightScore));
     if(Pong_Game.PowerUp.Type != PONG_POWER_UP_NONE)
     {
         Render_ColourIndexTypeDef Colour = Pong_Game.PowerUp.Type == PONG_POWER_UP_EXPAND ? COLOUR_EXPAND :
@@ -839,7 +794,7 @@ static void Pong_DrawCourt(Render_TargetTypeDef *Target)
         const int16_t Y = (int16_t)(Pong_Game.PowerUp.Y + (((int16_t)POWER_UP_SIZE - (int16_t)Size) / 2));
         if(Size > 0U)
         {
-            Pong_DrawRect(Target, X, Y, Size, Size, Colour);
+            Render_Box(Target, X, Y, Size, Size, Colour);
         }
         if(Size >= 18U)
         {
@@ -854,10 +809,10 @@ static void Pong_DrawCourt(Render_TargetTypeDef *Target)
                             COLOUR_BACKGROUND);
         }
     }
-    Pong_DrawDisc(Target, (int16_t)(Pong_BallTrailX[3] / BALL_FIXED_SCALE) + 4, (int16_t)(Pong_BallTrailY[3] / BALL_FIXED_SCALE) + 4, 8U, COLOUR_TRAIL_FAR);
-    Pong_DrawDisc(Target, (int16_t)(Pong_BallTrailX[2] / BALL_FIXED_SCALE) + 3, (int16_t)(Pong_BallTrailY[2] / BALL_FIXED_SCALE) + 3, 10U, COLOUR_TRAIL_MID);
-    Pong_DrawDisc(Target, (int16_t)(Pong_BallTrailX[1] / BALL_FIXED_SCALE) + 2, (int16_t)(Pong_BallTrailY[1] / BALL_FIXED_SCALE) + 2, 12U, COLOUR_TRAIL_NEAR);
-    Pong_DrawDisc(Target, (int16_t)(Pong_Game.Ball.X / BALL_FIXED_SCALE), (int16_t)(Pong_Game.Ball.Y / BALL_FIXED_SCALE), BALL_SIZE, COLOUR_BALL);
+    Render_FillRoundRect(Target, (int16_t)(Pong_BallTrailX[3] / BALL_FIXED_SCALE) + 4, (int16_t)(Pong_BallTrailY[3] / BALL_FIXED_SCALE) + 4, 8U, 8U, (uint16_t)((8U) / 2U), COLOUR_TRAIL_FAR);
+    Render_FillRoundRect(Target, (int16_t)(Pong_BallTrailX[2] / BALL_FIXED_SCALE) + 3, (int16_t)(Pong_BallTrailY[2] / BALL_FIXED_SCALE) + 3, 10U, 10U, (uint16_t)((10U) / 2U), COLOUR_TRAIL_MID);
+    Render_FillRoundRect(Target, (int16_t)(Pong_BallTrailX[1] / BALL_FIXED_SCALE) + 2, (int16_t)(Pong_BallTrailY[1] / BALL_FIXED_SCALE) + 2, 12U, 12U, (uint16_t)((12U) / 2U), COLOUR_TRAIL_NEAR);
+    Render_FillRoundRect(Target, (int16_t)(Pong_Game.Ball.X / BALL_FIXED_SCALE), (int16_t)(Pong_Game.Ball.Y / BALL_FIXED_SCALE), BALL_SIZE, BALL_SIZE, (uint16_t)((BALL_SIZE) / 2U), COLOUR_BALL);
 }
 
 static void Pong_DrawSettingsMenu(Render_TargetTypeDef *Target)
@@ -879,42 +834,42 @@ static void Pong_DrawSettingsMenu(Render_TargetTypeDef *Target)
     const char *PrimaryLabel = "PRIMARY";
     const char *PrimaryAction = ": PLAY";
     const int16_t SecondaryHintX = 202;
-    const int16_t PrimaryHintX = (int16_t)(598 - Pong_TextWidth(&OpenSans20, PrimaryLabel) - Pong_TextWidth(&OpenSans20, PrimaryAction));
+    const int16_t PrimaryHintX = (int16_t)(598 - (int16_t)Render_TextWidth(&OpenSans20, PrimaryLabel) - (int16_t)Render_TextWidth(&OpenSans20, PrimaryAction));
     Render_Clear(Target, COLOUR_BACKGROUND);
     Pong_DrawDotMatrix(Target, 0, 0, RENDER_WIDTH, RENDER_HEIGHT);
-    Pong_DrawRect(Target, 144, 54, RENDER_WIDTH - 288U, 372U, COLOUR_SHADOW);
-    Pong_DrawRect(Target, 146, 56, RENDER_WIDTH - 292U, 368U, COLOUR_BACKGROUND);
-    Pong_DrawRect(Target, 146, 56, RENDER_WIDTH - 292U, 3U, COLOUR_PANEL_EDGE);
-    Pong_DrawCenteredText(Target, &OpenSans36, "PONG", (int16_t)RENDER_WIDTH / 2, 82, COLOUR_TEXT);
-    Pong_DrawCenteredText(Target, &OpenSans20, "SETUP", (int16_t)RENDER_WIDTH / 2, 126, COLOUR_MUTED_TEXT);
+    Render_Box(Target, 144, 54, RENDER_WIDTH - 288U, 372U, COLOUR_SHADOW);
+    Render_Box(Target, 146, 56, RENDER_WIDTH - 292U, 368U, COLOUR_BACKGROUND);
+    Render_Box(Target, 146, 56, RENDER_WIDTH - 292U, 3U, COLOUR_PANEL_EDGE);
+    Render_DrawTextAligned(Target, &OpenSans36, "PONG", (int16_t)RENDER_WIDTH / 2, 82, RENDER_ALIGN_CENTRE, COLOUR_TEXT);
+    Render_DrawTextAligned(Target, &OpenSans20, "SETUP", (int16_t)RENDER_WIDTH / 2, 126, RENDER_ALIGN_CENTRE, COLOUR_MUTED_TEXT);
     if(Pong_Game.MenuItem == PONG_MENU_PLAYERS)
     {
-        Pong_DrawRect(Target, 172, PlayersBoxY, 456U, 42U, COLOUR_PANEL);
-        Pong_DrawRect(Target, 172, PlayersBoxY, 4U, 42U, COLOUR_BALL);
+        Render_Box(Target, 172, PlayersBoxY, 456U, 42U, COLOUR_PANEL);
+        Render_Box(Target, 172, PlayersBoxY, 4U, 42U, COLOUR_BALL);
     }
     Render_DrawText(Target, &OpenSans20, "PLAYERS", 202, PlayersLabelY, Pong_Game.MenuItem == PONG_MENU_PLAYERS ? COLOUR_TEXT : COLOUR_MUTED_TEXT);
-    Pong_DrawRightAlignedText(Target, &OpenSans20, Pong_Game.TwoPlayer ? "TWO" : "ONE", 598, PlayersValueY, Pong_Game.MenuItem == PONG_MENU_PLAYERS ? COLOUR_BALL : COLOUR_TEXT);
+    Render_DrawTextAligned(Target, &OpenSans20, Pong_Game.TwoPlayer ? "TWO" : "ONE", 598, PlayersValueY, RENDER_ALIGN_RIGHT, Pong_Game.MenuItem == PONG_MENU_PLAYERS ? COLOUR_BALL : COLOUR_TEXT);
     if(!Pong_Game.TwoPlayer)
     {
         if(Pong_Game.MenuItem == PONG_MENU_DIFFICULTY)
         {
-            Pong_DrawRect(Target, 172, DifficultyBoxY, 456U, 42U, COLOUR_PANEL);
-            Pong_DrawRect(Target, 172, DifficultyBoxY, 4U, 42U, COLOUR_BALL);
+            Render_Box(Target, 172, DifficultyBoxY, 456U, 42U, COLOUR_PANEL);
+            Render_Box(Target, 172, DifficultyBoxY, 4U, 42U, COLOUR_BALL);
         }
         Render_DrawText(Target, &OpenSans20, "BOT", 202, DifficultyLabelY, Pong_Game.MenuItem == PONG_MENU_DIFFICULTY ? COLOUR_TEXT : COLOUR_MUTED_TEXT);
-        Pong_DrawRightAlignedText(Target, &OpenSans20, Difficulty, 598, DifficultyValueY, Pong_Game.MenuItem == PONG_MENU_DIFFICULTY ? COLOUR_BALL : COLOUR_TEXT);
+        Render_DrawTextAligned(Target, &OpenSans20, Difficulty, 598, DifficultyValueY, RENDER_ALIGN_RIGHT, Pong_Game.MenuItem == PONG_MENU_DIFFICULTY ? COLOUR_BALL : COLOUR_TEXT);
     }
     if(Pong_Game.MenuItem == PONG_MENU_POWER_UPS)
     {
-        Pong_DrawRect(Target, 172, PowerUpsBoxY, 456U, 42U, COLOUR_PANEL);
-        Pong_DrawRect(Target, 172, PowerUpsBoxY, 4U, 42U, COLOUR_BALL);
+        Render_Box(Target, 172, PowerUpsBoxY, 456U, 42U, COLOUR_PANEL);
+        Render_Box(Target, 172, PowerUpsBoxY, 4U, 42U, COLOUR_BALL);
     }
     Render_DrawText(Target, &OpenSans20, "POWERUPS", 202, PowerUpsLabelY, Pong_Game.MenuItem == PONG_MENU_POWER_UPS ? COLOUR_TEXT : COLOUR_MUTED_TEXT);
-    Pong_DrawRightAlignedText(Target, &OpenSans20, Pong_Game.PowerUpsEnabled ? "ON" : "OFF", 598, PowerUpsValueY, Pong_Game.MenuItem == PONG_MENU_POWER_UPS ? COLOUR_BALL : COLOUR_TEXT);
+    Render_DrawTextAligned(Target, &OpenSans20, Pong_Game.PowerUpsEnabled ? "ON" : "OFF", 598, PowerUpsValueY, RENDER_ALIGN_RIGHT, Pong_Game.MenuItem == PONG_MENU_POWER_UPS ? COLOUR_BALL : COLOUR_TEXT);
     Render_DrawText(Target, &OpenSans20, SecondaryLabel, SecondaryHintX, 356, COLOUR_LEFT_PADDLE);
-    Render_DrawText(Target, &OpenSans20, SecondaryAction, (int16_t)(SecondaryHintX + Pong_TextWidth(&OpenSans20, SecondaryLabel)), 356, COLOUR_TEXT);
+    Render_DrawText(Target, &OpenSans20, SecondaryAction, (int16_t)(SecondaryHintX + (int16_t)Render_TextWidth(&OpenSans20, SecondaryLabel)), 356, COLOUR_TEXT);
     Render_DrawText(Target, &OpenSans20, PrimaryLabel, PrimaryHintX, 356, COLOUR_RIGHT_PADDLE);
-    Render_DrawText(Target, &OpenSans20, PrimaryAction, (int16_t)(PrimaryHintX + Pong_TextWidth(&OpenSans20, PrimaryLabel)), 356, COLOUR_TEXT);
+    Render_DrawText(Target, &OpenSans20, PrimaryAction, (int16_t)(PrimaryHintX + (int16_t)Render_TextWidth(&OpenSans20, PrimaryLabel)), 356, COLOUR_TEXT);
 }
 
 static void Pong_DrawGameOverMenu(Render_TargetTypeDef *Target)
@@ -923,24 +878,19 @@ static void Pong_DrawGameOverMenu(Render_TargetTypeDef *Target)
     const char *SecondaryAction = ": SETTINGS";
     const char *PrimaryLabel = "PRIMARY";
     const char *PrimaryAction = ": PLAY AGAIN";
-    const int16_t SecondaryX = (int16_t)(((int16_t)RENDER_WIDTH / 2) - ((Pong_TextWidth(&OpenSans20, SecondaryLabel) + Pong_TextWidth(&OpenSans20, SecondaryAction)) / 2));
-    const int16_t PrimaryX = (int16_t)(((int16_t)RENDER_WIDTH / 2) - ((Pong_TextWidth(&OpenSans20, PrimaryLabel) + Pong_TextWidth(&OpenSans20, PrimaryAction)) / 2));
+    const int16_t SecondaryX = (int16_t)(((int16_t)RENDER_WIDTH / 2) - (((int16_t)Render_TextWidth(&OpenSans20, SecondaryLabel) + (int16_t)Render_TextWidth(&OpenSans20, SecondaryAction)) / 2));
+    const int16_t PrimaryX = (int16_t)(((int16_t)RENDER_WIDTH / 2) - (((int16_t)Render_TextWidth(&OpenSans20, PrimaryLabel) + (int16_t)Render_TextWidth(&OpenSans20, PrimaryAction)) / 2));
     Render_Clear(Target, COLOUR_BACKGROUND);
     Pong_DrawDotMatrix(Target, 0, 0, RENDER_WIDTH, RENDER_HEIGHT);
-    Pong_DrawRect(Target, 144, 84, RENDER_WIDTH - 288U, 312U, COLOUR_SHADOW);
-    Pong_DrawRect(Target, 146, 86, RENDER_WIDTH - 292U, 308U, COLOUR_BACKGROUND);
-    Pong_DrawRect(Target, 146, 86, RENDER_WIDTH - 292U, 3U, COLOUR_PANEL_EDGE);
-    Pong_DrawCenteredText(Target,
-                          &OpenSans36,
-                          Pong_Game.LastWinner == 1U ? "BLUE WINS" : "RED WINS",
-                          (int16_t)RENDER_WIDTH / 2,
-                          112,
-                          Pong_Game.LastWinner == 1U ? COLOUR_LEFT_PADDLE : COLOUR_RIGHT_PADDLE);
-    Pong_DrawCenteredText(Target, &OpenSans20, "FIRST TO 7 POINTS", (int16_t)RENDER_WIDTH / 2, 156, COLOUR_MUTED_TEXT);
+    Render_Box(Target, 144, 84, RENDER_WIDTH - 288U, 312U, COLOUR_SHADOW);
+    Render_Box(Target, 146, 86, RENDER_WIDTH - 292U, 308U, COLOUR_BACKGROUND);
+    Render_Box(Target, 146, 86, RENDER_WIDTH - 292U, 3U, COLOUR_PANEL_EDGE);
+    Render_DrawTextAligned(Target, &OpenSans36, Pong_Game.LastWinner == 1U ? "BLUE WINS" : "RED WINS", (int16_t)RENDER_WIDTH / 2, 112, RENDER_ALIGN_CENTRE, Pong_Game.LastWinner == 1U ? COLOUR_LEFT_PADDLE : COLOUR_RIGHT_PADDLE);
+    Render_DrawTextAligned(Target, &OpenSans20, "FIRST TO 7 POINTS", (int16_t)RENDER_WIDTH / 2, 156, RENDER_ALIGN_CENTRE, COLOUR_MUTED_TEXT);
     Render_DrawText(Target, &OpenSans20, PrimaryLabel, PrimaryX, 278, COLOUR_RIGHT_PADDLE);
-    Render_DrawText(Target, &OpenSans20, PrimaryAction, (int16_t)(PrimaryX + Pong_TextWidth(&OpenSans20, PrimaryLabel)), 278, COLOUR_TEXT);
+    Render_DrawText(Target, &OpenSans20, PrimaryAction, (int16_t)(PrimaryX + (int16_t)Render_TextWidth(&OpenSans20, PrimaryLabel)), 278, COLOUR_TEXT);
     Render_DrawText(Target, &OpenSans20, SecondaryLabel, SecondaryX, 322, COLOUR_LEFT_PADDLE);
-    Render_DrawText(Target, &OpenSans20, SecondaryAction, (int16_t)(SecondaryX + Pong_TextWidth(&OpenSans20, SecondaryLabel)), 322, COLOUR_TEXT);
+    Render_DrawText(Target, &OpenSans20, SecondaryAction, (int16_t)(SecondaryX + (int16_t)Render_TextWidth(&OpenSans20, SecondaryLabel)), 322, COLOUR_TEXT);
 }
 
 static bool Pong_ProcessMenuHardStops(int32_t SliderValue)
@@ -1015,7 +965,7 @@ static void Pong_ChangeSelectedMenuValue(void)
 /* Public functions                                                           */
 /* -------------------------------------------------------------------------- */
 
-bool Pong_Init(void)
+static bool Pong_Init(void)
 {
     Pong_Input.LeftY = ((int16_t)RENDER_HEIGHT - PADDLE_NORMAL_HEIGHT) / 2;
     Pong_Input.RightY = Pong_Input.LeftY;
@@ -1041,7 +991,7 @@ bool Pong_Init(void)
     return true;
 }
 
-void Pong_Update(uint32_t DeltaTimeMilliseconds)
+static void Pong_Update(uint32_t DeltaTimeMilliseconds)
 {
     int32_t Value;
     bool Primary = false;
@@ -1089,23 +1039,6 @@ void Pong_Update(uint32_t DeltaTimeMilliseconds)
     Pong_Input.PrimaryDown = Primary;
     Pong_Input.SecondaryDown = Secondary;
     Pong_PendingDeltaTimeMilliseconds += DeltaTimeMilliseconds;
-}
-
-bool Pong_GetSplashScreenPalette(Display_ColourTypeDef *Palette)
-{
-    if(Palette == NULL)
-    {
-        return false;
-    }
-    for(uint16_t Index = 0U; Index < APP_MANAGER_SPLASH_PALETTE_ENTRY_COUNT; Index++)
-    {
-        Palette[Index] = 0U;
-    }
-    for(uint16_t Index = 0U; Index < (uint16_t)(sizeof(Pong_Palette) / sizeof(Pong_Palette[0])); Index++)
-    {
-        Palette[Index] = Pong_Palette[Index];
-    }
-    return true;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1169,7 +1102,7 @@ static void Pong_UpdateSplash(void)
 /* Public functions                                                           */
 /* -------------------------------------------------------------------------- */
 
-bool Pong_DrawSplashScreen(Render_TargetTypeDef *Target)
+static bool Pong_DrawSplashScreen(Render_TargetTypeDef *Target)
 {
     const Render_RectTypeDef Bounds = { APP_MANAGER_SPLASH_SCREEN_X, APP_MANAGER_SPLASH_SCREEN_Y, APP_MANAGER_SPLASH_SCREEN_WIDTH, APP_MANAGER_SPLASH_SCREEN_HEIGHT };
     if((Target == NULL) || (Target->Pixels == NULL))
@@ -1180,31 +1113,20 @@ bool Pong_DrawSplashScreen(Render_TargetTypeDef *Target)
     Pong_UpdateSplash();
     Render_FillRect(Target, &Bounds, COLOUR_BACKGROUND);
     Pong_DrawDotMatrix(Target, PONG_SPLASH_X, PONG_SPLASH_Y, PONG_SPLASH_WIDTH, PONG_SPLASH_HEIGHT);
-    Pong_DrawCenteredText(Target, &OpenSans36, "PONG", PONG_SPLASH_X + ((int16_t)PONG_SPLASH_WIDTH / 2), PONG_SPLASH_TITLE_Y, COLOUR_TEXT);
-    Pong_DrawRect(Target, PONG_SPLASH_X + 26, Pong_SplashLeftY, PADDLE_WIDTH, PADDLE_NORMAL_HEIGHT, COLOUR_LEFT_PADDLE);
-    Pong_DrawRect(Target, PONG_SPLASH_X + PONG_SPLASH_WIDTH - 26 - PADDLE_WIDTH, Pong_SplashRightY, PADDLE_WIDTH, PADDLE_NORMAL_HEIGHT, COLOUR_RIGHT_PADDLE);
-    Pong_DrawDisc(Target, (int16_t)(Pong_SplashBallX / BALL_FIXED_SCALE), (int16_t)(Pong_SplashBallY / BALL_FIXED_SCALE), BALL_SIZE, COLOUR_BALL);
+    Render_DrawTextAligned(Target, &OpenSans36, "PONG", PONG_SPLASH_X + ((int16_t)PONG_SPLASH_WIDTH / 2), PONG_SPLASH_TITLE_Y, RENDER_ALIGN_CENTRE, COLOUR_TEXT);
+    Render_Box(Target, PONG_SPLASH_X + 26, Pong_SplashLeftY, PADDLE_WIDTH, PADDLE_NORMAL_HEIGHT, COLOUR_LEFT_PADDLE);
+    Render_Box(Target, PONG_SPLASH_X + PONG_SPLASH_WIDTH - 26 - PADDLE_WIDTH, Pong_SplashRightY, PADDLE_WIDTH, PADDLE_NORMAL_HEIGHT, COLOUR_RIGHT_PADDLE);
+    Render_FillRoundRect(Target, (int16_t)(Pong_SplashBallX / BALL_FIXED_SCALE), (int16_t)(Pong_SplashBallY / BALL_FIXED_SCALE), BALL_SIZE, BALL_SIZE, (uint16_t)((BALL_SIZE) / 2U), COLOUR_BALL);
     return true;
 }
 
-void Pong_Render(void)
+static void Pong_Render(Render_TargetTypeDef *Target)
 {
-    Display_FrameTypeDef *Frame;
-    Render_TargetTypeDef Target;
     uint32_t DeltaTimeMilliseconds;
     if(!Pong_Initialized || Pong_Paused)
     {
         return;
     }
-    Frame = Display_AcquireFrame();
-    if(Frame == NULL)
-    {
-        return;
-    }
-    Target.Pixels = Frame->Pixels;
-    Target.Width = Frame->Width;
-    Target.Height = Frame->Height;
-    Target.StridePixels = Frame->StridePixels;
     DeltaTimeMilliseconds = Pong_PendingDeltaTimeMilliseconds;
     if(DeltaTimeMilliseconds > 50U)
     {
@@ -1312,33 +1234,48 @@ void Pong_Render(void)
     }
     if(Pong_Game.Screen == PONG_SCREEN_MENU)
     {
-        Pong_DrawSettingsMenu(&Target);
+        Pong_DrawSettingsMenu(Target);
     }
     else if(Pong_Game.Screen == PONG_SCREEN_GAME_OVER)
     {
-        Pong_DrawGameOverMenu(&Target);
+        Pong_DrawGameOverMenu(Target);
     }
     else
     {
-        Pong_DrawCourt(&Target);
-        Pong_DrawEffectDurationBar(&Target);
+        Pong_DrawCourt(Target);
+        Pong_DrawEffectDurationBar(Target);
     }
-    (void)Display_PresentFrame(Frame);
 }
 
-void Pong_Pause(void)
+static void Pong_Pause(void)
 {
     PongAudio_Stop();
     Pong_Paused = true;
 }
-void Pong_Resume(void)
+static void Pong_Resume(void)
 {
     Pong_Paused = false;
 }
-void Pong_Shutdown(void)
+static void Pong_Shutdown(void)
 {
     PongAudio_Stop();
     Pong_Initialized = false;
     Pong_Paused = false;
     Pong_PendingDeltaTimeMilliseconds = 0U;
 }
+
+/* -------------------------------------------------------------------------- */
+/* Application                                                                */
+/* -------------------------------------------------------------------------- */
+
+const AppManager_AppTypeDef Pong_App =
+{
+    .Init = Pong_Init,
+    .Update = Pong_Update,
+    .Render = Pong_Render,
+    .DrawSplashScreen = Pong_DrawSplashScreen,
+    .Pause = Pong_Pause,
+    .Resume = Pong_Resume,
+    .Shutdown = Pong_Shutdown,
+    APP_PALETTE(Pong_Palette)
+};

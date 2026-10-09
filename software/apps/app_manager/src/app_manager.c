@@ -32,23 +32,11 @@ typedef struct
 {
     bool (*Init)(void);
     void (*Update)(uint32_t DeltaTimeMilliseconds);
-    void (*Render)(void);
+    void (*Render)(Render_TargetTypeDef *Target);
     void (*Pause)(void);
     void (*Resume)(void);
     void (*Shutdown)(void);
 } AppManager_RuntimeInterfaceTypeDef;
-
-typedef struct
-{
-    bool (*Init)(void);
-    void (*Update)(uint32_t DeltaTimeMilliseconds);
-    void (*Render)(void);
-    bool (*GetSplashScreenPalette)(Display_ColourTypeDef *Palette);
-    bool (*DrawSplashScreen)(Render_TargetTypeDef *Target);
-    void (*Pause)(void);
-    void (*Resume)(void);
-    void (*Shutdown)(void);
-} AppManager_ApplicationInterfaceTypeDef;
 
 /* -------------------------------------------------------------------------- */
 /* Private data                                                               */
@@ -64,58 +52,36 @@ static const AppManager_RuntimeInterfaceTypeDef AppManager_LauncherInterface =
     .Shutdown = Launcher_Shutdown
 };
 
-static const AppManager_ApplicationInterfaceTypeDef AppManager_Applications[NUM_APPS] =
+static const AppManager_AppTypeDef *const AppManager_Applications[NUM_APPS] =
 {
-    {
-        .Init = WindowWasher_Init,
-        .Update = WindowWasher_Update,
-        .Render = WindowWasher_Render,
-        .GetSplashScreenPalette = WindowWasher_GetSplashScreenPalette,
-        .DrawSplashScreen = WindowWasher_DrawSplashScreen,
-        .Pause = WindowWasher_Pause,
-        .Resume = WindowWasher_Resume,
-        .Shutdown = WindowWasher_Shutdown
-    },
-    {
-        .Init = TemplateGame_Init,
-        .Update = TemplateGame_Update,
-        .Render = TemplateGame_Render,
-        .GetSplashScreenPalette = TemplateGame_GetSplashScreenPalette,
-        .DrawSplashScreen = TemplateGame_DrawSplashScreen,
-        .Pause = TemplateGame_Pause,
-        .Resume = TemplateGame_Resume,
-        .Shutdown = TemplateGame_Shutdown
-    },
-    {
-        .Init = Pong_Init,
-        .Update = Pong_Update,
-        .Render = Pong_Render,
-        .GetSplashScreenPalette = Pong_GetSplashScreenPalette,
-        .DrawSplashScreen = Pong_DrawSplashScreen,
-        .Pause = Pong_Pause,
-        .Resume = Pong_Resume,
-        .Shutdown = Pong_Shutdown
-    },
-    {
-        .Init = Tanks_Init,
-        .Update = Tanks_Update,
-        .Render = Tanks_Render,
-        .GetSplashScreenPalette = Tanks_GetSplashScreenPalette,
-        .DrawSplashScreen = Tanks_DrawSplashScreen,
-        .Pause = Tanks_Pause,
-        .Resume = Tanks_Resume,
-        .Shutdown = Tanks_Shutdown
-    },
-    {
-        .Init = SettingsApp_Init,
-        .Update = SettingsApp_Update,
-        .Render = SettingsApp_Render,
-        .GetSplashScreenPalette = SettingsApp_GetSplashScreenPalette,
-        .DrawSplashScreen = SettingsApp_DrawSplashScreen,
-        .Pause = SettingsApp_Pause,
-        .Resume = SettingsApp_Resume,
-        .Shutdown = SettingsApp_Shutdown
-    }
+    &WindowWasher_App,
+    &TemplateGame_App,
+    &Pong_App,
+    &Tanks_App,
+    &SettingsApp_App
+};
+
+/* The standard palette, for apps without colours of their own; see the RENDER_ colour names. */
+static const Display_ColourTypeDef AppManager_StandardPalette[RENDER_STANDARD_COLOUR_COUNT] =
+{
+    0x00000000U, /* RENDER_BLACK      */
+    0x00FFFFFFU, /* RENDER_WHITE      */
+    0x00808080U, /* RENDER_GREY       */
+    0x00404040U, /* RENDER_DARK_GREY  */
+    0x00C0C0C0U, /* RENDER_LIGHT_GREY */
+    0x00E53935U, /* RENDER_RED        */
+    0x008E1B1BU, /* RENDER_DARK_RED   */
+    0x00FB8C00U, /* RENDER_ORANGE     */
+    0x00FDD835U, /* RENDER_YELLOW     */
+    0x0043A047U, /* RENDER_GREEN      */
+    0x001B5E20U, /* RENDER_DARK_GREEN */
+    0x0000BCD4U, /* RENDER_CYAN       */
+    0x001E88E5U, /* RENDER_BLUE       */
+    0x000D2A6BU, /* RENDER_DARK_BLUE  */
+    0x008E24AAU, /* RENDER_PURPLE     */
+    0x00F06292U, /* RENDER_PINK       */
+    0x00795548U, /* RENDER_BROWN      */
+    0x0087CEEBU  /* RENDER_SKY        */
 };
 
 static AppManager_StateTypeDef AppManager_State;
@@ -132,14 +98,57 @@ static bool AppManager_IsApplicationIndexValid(uint16_t ApplicationIndex)
     return ApplicationIndex < NUM_APPS;
 }
 
-static const AppManager_ApplicationInterfaceTypeDef *AppManager_GetApplication(uint16_t ApplicationIndex)
+static const AppManager_AppTypeDef *AppManager_GetApplication(uint16_t ApplicationIndex)
 {
     if(!AppManager_IsApplicationIndexValid(ApplicationIndex))
     {
         return NULL;
     }
 
-    return &AppManager_Applications[ApplicationIndex];
+    return AppManager_Applications[ApplicationIndex];
+}
+
+/* An app's colours, or the standard palette, filling the whole application range. */
+static void AppManager_FillPalette(const AppManager_AppTypeDef *Application, Display_ColourTypeDef *Palette)
+{
+    const Display_ColourTypeDef *Colours = (Application->Palette != NULL) ? Application->Palette : AppManager_StandardPalette;
+    uint16_t Count = (Application->Palette != NULL) ? Application->PaletteCount : (uint16_t)RENDER_STANDARD_COLOUR_COUNT;
+
+    Count = (Count > APP_MANAGER_SPLASH_PALETTE_ENTRY_COUNT) ? (uint16_t)APP_MANAGER_SPLASH_PALETTE_ENTRY_COUNT : Count;
+
+    for(uint16_t Index = 0U; Index < APP_MANAGER_SPLASH_PALETTE_ENTRY_COUNT; Index++)
+    {
+        Palette[Index] = (Index < Count) ? Colours[Index] : 0U;
+    }
+}
+
+/* Acquire a frame, let Draw fill it, and present it. */
+static void AppManager_RenderFrame(void (*Draw)(Render_TargetTypeDef *Target))
+{
+    Display_FrameTypeDef *Frame;
+    Render_TargetTypeDef Target;
+
+    if(Draw == NULL)
+    {
+        return;
+    }
+
+    Frame = Display_AcquireFrame();
+
+    if(Frame == NULL)
+    {
+        return;
+    }
+
+    Target.Pixels = Frame->Pixels;
+    Target.Width = Frame->Width;
+    Target.Height = Frame->Height;
+    Target.StridePixels = Frame->StridePixels;
+
+    Render_ResetClipRect();
+    Draw(&Target);
+
+    (void)Display_PresentFrame(Frame);
 }
 
 static bool AppManager_StartLauncher(void)
@@ -160,17 +169,24 @@ static bool AppManager_StartLauncher(void)
 
 bool AppManager_StartApplication(uint16_t ApplicationIndex)
 {
-    const AppManager_ApplicationInterfaceTypeDef *Application = AppManager_GetApplication(ApplicationIndex);
+    const AppManager_AppTypeDef *Application = AppManager_GetApplication(ApplicationIndex);
 
     if((Application == NULL) || (Application->Init == NULL))
     {
         return false;
     }
 
-    /* Each application starts with silent mixer channels. */
+    /* Each application starts with silent mixer channels and its own colours. */
     Music_Stop();
     Sound_StopAll();
     (void)Mixer_StopApplicationChannels();
+
+    {
+        Display_ColourTypeDef Palette[APP_MANAGER_SPLASH_PALETTE_ENTRY_COUNT];
+
+        AppManager_FillPalette(Application, Palette);
+        (void)Display_SetPalette(APP_MANAGER_SPLASH_PALETTE_START_INDEX, Palette, APP_MANAGER_SPLASH_PALETTE_ENTRY_COUNT);
+    }
 
     if(!Application->Init())
     {
@@ -211,7 +227,7 @@ bool AppManager_Init(void)
 
 void AppManager_Update(uint32_t DeltaTimeMilliseconds)
 {
-    const AppManager_ApplicationInterfaceTypeDef *Application;
+    const AppManager_AppTypeDef *Application;
 
     if(!AppManager_Initialized || AppManager_Paused)
     {
@@ -238,7 +254,7 @@ void AppManager_Update(uint32_t DeltaTimeMilliseconds)
 
 void AppManager_Render(void)
 {
-    const AppManager_ApplicationInterfaceTypeDef *Application;
+    const AppManager_AppTypeDef *Application;
 
     if(!AppManager_Initialized || AppManager_Paused)
     {
@@ -247,25 +263,21 @@ void AppManager_Render(void)
 
     if(AppManager_State == APP_MANAGER_STATE_LAUNCHER)
     {
-        if(AppManager_LauncherInterface.Render != NULL)
-        {
-            AppManager_LauncherInterface.Render();
-        }
-
+        AppManager_RenderFrame(AppManager_LauncherInterface.Render);
         return;
     }
 
     Application = AppManager_GetApplication(AppManager_ActiveApplicationIndex);
 
-    if((Application != NULL) && (Application->Render != NULL))
+    if(Application != NULL)
     {
-        Application->Render();
+        AppManager_RenderFrame(Application->Render);
     }
 }
 
 bool AppManager_GetAppSplashScreenPalette(uint16_t ApplicationIndex, Display_ColourTypeDef *Palette)
 {
-    const AppManager_ApplicationInterfaceTypeDef *Application;
+    const AppManager_AppTypeDef *Application;
 
     if(Palette == NULL)
     {
@@ -274,17 +286,19 @@ bool AppManager_GetAppSplashScreenPalette(uint16_t ApplicationIndex, Display_Col
 
     Application = AppManager_GetApplication(ApplicationIndex);
 
-    if((Application == NULL) || (Application->GetSplashScreenPalette == NULL))
+    if(Application == NULL)
     {
         return false;
     }
 
-    return Application->GetSplashScreenPalette(Palette);
+    AppManager_FillPalette(Application, Palette);
+
+    return true;
 }
 
 bool AppManager_DrawAppSplashScreen(uint16_t ApplicationIndex, Render_TargetTypeDef *Target)
 {
-    const AppManager_ApplicationInterfaceTypeDef *Application;
+    const AppManager_AppTypeDef *Application;
 
     if((Target == NULL) || (Target->Pixels == NULL))
     {
@@ -303,7 +317,7 @@ bool AppManager_DrawAppSplashScreen(uint16_t ApplicationIndex, Render_TargetType
 
 void AppManager_Pause(void)
 {
-    const AppManager_ApplicationInterfaceTypeDef *Application;
+    const AppManager_AppTypeDef *Application;
 
     if(!AppManager_Initialized || AppManager_Paused)
     {
@@ -332,7 +346,7 @@ void AppManager_Pause(void)
 
 void AppManager_Resume(void)
 {
-    const AppManager_ApplicationInterfaceTypeDef *Application;
+    const AppManager_AppTypeDef *Application;
 
     if(!AppManager_Initialized || !AppManager_Paused)
     {
@@ -361,7 +375,7 @@ void AppManager_Resume(void)
 
 void AppManager_OpenLauncher(void)
 {
-    const AppManager_ApplicationInterfaceTypeDef *Application;
+    const AppManager_AppTypeDef *Application;
 
     if(!AppManager_Initialized || (AppManager_State == APP_MANAGER_STATE_LAUNCHER))
     {
@@ -395,7 +409,7 @@ bool AppManager_IsLauncherActive(void)
 
 void AppManager_Shutdown(void)
 {
-    const AppManager_ApplicationInterfaceTypeDef *Application;
+    const AppManager_AppTypeDef *Application;
 
     if(!AppManager_Initialized)
     {

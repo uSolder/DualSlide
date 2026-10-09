@@ -1,6 +1,12 @@
 /**
  * @file app_manager.h
  * @brief Application registration, lifecycle, and launcher-preview interface.
+ *
+ * An app describes itself with one AppManager_AppTypeDef: its functions and
+ * its colours. The app manager calls Init when the app starts, Update and
+ * Render every frame, and Shutdown when it closes. It prepares the screen
+ * before Render and shows it afterwards, and loads the app's palette, so an
+ * app only ever draws.
  */
 
 #ifndef APP_MANAGER_H
@@ -44,6 +50,58 @@ extern "C" {
 #define APP_MANAGER_SPLASH_PALETTE_ENTRY_COUNT (128U)
 
 /**
+ * @brief Everything the app manager needs to know about an app.
+ *
+ * Only Init and Render are required; leave out any other function the app
+ * doesn't need. Leave out the palette to use the standard one (RENDER_RED
+ * and the rest of the colours in render.h).
+ *
+ *     const AppManager_AppTypeDef MyGame_App =
+ *     {
+ *         .Init = MyGame_Init,
+ *         .Update = MyGame_Update,
+ *         .Render = MyGame_Render,
+ *         .DrawSplashScreen = MyGame_DrawSplashScreen,
+ *         APP_PALETTE(MyGame_Palette)
+ *     };
+ */
+typedef struct
+{
+    /** Set up a new game. Return false if it can't start. */
+    bool (*Init)(void);
+
+    /** Read the controls and move the game on by DeltaTimeMilliseconds. */
+    void (*Update)(uint32_t DeltaTimeMilliseconds);
+
+    /** Draw the whole screen into Target; it is shown when this returns. */
+    void (*Render)(Render_TargetTypeDef *Target);
+
+    /**
+     * Draw the launcher's preview of the app, only within the area given by
+     * APP_MANAGER_SPLASH_SCREEN_X, _Y, _WIDTH and _HEIGHT.
+     */
+    bool (*DrawSplashScreen)(Render_TargetTypeDef *Target);
+
+    /** The app is put aside (for example while the device sleeps). */
+    void (*Pause)(void);
+
+    /** The app comes back after Pause. */
+    void (*Resume)(void);
+
+    /** The app closes: save anything worth keeping. */
+    void (*Shutdown)(void);
+
+    /** The app's colours, palette index 0 upwards; NULL for the standard palette. */
+    const Display_ColourTypeDef *Palette;
+
+    /** Number of colours in Palette, at most APP_MANAGER_SPLASH_PALETTE_ENTRY_COUNT. */
+    uint16_t PaletteCount;
+} AppManager_AppTypeDef;
+
+/** Fills an AppManager_AppTypeDef's Palette and PaletteCount from an array of colours. */
+#define APP_PALETTE(Array) .Palette = (Array), .PaletteCount = (uint16_t)(sizeof(Array) / sizeof((Array)[0]))
+
+/**
  * @brief Initializes the application manager.
  *
  * The application manager initially starts the launcher and later transfers
@@ -65,7 +123,8 @@ void AppManager_Update(uint32_t DeltaTimeMilliseconds);
 /**
  * @brief Renders the currently active runtime component.
  *
- * This renders either the launcher or the active application.
+ * Acquires a frame, has the launcher or the active application draw it, and
+ * presents it.
  */
 void AppManager_Render(void);
 

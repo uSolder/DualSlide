@@ -187,7 +187,7 @@ static void Tanks_HandleScreenInput(void)
 /* Public functions                                                           */
 /* -------------------------------------------------------------------------- */
 
-bool Tanks_Init(void)
+static bool Tanks_Init(void)
 {
     Tanks_Game.RandomState = 0x7A6B5C4DU;
     Tanks_Game.PendingDeltaMilliseconds = 0U;
@@ -217,7 +217,7 @@ bool Tanks_Init(void)
     return true;
 }
 
-void Tanks_Update(uint32_t DeltaTimeMilliseconds)
+static void Tanks_Update(uint32_t DeltaTimeMilliseconds)
 {
     if(!Tanks_Game.Initialized || Tanks_Game.Paused)
     {
@@ -236,24 +236,7 @@ void Tanks_Update(uint32_t DeltaTimeMilliseconds)
     }
 }
 
-bool Tanks_GetSplashScreenPalette(Display_ColourTypeDef *Palette)
-{
-    if(Palette == NULL)
-    {
-        return false;
-    }
-    for(uint16_t Index = 0U; Index < APP_MANAGER_SPLASH_PALETTE_ENTRY_COUNT; Index++)
-    {
-        Palette[Index] = 0U;
-    }
-    for(uint16_t Index = 0U; Index < TANKS_COLOUR_COUNT; Index++)
-    {
-        Palette[Index] = Tanks_Palette[Index];
-    }
-    return true;
-}
-
-bool Tanks_DrawSplashScreen(Render_TargetTypeDef *Target)
+static bool Tanks_DrawSplashScreen(Render_TargetTypeDef *Target)
 {
     if((Target == NULL) || (Target->Pixels == NULL))
     {
@@ -264,24 +247,13 @@ bool Tanks_DrawSplashScreen(Render_TargetTypeDef *Target)
     return true;
 }
 
-void Tanks_Render(void)
+static void Tanks_Render(Render_TargetTypeDef *Target)
 {
-    Display_FrameTypeDef *Frame;
-    Render_TargetTypeDef Target;
     uint32_t DeltaMilliseconds;
     if(!Tanks_Game.Initialized || Tanks_Game.Paused)
     {
         return;
     }
-    Frame = Display_AcquireFrame();
-    if(Frame == NULL)
-    {
-        return;
-    }
-    Target.Pixels = Frame->Pixels;
-    Target.Width = Frame->Width;
-    Target.Height = Frame->Height;
-    Target.StridePixels = Frame->StridePixels;
     DeltaMilliseconds = Tanks_Game.PendingDeltaMilliseconds;
     Tanks_Game.PendingDeltaMilliseconds = 0U;
     Tanks_Game.ScreenMilliseconds += DeltaMilliseconds;
@@ -308,27 +280,26 @@ void Tanks_Render(void)
 
     if(Tanks_Game.Screen == TANKS_SCREEN_TITLE)
     {
-        Tanks_DrawTitle(&Target);
+        Tanks_DrawTitle(Target);
     }
     else if(Tanks_Game.Screen == TANKS_SCREEN_GAME_OVER)
     {
-        Tanks_DrawEndScreen(&Target);
+        Tanks_DrawEndScreen(Target);
     }
     else
     {
-        Tanks_DrawGame(&Target);
+        Tanks_DrawGame(Target);
     }
-    (void)Display_PresentFrame(Frame);
 }
 
-void Tanks_Pause(void)
+static void Tanks_Pause(void)
 {
     TanksAudio_Stop();
     Tanks_Game.Paused = true;
     Tanks_Game.PendingDeltaMilliseconds = 0U;
 }
 
-void Tanks_Resume(void)
+static void Tanks_Resume(void)
 {
     TanksAudio_Start();
     Tanks_Game.Paused = false;
@@ -336,7 +307,7 @@ void Tanks_Resume(void)
     Tanks_Game.Input.Secondary.Down = false;
 }
 
-void Tanks_Shutdown(void)
+static void Tanks_Shutdown(void)
 {
     TanksAudio_Stop();
     Tanks_SaveUnclaimedRecord();
@@ -344,3 +315,19 @@ void Tanks_Shutdown(void)
     Tanks_Game.Paused = false;
     Tanks_Game.PendingDeltaMilliseconds = 0U;
 }
+
+/* -------------------------------------------------------------------------- */
+/* Application                                                                */
+/* -------------------------------------------------------------------------- */
+
+const AppManager_AppTypeDef Tanks_App =
+{
+    .Init = Tanks_Init,
+    .Update = Tanks_Update,
+    .Render = Tanks_Render,
+    .DrawSplashScreen = Tanks_DrawSplashScreen,
+    .Pause = Tanks_Pause,
+    .Resume = Tanks_Resume,
+    .Shutdown = Tanks_Shutdown,
+    APP_PALETTE(Tanks_Palette)
+};

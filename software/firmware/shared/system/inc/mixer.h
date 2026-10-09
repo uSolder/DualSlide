@@ -12,8 +12,8 @@
  * samples, and the game loop talks to it with Mixer_Send(): each message is
  * copied and handed to the synth's Receive function in the audio context,
  * in order with every other request, so the synth owns all of its state and
- * nothing is shared between the game loop and the audio. See synth.h for
- * building blocks.
+ * nothing is shared between the game loop and the audio. sound.h has
+ * building blocks for writing one.
  *
  * Mixer channels 0 to MIXER_APPLICATION_CHANNEL_COUNT - 1 belong to the
  * running application and are stopped whenever the active application

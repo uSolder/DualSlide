@@ -6,24 +6,14 @@
 #ifndef TANKS_H
 #define TANKS_H
 
-#include "display.h"
-#include "render.h"
-
-#include <stdbool.h>
-#include <stdint.h>
+#include "app_manager.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-bool Tanks_Init(void);
-void Tanks_Update(uint32_t DeltaTimeMilliseconds);
-bool Tanks_GetSplashScreenPalette(Display_ColourTypeDef *Palette);
-bool Tanks_DrawSplashScreen(Render_TargetTypeDef *Target);
-void Tanks_Render(void);
-void Tanks_Pause(void);
-void Tanks_Resume(void);
-void Tanks_Shutdown(void);
+/** The app, as registered with the application manager. */
+extern const AppManager_AppTypeDef Tanks_App;
 
 #ifdef __cplusplus
 }

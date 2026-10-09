@@ -48,7 +48,9 @@
  *   oscillator: a Sound_PatchTypeDef with a Next() function that returns one
  *   sample at a time. Put it in the layer's .Patch field; the layer's
  *   envelope, filter, drive and volume still apply on top. Keep patches in a
- *   "<game>_sound_patch.c" file, next to the game's sound tables.
+ *   "<game>_sound_patch.c" file, next to the game's sound tables. The
+ *   building blocks at the end of this file (noise, a fast sine, filters,
+ *   timing) are there for writing patches.
  *
  * All functions are called from the game loop. Sounds stop automatically when
  * the game exits. The engine plays on its own mixer channel, so a game can
@@ -58,6 +60,9 @@
 #ifndef SOUND_H
 #define SOUND_H
 
+#include "mixer.h"
+
+#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -191,7 +196,7 @@ typedef struct
     float Step;                            /**< Hz / sample rate: add to a phase once per sample. */
     float Control;                         /**< The value from Sound_SetControl(), 0 until set. */
     float Seconds;                         /**< Time since the layer started. */
-    uint32_t Random;                       /**< Noise state for Synth_Noise(). */
+    uint32_t Random;                       /**< Noise state for Sound_Noise(). */
     float State[SOUND_PATCH_STATE_FLOATS]; /**< The patch's own memory, zeroed when the layer starts. */
 } Sound_PatchVoiceTypeDef;
 
@@ -263,6 +268,192 @@ void Sound_SetControl(Sound_HandleTypeDef Handle, float Value);
  * @brief Return whether a sound is still playing (or about to start).
  */
 bool Sound_IsPlaying(Sound_HandleTypeDef Handle);
+
+/* -------------------------------------------------------------------------- */
+/* Building blocks for patches                                                */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * Small helpers for writing a patch's Next() function, or a synth of your own
+ * on a mixer channel. Times are in seconds, frequencies in hertz, at the
+ * mixer's sample rate.
+ */
+
+#define SOUND_SAMPLE_RATE                   ((float)MIXER_SAMPLE_RATE_HZ)
+#define SOUND_SAMPLE_PERIOD                 (1.0f / SOUND_SAMPLE_RATE)
+#define SOUND_TWO_PI                        (6.2831853f)
+
+/* -------------------------------------------------------------------------- */
+/* Types                                                                      */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * @brief State-variable filter state, used by Sound_BandPass().
+ */
+typedef struct
+{
+    float Low;
+    float Band;
+} Sound_BandPassStateTypeDef;
+
+/* -------------------------------------------------------------------------- */
+/* Noise                                                                      */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * @brief White noise from -1.0 to 1.0, from a xorshift generator.
+ *
+ * @param State Generator state; seed it with any non-zero value.
+ */
+static inline float Sound_Noise(uint32_t *State)
+{
+    uint32_t Value = *State;
+
+    Value ^= Value << 13U;
+    Value ^= Value >> 17U;
+    Value ^= Value << 5U;
+    *State = Value;
+
+    return ((float)Value / 2147483648.0f) - 1.0f;
+}
+
+/**
+ * @brief Uniform random value from Minimum to Maximum.
+ */
+static inline float Sound_RandomRange(uint32_t *State, float Minimum, float Maximum)
+{
+    return Minimum + ((Maximum - Minimum) * (0.5f + (0.5f * Sound_Noise(State))));
+}
+
+/* -------------------------------------------------------------------------- */
+/* Timing                                                                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * @brief Number of samples in Seconds.
+ */
+static inline uint32_t Sound_Seconds(float Seconds)
+{
+    return (uint32_t)(Seconds * SOUND_SAMPLE_RATE);
+}
+
+/**
+ * @brief Per-sample multiplier that decays to 1/e in Seconds; 0 stops at once.
+ */
+static inline float Sound_DecayCoefficient(float Seconds)
+{
+    return (Seconds > 0.0f) ? expf(-1.0f / (Seconds * SOUND_SAMPLE_RATE)) : 0.0f;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Oscillators and shaping                                                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * @brief Fast sine of a phase in turns (1.0 is one cycle).
+ *
+ * Within 0.0002 of sinf() at a fraction of the cost: fold to a quarter
+ * cycle, then a 7th-order polynomial.
+ */
+static inline float Sound_Sine(float Phase)
+{
+    float Turns = Phase - floorf(Phase) - 0.5f;
+    float X;
+    float Square;
+
+    if(Turns > 0.25f)
+    {
+        Turns = 0.5f - Turns;
+    }
+    else if(Turns < -0.25f)
+    {
+        Turns = -0.5f - Turns;
+    }
+
+    X = SOUND_TWO_PI * Turns;
+    Square = X * X;
+
+    return -X * (1.0f - (Square * (0.16666667f - (Square * (0.0083333333f - (Square * 0.00019841270f))))));
+}
+
+/**
+ * @brief Correction that smooths the jump in a saw or square wave, so high
+ *        notes don't alias.
+ *
+ * @param Phase Oscillator phase in turns, 0.0 to 1.0.
+ * @param Step  Phase advance per sample (frequency / sample rate).
+ */
+static inline float Sound_PolyBlep(float Phase, float Step)
+{
+    float Correction = 0.0f;
+
+    if(Phase < Step)
+    {
+        const float T = Phase / Step;
+
+        Correction = T + T - (T * T) - 1.0f;
+    }
+    else if(Phase > (1.0f - Step))
+    {
+        const float T = (Phase - 1.0f) / Step;
+
+        Correction = (T * T) + T + T + 1.0f;
+    }
+
+    return Correction;
+}
+
+/**
+ * @brief Soft clipper: gently squashes large values towards -1.0 and 1.0.
+ */
+static inline float Sound_SoftClip(float Value)
+{
+    return Value / (1.0f + fabsf(Value));
+}
+
+/* -------------------------------------------------------------------------- */
+/* Filters                                                                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * @brief Coefficient for a one-pole low-pass filter:
+ *        State += Coefficient * (Input - State).
+ */
+static inline float Sound_LowPassCoefficient(float CutoffHz)
+{
+    return 1.0f - expf(-SOUND_TWO_PI * CutoffHz * SOUND_SAMPLE_PERIOD);
+}
+
+/**
+ * @brief Coefficient for Sound_BandPass() at a centre frequency.
+ */
+static inline float Sound_BandPassCoefficient(float FrequencyHz)
+{
+    return SOUND_TWO_PI * FrequencyHz * SOUND_SAMPLE_PERIOD;
+}
+
+/**
+ * @brief State-variable band-pass filter.
+ *
+ * Keep the centre frequency below about MIXER_SAMPLE_RATE_HZ / 7.
+ *
+ * @param Filter      Filter state, zeroed to start.
+ * @param Input       Input sample.
+ * @param Coefficient From Sound_BandPassCoefficient().
+ * @param Damping     Width of the band: small rings, about 1 is broad.
+ *
+ * @return The band-passed sample.
+ */
+static inline float Sound_BandPass(Sound_BandPassStateTypeDef *Filter, float Input, float Coefficient, float Damping)
+{
+    float High;
+
+    Filter->Low += Coefficient * Filter->Band;
+    High = Input - Filter->Low - (Damping * Filter->Band);
+    Filter->Band += Coefficient * High;
+
+    return Filter->Band;
+}
 
 #ifdef __cplusplus
 }

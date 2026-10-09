@@ -5,6 +5,11 @@
 
 #include "render.h"
 
+#include <math.h>
+#include <stdarg.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <string.h>
 
 /* -------------------------------------------------------------------------- */
@@ -12,6 +17,9 @@
 /* -------------------------------------------------------------------------- */
 
 #define WINDOWS_RENDER_TRIG_SCALE    (16384)
+
+/* Longest line Render_DrawTextAligned() and Render_DrawTextf() draw. */
+#define RENDER_TEXT_BUFFER_SIZE      (128U)
 
 /* -------------------------------------------------------------------------- */
 /* Private data                                                               */
@@ -488,4 +496,523 @@ void Render_DrawText(Render_TargetTypeDef *Target, const Font *FontAsset, const 
 
         CursorX += Glyph->advance;
     }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Shapes and text helpers                                                    */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * These draw through Render_FillRect(), Render_DrawPolygon() and
+ * Render_DrawText(), so they honour the clip rectangle. Round shapes are one
+ * horizontal span per row.
+ */
+
+/* One horizontal span from Left to Right inclusive. */
+static void Render_Span(Render_TargetTypeDef *Target, int32_t Left, int32_t Right, int32_t Y, Render_ColourIndexTypeDef Colour)
+{
+    Render_RectTypeDef Rect;
+
+    if((Right < Left) || (Y < INT16_MIN) || (Y > INT16_MAX))
+    {
+        return;
+    }
+
+    Left = (Left < INT16_MIN) ? INT16_MIN : Left;
+    Right = (Right > INT16_MAX) ? INT16_MAX : Right;
+    Rect.X = (int16_t)Left;
+    Rect.Y = (int16_t)Y;
+    Rect.Width = (uint16_t)((Right - Left) + 1);
+    Rect.Height = 1U;
+    Render_FillRect(Target, &Rect, Colour);
+}
+
+/* Half the width of a circle of Radius at DeltaY rows from its centre. */
+static int32_t Render_CircleHalfWidth(float Radius, int32_t DeltaY)
+{
+    const float Square = ((Radius + 0.5f) * (Radius + 0.5f)) - ((float)DeltaY * (float)DeltaY);
+
+    return (Square > 0.0f) ? (int32_t)sqrtf(Square) : -1;
+}
+
+/* The glyph drawn for a character, falling back to '?' as Render_DrawText() does. */
+static const FontGlyph *Render_GlyphFor(const Font *FontAsset, char Character)
+{
+    const FontGlyph *Glyph = Font_GetGlyph(FontAsset, (uint8_t)Character);
+
+    return (Glyph != NULL) ? Glyph : Font_GetGlyph(FontAsset, (uint32_t)'?');
+}
+
+/* Width of the text up to the end of its first line. */
+static uint32_t Render_LineWidth(const Font *FontAsset, const char *Text)
+{
+    uint32_t Width = 0U;
+
+    while((*Text != '\0') && (*Text != '\n'))
+    {
+        if(*Text != '\r')
+        {
+            const FontGlyph *Glyph = Render_GlyphFor(FontAsset, *Text);
+
+            Width += (Glyph != NULL) ? Glyph->advance : 0U;
+        }
+
+        Text++;
+    }
+
+    return Width;
+}
+
+static void Render_AppendCharacter(char *Buffer, uint32_t Size, uint32_t *Length, char Character)
+{
+    if((*Length + 1U) < Size)
+    {
+        Buffer[*Length] = Character;
+        (*Length)++;
+    }
+}
+
+static void Render_AppendNumber(char *Buffer, uint32_t Size, uint32_t *Length, uint32_t Value, uint32_t Base, bool Negative, uint32_t Width, char Pad)
+{
+    char Digits[12];
+    uint32_t Count = 0U;
+
+    do
+    {
+        const uint32_t Digit = Value % Base;
+
+        Digits[Count++] = (char)((Digit < 10U) ? ('0' + Digit) : ('a' + (Digit - 10U)));
+        Value /= Base;
+    }
+    while((Value != 0U) && (Count < sizeof(Digits)));
+
+    Width = (Width > Count + (Negative ? 1U : 0U)) ? (Width - Count - (Negative ? 1U : 0U)) : 0U;
+
+    /* Zero padding goes after the sign, space padding before it. */
+    if(Negative && (Pad == '0'))
+    {
+        Render_AppendCharacter(Buffer, Size, Length, '-');
+    }
+
+    while(Width-- > 0U)
+    {
+        Render_AppendCharacter(Buffer, Size, Length, Pad);
+    }
+
+    if(Negative && (Pad != '0'))
+    {
+        Render_AppendCharacter(Buffer, Size, Length, '-');
+    }
+
+    while(Count > 0U)
+    {
+        Render_AppendCharacter(Buffer, Size, Length, Digits[--Count]);
+    }
+}
+
+static char *Render_FormatList(char *Buffer, uint32_t Size, const char *Format, va_list Arguments)
+{
+    uint32_t Length = 0U;
+
+    if((Buffer == NULL) || (Size == 0U))
+    {
+        return Buffer;
+    }
+
+    while((Format != NULL) && (*Format != '\0'))
+    {
+        char Pad = ' ';
+        uint32_t Width = 0U;
+        uint32_t RightWidth = 0U;
+        uint32_t Start;
+        bool Left = false;
+        bool Long = false;
+
+        if(*Format != '%')
+        {
+            Render_AppendCharacter(Buffer, Size, &Length, *Format++);
+            continue;
+        }
+
+        Format++;
+
+        if(*Format == '-')
+        {
+            Left = true;
+            Format++;
+        }
+
+        if(*Format == '0')
+        {
+            Pad = Left ? ' ' : '0';
+            Format++;
+        }
+
+        if(*Format == '*')
+        {
+            const int Given = va_arg(Arguments, int);
+
+            Width = (Given > 0) ? (uint32_t)Given : 0U;
+            Format++;
+        }
+
+        while((*Format >= '0') && (*Format <= '9'))
+        {
+            Width = (Width * 10U) + (uint32_t)(*Format++ - '0');
+        }
+
+        if(*Format == 'l')
+        {
+            Long = true;
+            Format++;
+        }
+
+        /* Left-justified: write the value unpadded, then pad on its right. */
+        if(Left)
+        {
+            RightWidth = Width;
+            Width = 0U;
+        }
+
+        Start = Length;
+
+        switch(*Format)
+        {
+            case 'd':
+            case 'i':
+            {
+                const long Value = Long ? va_arg(Arguments, long) : (long)va_arg(Arguments, int);
+                const uint32_t Magnitude = (Value < 0) ? (uint32_t)(-(Value + 1)) + 1U : (uint32_t)Value;
+
+                Render_AppendNumber(Buffer, Size, &Length, Magnitude, 10U, Value < 0, Width, Pad);
+                break;
+            }
+
+            case 'u':
+            case 'x':
+            {
+                const uint32_t Value = Long ? (uint32_t)va_arg(Arguments, unsigned long) : va_arg(Arguments, unsigned int);
+
+                Render_AppendNumber(Buffer, Size, &Length, Value, (*Format == 'x') ? 16U : 10U, false, Width, Pad);
+                break;
+            }
+
+            case 'c':
+                Render_AppendCharacter(Buffer, Size, &Length, (char)va_arg(Arguments, int));
+                break;
+
+            case 's':
+            {
+                const char *Text = va_arg(Arguments, const char *);
+                uint32_t TextLength = 0U;
+
+                Text = (Text != NULL) ? Text : "";
+
+                while(Text[TextLength] != '\0')
+                {
+                    TextLength++;
+                }
+
+                while(Width > TextLength)
+                {
+                    Render_AppendCharacter(Buffer, Size, &Length, ' ');
+                    Width--;
+                }
+
+                while(*Text != '\0')
+                {
+                    Render_AppendCharacter(Buffer, Size, &Length, *Text++);
+                }
+                break;
+            }
+
+            case '%':
+                Render_AppendCharacter(Buffer, Size, &Length, '%');
+                break;
+
+            case '\0':
+                Format--;
+                break;
+
+            default:
+                Render_AppendCharacter(Buffer, Size, &Length, '%');
+                Render_AppendCharacter(Buffer, Size, &Length, *Format);
+                break;
+        }
+
+        while(((Length - Start) < RightWidth) && ((Length + 1U) < Size))
+        {
+            Render_AppendCharacter(Buffer, Size, &Length, ' ');
+        }
+
+        Format++;
+    }
+
+    Buffer[Length] = '\0';
+
+    return Buffer;
+}
+
+void Render_Box(Render_TargetTypeDef *Target, int16_t X, int16_t Y, uint16_t Width, uint16_t Height, Render_ColourIndexTypeDef Colour)
+{
+    const Render_RectTypeDef Rect = { X, Y, Width, Height };
+
+    Render_FillRect(Target, &Rect, Colour);
+}
+
+void Render_DrawRect(Render_TargetTypeDef *Target, int16_t X, int16_t Y, uint16_t Width, uint16_t Height, uint16_t Thickness, Render_ColourIndexTypeDef Colour)
+{
+    if((Thickness == 0U) || (Width == 0U) || (Height == 0U))
+    {
+        return;
+    }
+
+    /* A border as thick as the box is half of it fills the box. */
+    if(((uint32_t)Thickness * 2U >= Width) || ((uint32_t)Thickness * 2U >= Height))
+    {
+        Render_Box(Target, X, Y, Width, Height, Colour);
+        return;
+    }
+
+    Render_Box(Target, X, Y, Width, Thickness, Colour);
+    Render_Box(Target, X, (int16_t)(Y + (int16_t)Height - (int16_t)Thickness), Width, Thickness, Colour);
+    Render_Box(Target, X, (int16_t)(Y + (int16_t)Thickness), Thickness, (uint16_t)(Height - (2U * Thickness)), Colour);
+    Render_Box(Target, (int16_t)(X + (int16_t)Width - (int16_t)Thickness), (int16_t)(Y + (int16_t)Thickness), Thickness, (uint16_t)(Height - (2U * Thickness)), Colour);
+}
+
+void Render_FillRoundRect(Render_TargetTypeDef *Target, int16_t X, int16_t Y, uint16_t Width, uint16_t Height, uint16_t Radius, Render_ColourIndexTypeDef Colour)
+{
+    const uint16_t Smaller = (Width < Height) ? Width : Height;
+
+    Radius = (Radius > (Smaller / 2U)) ? (uint16_t)(Smaller / 2U) : Radius;
+
+    for(int32_t Row = 0; Row < (int32_t)Height; Row++)
+    {
+        int32_t Inset = 0;
+        int32_t FromEdge = (Row < (int32_t)Radius) ? Row : (((int32_t)Height - 1 - Row) < (int32_t)Radius ? ((int32_t)Height - 1 - Row) : -1);
+
+        if(FromEdge >= 0)
+        {
+            const float DeltaY = (float)Radius - (float)FromEdge - 0.5f;
+
+            Inset = (int32_t)((float)Radius - sqrtf(((float)Radius * (float)Radius) - (DeltaY * DeltaY)) + 0.5f);
+        }
+
+        Render_Span(Target, (int32_t)X + Inset, (int32_t)X + (int32_t)Width - 1 - Inset, (int32_t)Y + Row, Colour);
+    }
+}
+
+void Render_FillCircle(Render_TargetTypeDef *Target, int16_t CentreX, int16_t CentreY, uint16_t Radius, Render_ColourIndexTypeDef Colour)
+{
+    for(int32_t DeltaY = -(int32_t)Radius; DeltaY <= (int32_t)Radius; DeltaY++)
+    {
+        const int32_t Half = Render_CircleHalfWidth((float)Radius, DeltaY);
+
+        Render_Span(Target, (int32_t)CentreX - Half, (int32_t)CentreX + Half, (int32_t)CentreY + DeltaY, Colour);
+    }
+}
+
+void Render_DrawCircle(Render_TargetTypeDef *Target, int16_t CentreX, int16_t CentreY, uint16_t Radius, uint16_t Thickness, Render_ColourIndexTypeDef Colour)
+{
+    const int32_t Inner = (int32_t)Radius - (int32_t)Thickness;
+
+    if(Thickness == 0U)
+    {
+        return;
+    }
+
+    if(Inner < 0)
+    {
+        Render_FillCircle(Target, CentreX, CentreY, Radius, Colour);
+        return;
+    }
+
+    for(int32_t DeltaY = -(int32_t)Radius; DeltaY <= (int32_t)Radius; DeltaY++)
+    {
+        const int32_t Outer = Render_CircleHalfWidth((float)Radius, DeltaY);
+        const int32_t Hole = Render_CircleHalfWidth((float)Inner, DeltaY);
+
+        if(Hole < 0)
+        {
+            Render_Span(Target, (int32_t)CentreX - Outer, (int32_t)CentreX + Outer, (int32_t)CentreY + DeltaY, Colour);
+        }
+        else
+        {
+            Render_Span(Target, (int32_t)CentreX - Outer, (int32_t)CentreX - Hole - 1, (int32_t)CentreY + DeltaY, Colour);
+            Render_Span(Target, (int32_t)CentreX + Hole + 1, (int32_t)CentreX + Outer, (int32_t)CentreY + DeltaY, Colour);
+        }
+    }
+}
+
+void Render_DrawLine(Render_TargetTypeDef *Target, int16_t X1, int16_t Y1, int16_t X2, int16_t Y2, uint16_t Thickness, Render_ColourIndexTypeDef Colour)
+{
+    const int32_t DeltaX = (int32_t)X2 - (int32_t)X1;
+    const int32_t DeltaY = (int32_t)Y2 - (int32_t)Y1;
+
+    /* Thin lines: one pixel per step (Bresenham). */
+    if(Thickness <= 1U)
+    {
+        const int32_t StepX = (DeltaX < 0) ? -1 : 1;
+        const int32_t StepY = (DeltaY < 0) ? -1 : 1;
+        const int32_t Width = (DeltaX < 0) ? -DeltaX : DeltaX;
+        const int32_t Height = (DeltaY < 0) ? DeltaY : -DeltaY;
+        int32_t Error = Width + Height;
+        int32_t X = X1;
+        int32_t Y = Y1;
+
+        for(;;)
+        {
+            Render_Span(Target, X, X, Y, Colour);
+
+            if((X == X2) && (Y == Y2))
+            {
+                break;
+            }
+
+            {
+                const int32_t Doubled = 2 * Error;
+
+                if(Doubled >= Height)
+                {
+                    Error += Height;
+                    X += StepX;
+                }
+
+                if(Doubled <= Width)
+                {
+                    Error += Width;
+                    Y += StepY;
+                }
+            }
+        }
+
+        return;
+    }
+
+    /* Thick lines: a rectangle along the line. */
+    {
+        const float Length = sqrtf((float)((DeltaX * DeltaX) + (DeltaY * DeltaY)));
+        const float Half = (float)Thickness * 0.5f;
+        Render_PointTypeDef Points[4];
+        int16_t OffsetX;
+        int16_t OffsetY;
+
+        if(Length < 0.5f)
+        {
+            Render_FillCircle(Target, X1, Y1, (uint16_t)(Thickness / 2U), Colour);
+            return;
+        }
+
+        OffsetX = (int16_t)lroundf((-(float)DeltaY * Half) / Length);
+        OffsetY = (int16_t)lroundf(((float)DeltaX * Half) / Length);
+        Points[0] = (Render_PointTypeDef){ (int16_t)(X1 + OffsetX), (int16_t)(Y1 + OffsetY) };
+        Points[1] = (Render_PointTypeDef){ (int16_t)(X2 + OffsetX), (int16_t)(Y2 + OffsetY) };
+        Points[2] = (Render_PointTypeDef){ (int16_t)(X2 - OffsetX), (int16_t)(Y2 - OffsetY) };
+        Points[3] = (Render_PointTypeDef){ (int16_t)(X1 - OffsetX), (int16_t)(Y1 - OffsetY) };
+        (void)Render_DrawPolygon(Target, Points, 4U, Colour);
+    }
+}
+
+uint16_t Render_TextWidth(const Font *FontAsset, const char *Text)
+{
+    uint32_t Widest = 0U;
+
+    if((FontAsset == NULL) || (FontAsset->glyphs == NULL) || (Text == NULL))
+    {
+        return 0U;
+    }
+
+    for(;;)
+    {
+        const uint32_t Width = Render_LineWidth(FontAsset, Text);
+
+        Widest = (Width > Widest) ? Width : Widest;
+
+        while((*Text != '\0') && (*Text != '\n'))
+        {
+            Text++;
+        }
+
+        if(*Text == '\0')
+        {
+            break;
+        }
+
+        Text++;
+    }
+
+    return (Widest > UINT16_MAX) ? UINT16_MAX : (uint16_t)Widest;
+}
+
+void Render_DrawTextAligned(Render_TargetTypeDef *Target, const Font *FontAsset, const char *Text, int16_t X, int16_t Y, Render_AlignTypeDef Align, Render_ColourIndexTypeDef Colour)
+{
+    char Line[RENDER_TEXT_BUFFER_SIZE];
+    int32_t LineY = Y;
+
+    if((FontAsset == NULL) || (FontAsset->glyphs == NULL) || (Text == NULL))
+    {
+        return;
+    }
+
+    /* Each line is aligned on its own. */
+    for(;;)
+    {
+        const int32_t Width = (int32_t)Render_LineWidth(FontAsset, Text);
+        int32_t LineX = X;
+        uint32_t Length = 0U;
+
+        while((*Text != '\0') && (*Text != '\n'))
+        {
+            if(Length < (RENDER_TEXT_BUFFER_SIZE - 1U))
+            {
+                Line[Length++] = *Text;
+            }
+
+            Text++;
+        }
+
+        Line[Length] = '\0';
+
+        if(Align == RENDER_ALIGN_CENTRE)
+        {
+            LineX -= Width / 2;
+        }
+        else if(Align == RENDER_ALIGN_RIGHT)
+        {
+            LineX -= Width;
+        }
+
+        Render_DrawText(Target, FontAsset, Line, (int16_t)LineX, (int16_t)LineY, Colour);
+
+        if(*Text == '\0')
+        {
+            break;
+        }
+
+        Text++;
+        LineY += FontAsset->lineHeight;
+    }
+}
+
+char *Render_FormatText(char *Buffer, uint32_t Size, const char *Format, ...)
+{
+    va_list Arguments;
+
+    va_start(Arguments, Format);
+    (void)Render_FormatList(Buffer, Size, Format, Arguments);
+    va_end(Arguments);
+
+    return Buffer;
+}
+
+void Render_DrawTextf(Render_TargetTypeDef *Target, const Font *FontAsset, int16_t X, int16_t Y, Render_ColourIndexTypeDef Colour, const char *Format, ...)
+{
+    char Text[RENDER_TEXT_BUFFER_SIZE];
+    va_list Arguments;
+
+    va_start(Arguments, Format);
+    (void)Render_FormatList(Text, sizeof(Text), Format, Arguments);
+    va_end(Arguments);
+
+    Render_DrawText(Target, FontAsset, Text, X, Y, Colour);
 }

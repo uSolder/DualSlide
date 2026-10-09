@@ -164,7 +164,6 @@ static bool Launcher_Initialized;
 static bool Launcher_Paused;
 
 static uint32_t Launcher_ClampUnsigned(uint32_t Value, uint32_t Minimum, uint32_t Maximum);
-static uint16_t Launcher_MeasureTextWidth(const Font *FontAsset, const char *Text);
 
 static void Launcher_DrawMenuScreen(Render_TargetTypeDef *Target, Launcher_ScreenContentTypeDef Content);
 static void Launcher_DrawScreenTab(Render_TargetTypeDef *Target, int16_t X, uint16_t Width, const char *Label, uint8_t CoverColour);
@@ -197,35 +196,6 @@ static uint32_t Launcher_ClampUnsigned(uint32_t Value, uint32_t Minimum, uint32_
     return Value;
 }
 
-static uint16_t Launcher_MeasureTextWidth(const Font *FontAsset, const char *Text)
-{
-    uint32_t Codepoint;
-    const FontGlyph *Glyph;
-    uint32_t Width = 0U;
-
-    if((FontAsset == NULL) || (FontAsset->glyphs == NULL) || (Text == NULL))
-    {
-        return 0U;
-    }
-
-    while(*Text != '\0')
-    {
-        Codepoint = (uint8_t)*Text;
-        Text++;
-
-        Glyph = Font_GetGlyph(FontAsset, Codepoint);
-
-        if(Glyph == NULL)
-        {
-            continue;
-        }
-
-        Width += Glyph->advance;
-    }
-
-    return (Width > UINT16_MAX) ? UINT16_MAX : (uint16_t)Width;
-}
-
 static uint32_t Launcher_MapRange(uint32_t Value, uint32_t InputMinimum, uint32_t InputMaximum, uint32_t OutputMinimum, uint32_t OutputMaximum)
 {
     if(Value <= InputMinimum)
@@ -253,7 +223,7 @@ static uint32_t Launcher_EaseInOut(uint32_t Elapsed, uint32_t Duration, uint32_t
 
 static void Launcher_DrawScreenTab(Render_TargetTypeDef *Target, int16_t X, uint16_t Width, const char *Label, uint8_t CoverColour)
 {
-    const uint16_t LabelWidth = Launcher_MeasureTextWidth(&OpenSansBold20, Label);
+    const uint16_t LabelWidth = Render_TextWidth(&OpenSansBold20, Label);
     const int16_t LabelX = (int16_t)(X + (((int16_t)Width - (int16_t)LabelWidth) / 2));
     const Render_PointTypeDef BezelPoints[] = {
         { X, LAUNCHER_SCREEN_TAB_Y },
@@ -277,9 +247,9 @@ static void Launcher_DrawBrandName(Render_TargetTypeDef *Target)
 {
     static const char BrandNameFirstLetter[] = "u";
     static const char BrandNameRest[] = "Solder";
-    const uint16_t BrandWidth = Launcher_MeasureTextWidth(&OpenSansBold28, BrandNameFirstLetter) + Launcher_MeasureTextWidth(&OpenSansBold28, BrandNameRest);
+    const uint16_t BrandWidth = Render_TextWidth(&OpenSansBold28, BrandNameFirstLetter) + Render_TextWidth(&OpenSansBold28, BrandNameRest);
     const int16_t BrandFirstLetterX = (int16_t)(((int16_t)RENDER_WIDTH - (int16_t)BrandWidth) / 2);
-    const int16_t BrandRestX = BrandFirstLetterX + Launcher_MeasureTextWidth(&OpenSansBold28, BrandNameFirstLetter);
+    const int16_t BrandRestX = BrandFirstLetterX + Render_TextWidth(&OpenSansBold28, BrandNameFirstLetter);
 
     Render_DrawText(Target, &OpenSansBold28, BrandNameFirstLetter, BrandFirstLetterX, LAUNCHER_BRAND_TEXT_Y, COLOUR_USOLDER_BLUE);
     Render_DrawText(Target, &OpenSansBold28, BrandNameRest, BrandRestX, LAUNCHER_BRAND_TEXT_Y, COLOUR_BLACK);
@@ -289,8 +259,8 @@ static void Launcher_DrawStartupBrandName(Render_TargetTypeDef *Target)
 {
     static const char BrandNameFirstLetter[] = "u";
     static const char BrandNameRest[] = "Solder";
-    const uint16_t FirstLetterWidth = Launcher_MeasureTextWidth(&AvenirNextDemi125, BrandNameFirstLetter);
-    const uint16_t BrandWidth = FirstLetterWidth + Launcher_MeasureTextWidth(&AvenirNextDemi125, BrandNameRest);
+    const uint16_t FirstLetterWidth = Render_TextWidth(&AvenirNextDemi125, BrandNameFirstLetter);
+    const uint16_t BrandWidth = FirstLetterWidth + Render_TextWidth(&AvenirNextDemi125, BrandNameRest);
     const int16_t BrandFirstLetterX = (int16_t)(((int16_t)RENDER_WIDTH - (int16_t)BrandWidth) / 2);
     const int16_t BrandRestX = BrandFirstLetterX + (int16_t)FirstLetterWidth;
 
@@ -376,7 +346,7 @@ static void Launcher_DrawBatteryVoltage(Render_TargetTypeDef *Target)
         TextColour = COLOUR_RED;
     }
 
-    TextWidth = Launcher_MeasureTextWidth(&OpenSansBold20, BatteryText);
+    TextWidth = Render_TextWidth(&OpenSansBold20, BatteryText);
     TextX = (int16_t)(LAUNCHER_BATTERY_DISPLAY_X + (((int16_t)LAUNCHER_BATTERY_DISPLAY_WIDTH - (int16_t)TextWidth) / 2));
 
     Render_FillRect(Target, &BatteryBezel, COLOUR_BEZEL_DARK);
@@ -1009,10 +979,8 @@ void Launcher_Update(uint32_t DeltaTimeMilliseconds)
     Launcher_PendingDeltaTimeMilliseconds += DeltaTimeMilliseconds;
 }
 
-void Launcher_Render(void)
+void Launcher_Render(Render_TargetTypeDef *Target)
 {
-    Display_FrameTypeDef *Frame;
-    Render_TargetTypeDef Target;
     uint32_t DeltaTimeMilliseconds;
 
     if(!Launcher_Initialized || Launcher_Paused)
@@ -1020,57 +988,41 @@ void Launcher_Render(void)
         return;
     }
 
-    Frame = Display_AcquireFrame();
-
-    if(Frame == NULL)
-    {
-        return;
-    }
-
-    Target.Pixels = Frame->Pixels;
-    Target.Width = Frame->Width;
-    Target.Height = Frame->Height;
-    Target.StridePixels = Frame->StridePixels;
-
     DeltaTimeMilliseconds = Launcher_ClampUnsigned(Launcher_PendingDeltaTimeMilliseconds, 0U, LAUNCHER_MAX_DELTA_TIME_MS);
 
     Launcher_PendingDeltaTimeMilliseconds = 0U;
 
     Launcher_UpdateSimulation(DeltaTimeMilliseconds);
 
-    Render_ResetClipRect();
-
     switch(Launcher_State.Phase)
     {
         case LAUNCHER_PHASE_WHITE:
-            Launcher_DrawWhiteField(&Target);
+            Launcher_DrawWhiteField(Target);
             break;
 
         case LAUNCHER_PHASE_STARTUP_CHANNEL_CHANGE:
             if((Launcher_State.PreviewTransition == LAUNCHER_PREVIEW_TRANSITION_CLOSE) ||
                (Launcher_State.PreviewTransition == LAUNCHER_PREVIEW_TRANSITION_COVERED))
             {
-                Launcher_DrawWhiteField(&Target);
+                Launcher_DrawWhiteField(Target);
             }
             else
             {
-                Launcher_DrawMenuScreen(&Target, LAUNCHER_SCREEN_CONTENT_PREVIEW);
+                Launcher_DrawMenuScreen(Target, LAUNCHER_SCREEN_CONTENT_PREVIEW);
             }
             break;
 
         case LAUNCHER_PHASE_MENU:
         default:
-            Launcher_DrawMenuScreen(&Target, LAUNCHER_SCREEN_CONTENT_PREVIEW);
+            Launcher_DrawMenuScreen(Target, LAUNCHER_SCREEN_CONTENT_PREVIEW);
             break;
     }
 
-    if(Display_PresentFrame(Frame))
+    /* The new palette shows with this frame; start opening the picture. */
+    if(Launcher_State.PreviewTransition == LAUNCHER_PREVIEW_TRANSITION_APPLY_PALETTE)
     {
-        if(Launcher_State.PreviewTransition == LAUNCHER_PREVIEW_TRANSITION_APPLY_PALETTE)
-        {
-            Launcher_State.PreviewTransition = LAUNCHER_PREVIEW_TRANSITION_OPEN;
-            Launcher_State.PreviewTransitionElapsedMilliseconds = 0U;
-        }
+        Launcher_State.PreviewTransition = LAUNCHER_PREVIEW_TRANSITION_OPEN;
+        Launcher_State.PreviewTransitionElapsedMilliseconds = 0U;
     }
 }
 

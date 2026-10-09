@@ -17,7 +17,6 @@
 #include "sound.h"
 
 #include "mixer.h"
-#include "synth.h"
 
 #include <math.h>
 #include <stddef.h>
@@ -29,7 +28,7 @@
 
 /* Samples between control updates. */
 #define SOUND_CONTROL_SAMPLES               (16U)
-#define SOUND_CONTROL_RATE                  (SYNTH_SAMPLE_RATE / (float)SOUND_CONTROL_SAMPLES)
+#define SOUND_CONTROL_RATE                  (SOUND_SAMPLE_RATE / (float)SOUND_CONTROL_SAMPLES)
 
 /* Defaults for fields left at 0. */
 #define SOUND_DEFAULT_HZ                    (440.0f)
@@ -247,12 +246,12 @@ static void Sound_UpdateVoiceControl(Sound_VoiceTypeDef *Voice)
 
     if(Layer->Vibrato > 0.0f)
     {
-        Hz *= 1.0f + (Layer->Vibrato * Synth_Sine(Voice->VibratoPhase));
+        Hz *= 1.0f + (Layer->Vibrato * Sound_Sine(Voice->VibratoPhase));
         Voice->VibratoPhase += Sound_OrDefault(Layer->VibratoHz, SOUND_DEFAULT_WOBBLE_HZ) / SOUND_CONTROL_RATE;
         Voice->VibratoPhase -= floorf(Voice->VibratoPhase);
     }
 
-    Voice->Step = Hz * SYNTH_SAMPLE_PERIOD;
+    Voice->Step = Hz * SOUND_SAMPLE_PERIOD;
     Voice->Step = (Voice->Step > SOUND_MAXIMUM_STEP) ? SOUND_MAXIMUM_STEP : Voice->Step;
     Voice->ModulatorStep = Voice->Step * Sound_OrDefault(Layer->FmRatio, 1.0f);
 
@@ -260,7 +259,7 @@ static void Sound_UpdateVoiceControl(Sound_VoiceTypeDef *Voice)
 
     if(Layer->Tremolo > 0.0f)
     {
-        Voice->TremoloGain = 1.0f - (Layer->Tremolo * (0.5f + (0.5f * Synth_Sine(Voice->TremoloPhase))));
+        Voice->TremoloGain = 1.0f - (Layer->Tremolo * (0.5f + (0.5f * Sound_Sine(Voice->TremoloPhase))));
         Voice->TremoloPhase += Sound_OrDefault(Layer->TremoloHz, SOUND_DEFAULT_WOBBLE_HZ) / SOUND_CONTROL_RATE;
         Voice->TremoloPhase -= floorf(Voice->TremoloPhase);
     }
@@ -274,8 +273,8 @@ static void Sound_UpdateVoiceControl(Sound_VoiceTypeDef *Voice)
         float G;
 
         FilterHz = (FilterHz < SOUND_MINIMUM_FILTER_HZ) ? SOUND_MINIMUM_FILTER_HZ : FilterHz;
-        FilterHz = (FilterHz > (SOUND_MAXIMUM_STEP * SYNTH_SAMPLE_RATE)) ? (SOUND_MAXIMUM_STEP * SYNTH_SAMPLE_RATE) : FilterHz;
-        G = tanf(SOUND_PI * FilterHz * SYNTH_SAMPLE_PERIOD);
+        FilterHz = (FilterHz > (SOUND_MAXIMUM_STEP * SOUND_SAMPLE_RATE)) ? (SOUND_MAXIMUM_STEP * SOUND_SAMPLE_RATE) : FilterHz;
+        G = tanf(SOUND_PI * FilterHz * SOUND_SAMPLE_PERIOD);
         Voice->FilterK = 1.0f / Sound_OrDefault(Layer->Resonance, SOUND_DEFAULT_RESONANCE);
         Voice->FilterA1 = 1.0f / (1.0f + (G * (G + Voice->FilterK)));
         Voice->FilterA2 = G * Voice->FilterA1;
@@ -285,7 +284,7 @@ static void Sound_UpdateVoiceControl(Sound_VoiceTypeDef *Voice)
     Voice->Patch.Hz = Hz;
     Voice->Patch.Step = Voice->Step;
     Voice->Patch.Control = Instance->Control;
-    Voice->Patch.Seconds = (float)Voice->Sample * SYNTH_SAMPLE_PERIOD;
+    Voice->Patch.Seconds = (float)Voice->Sample * SOUND_SAMPLE_PERIOD;
 
     /* Slides ease towards their end values, and the FM fades, ready for the next update. */
     if(Layer->EndHz > 0.0f)
@@ -307,7 +306,7 @@ static void Sound_StartVoice(uint32_t InstanceIndex, const Sound_LayerTypeDef *L
     Sound_VoiceTypeDef *Voice = Sound_AllocateVoice();
     const bool Noise = (Layer->Patch == NULL) && (Layer->Wave == SOUND_NOISE);
     const float Decay = Sound_OrDefault(Layer->Decay, SOUND_DEFAULT_DECAY_SECONDS);
-    const uint32_t AttackSamples = Synth_Seconds(Layer->Attack);
+    const uint32_t AttackSamples = Sound_Seconds(Layer->Attack);
     const float SlideSeconds = (Layer->SlideSeconds > 0.0f) ? Layer->SlideSeconds : (Layer->Attack + Layer->Hold + Decay);
 
     *Voice = (Sound_VoiceTypeDef){ 0 };
@@ -318,10 +317,10 @@ static void Sound_StartVoice(uint32_t InstanceIndex, const Sound_LayerTypeDef *L
     Voice->Hz = Noise ? Layer->Hz : Sound_OrDefault(Layer->Hz, SOUND_DEFAULT_HZ);
     Voice->Duty = Sound_OrDefault(Layer->Duty, SOUND_DEFAULT_DUTY);
     Voice->FilterHz = Sound_OrDefault(Layer->FilterHz, SOUND_DEFAULT_FILTER_HZ);
-    Voice->HoldSamples = Synth_Seconds(Layer->Hold);
-    Voice->DecayCoefficient = Sound_FadeCoefficient(Decay, SYNTH_SAMPLE_RATE);
+    Voice->HoldSamples = Sound_Seconds(Layer->Hold);
+    Voice->DecayCoefficient = Sound_FadeCoefficient(Decay, SOUND_SAMPLE_RATE);
     Voice->ReleaseCoefficient = Voice->DecayCoefficient;
-    Voice->FmDepth = Layer->FmDepth / SYNTH_TWO_PI;
+    Voice->FmDepth = Layer->FmDepth / SOUND_TWO_PI;
     Voice->FmDecay = (Layer->FmDecay > 0.0f) ? Sound_FadeCoefficient(Layer->FmDecay, SOUND_CONTROL_RATE) : 1.0f;
 
     /* Slides ease in: most of the way in the first third of SlideSeconds, settling by the end. */
@@ -330,7 +329,7 @@ static void Sound_StartVoice(uint32_t InstanceIndex, const Sound_LayerTypeDef *L
     if(Layer->Drive > 0.0f)
     {
         Voice->DriveGain = 1.0f + Layer->Drive;
-        Voice->DriveScale = 1.0f / Synth_SoftClip(Voice->DriveGain);
+        Voice->DriveScale = 1.0f / Sound_SoftClip(Voice->DriveGain);
     }
 
     if(AttackSamples > 0U)
@@ -349,7 +348,7 @@ static void Sound_StartVoice(uint32_t InstanceIndex, const Sound_LayerTypeDef *L
     Sound_Random = (Sound_Random * 1664525U) + 1013904223U;
     Voice->Patch.Layer = Layer;
     Voice->Patch.Random = Sound_Random | 1U;
-    Voice->NoiseValue = Synth_Noise(&Voice->Patch.Random);
+    Voice->NoiseValue = Sound_Noise(&Voice->Patch.Random);
     Instance->VoiceCount++;
 
     /* Ready for the patch's Start; this update counts as the voice's first. */
@@ -389,7 +388,7 @@ static float Sound_Oscillate(Sound_VoiceTypeDef *Voice)
 
     if(Voice->FmDepth != 0.0f)
     {
-        Phase += Voice->FmDepth * Synth_Sine(Voice->ModulatorPhase);
+        Phase += Voice->FmDepth * Sound_Sine(Voice->ModulatorPhase);
         Phase -= floorf(Phase);
         Voice->ModulatorPhase += Voice->ModulatorStep;
         Voice->ModulatorPhase -= (Voice->ModulatorPhase >= 1.0f) ? 1.0f : 0.0f;
@@ -407,22 +406,22 @@ static float Sound_Oscillate(Sound_VoiceTypeDef *Voice)
 
             Falling -= (Falling >= 1.0f) ? 1.0f : 0.0f;
             Output = (Phase < Voice->Duty) ? 1.0f : -1.0f;
-            Output += Synth_PolyBlep(Phase, Voice->Step) - Synth_PolyBlep(Falling, Voice->Step);
+            Output += Sound_PolyBlep(Phase, Voice->Step) - Sound_PolyBlep(Falling, Voice->Step);
             break;
         }
 
         case SOUND_SAW:
-            Output = (2.0f * Phase) - 1.0f - Synth_PolyBlep(Phase, Voice->Step);
+            Output = (2.0f * Phase) - 1.0f - Sound_PolyBlep(Phase, Voice->Step);
             break;
 
         case SOUND_NOISE:
             /* Plain hiss, or with a pitch, a new random level each cycle. */
-            Output = (Voice->Hz > 0.0f) ? Voice->NoiseValue : Synth_Noise(&Voice->Patch.Random);
+            Output = (Voice->Hz > 0.0f) ? Voice->NoiseValue : Sound_Noise(&Voice->Patch.Random);
             break;
 
         case SOUND_SINE:
         default:
-            Output = Synth_Sine(Phase);
+            Output = Sound_Sine(Phase);
             break;
     }
 
@@ -431,7 +430,7 @@ static float Sound_Oscillate(Sound_VoiceTypeDef *Voice)
     if(Voice->Phase >= 1.0f)
     {
         Voice->Phase -= 1.0f;
-        Voice->NoiseValue = Synth_Noise(&Voice->Patch.Random);
+        Voice->NoiseValue = Sound_Noise(&Voice->Patch.Random);
     }
 
     return Output;
@@ -471,7 +470,7 @@ static void Sound_RenderVoice(Sound_VoiceTypeDef *Voice, float *Output, uint32_t
 
         if(Voice->DriveGain > 0.0f)
         {
-            Value = Synth_SoftClip(Value * Voice->DriveGain) * Voice->DriveScale;
+            Value = Sound_SoftClip(Value * Voice->DriveGain) * Voice->DriveScale;
         }
 
         switch(Voice->Stage)
@@ -561,7 +560,7 @@ static int32_t Sound_FindInstance(Sound_HandleTypeDef Handle)
 static void Sound_StartInstance(const Sound_CommandTypeDef *Command)
 {
     const Sound_TypeDef *Sound = Command->Sound;
-    const float QuickFade = Sound_FadeCoefficient(SOUND_QUICK_FADE_SECONDS, SYNTH_SAMPLE_RATE);
+    const float QuickFade = Sound_FadeCoefficient(SOUND_QUICK_FADE_SECONDS, SOUND_SAMPLE_RATE);
     uint32_t Free = 0U;
     Sound_InstanceTypeDef *Instance;
 
@@ -615,9 +614,9 @@ static void Sound_StartInstance(const Sound_CommandTypeDef *Command)
     Instance->Handle = Command->Handle;
     Instance->Active = true;
     Instance->Age = ++Sound_Age;
-    Instance->RepeatSamples = Synth_Seconds(Sound->RepeatSeconds);
-    Instance->BaseVolume = Sound_OrDefault(Sound->Volume, 1.0f) * (1.0f - (Sound->RandomVolume * (0.5f + (0.5f * Synth_Noise(&Sound_Random)))));
-    Instance->BasePitch = 1.0f + (Sound->RandomPitch * Synth_Noise(&Sound_Random));
+    Instance->RepeatSamples = Sound_Seconds(Sound->RepeatSeconds);
+    Instance->BaseVolume = Sound_OrDefault(Sound->Volume, 1.0f) * (1.0f - (Sound->RandomVolume * (0.5f + (0.5f * Sound_Noise(&Sound_Random)))));
+    Instance->BasePitch = 1.0f + (Sound->RandomPitch * Sound_Noise(&Sound_Random));
     Instance->TargetVolume = Command->Value * Instance->BaseVolume;
     Instance->TargetPitch = Command->Pitch * Instance->BasePitch;
     Instance->Volume = Instance->TargetVolume;
@@ -640,7 +639,7 @@ static void Sound_UpdateInstance(uint32_t Index, uint32_t Samples)
     {
         for(uint32_t Layer = 0U; (Layer < Sound->LayerCount) && (Layer < SOUND_MAX_LAYERS); Layer++)
         {
-            if(((Instance->StartedLayers & (1UL << Layer)) == 0U) && (Instance->Sample >= Synth_Seconds(Sound->Layers[Layer].Delay)))
+            if(((Instance->StartedLayers & (1UL << Layer)) == 0U) && (Instance->Sample >= Sound_Seconds(Sound->Layers[Layer].Delay)))
             {
                 Instance->StartedLayers |= 1UL << Layer;
                 Sound_StartVoice(Index, &Sound->Layers[Layer]);
@@ -718,7 +717,7 @@ static void Sound_Receive(const void *Message, uint32_t Size, void *Context)
         {
             if(Sound_Instances[Instance].Active)
             {
-                Sound_StopInstance(Instance, Sound_FadeCoefficient(SOUND_QUICK_FADE_SECONDS, SYNTH_SAMPLE_RATE));
+                Sound_StopInstance(Instance, Sound_FadeCoefficient(SOUND_QUICK_FADE_SECONDS, SOUND_SAMPLE_RATE));
             }
         }
 
