@@ -39,7 +39,7 @@ extern "C" {
 #define TANKS_MAX_ENEMIES       (32U)
 #define TANKS_MAX_BULLETS       (96U)
 #define TANKS_MAX_PARTICLES     (144U)
-#define TANKS_MAX_MINES         (24U)
+#define TANKS_MAX_MINES         (48U)
 #define TANKS_MAX_MINE_SPOTS    (12U)
 #define TANKS_MAX_TRACK_MARKS   (120U)
 #define TANKS_MAX_WRECKS        (48U)
@@ -229,8 +229,8 @@ typedef struct
 typedef struct
 {
     Tanks_VectorTypeDef Position;
+    uint32_t LaidMilliseconds;
     uint16_t ArmMilliseconds;
-    uint16_t LifeMilliseconds;
     uint8_t Owner;
     bool OwnerClear;
     bool Active;
@@ -325,6 +325,7 @@ typedef struct
     uint16_t CameraKickMilliseconds;
     uint16_t MessageMilliseconds;
     uint16_t TrackMarkTimerMilliseconds;
+    uint16_t MineCooldownMilliseconds;
     uint16_t RoundClearMilliseconds;
     uint16_t GroupTransitionMilliseconds;
     uint8_t Lives;

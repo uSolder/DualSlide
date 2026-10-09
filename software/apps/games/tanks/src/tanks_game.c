@@ -31,8 +31,8 @@
 #define ROCKET_BLAST_RADIUS   (54U)
 #define MINE_BLAST_RADIUS     (58U)
 
-/* The player can have this many mines out at once. */
-#define PLAYER_MAX_MINES      (2U)
+/* The player can lay a mine this often, as many as they like. */
+#define PLAYER_MINE_COOLDOWN_MS (1500U)
 
 /* Tanks steer around any of the player's mines within this distance of where they're heading. */
 #define MINE_AVOID_DISTANCE   (34U)
@@ -42,14 +42,12 @@
  * MINELAYER_SPEED, planting a mine when it is within MINELAYER_PLANT_PIXELS
  * of one. Facing more than MINELAYER_PIVOT_ANGLE away from where it's going,
  * it turns on the spot first rather than driving round in circles. A spot
- * with a mine within MINE_SPOT_PIXELS of it is already mined. Mines laid on
- * the map stay until something sets them off.
+ * with a mine within MINE_SPOT_PIXELS of it is already mined.
  */
 #define MINELAYER_SPEED       (900)
 #define MINELAYER_PIVOT_ANGLE (300)
 #define MINELAYER_PLANT_PIXELS (14U)
 #define MINE_SPOT_PIXELS      (20U)
-#define MINE_LIFE_FOREVER     (UINT16_MAX)
 #define NO_MINE_SPOT          (UINT8_MAX)
 
 /* A path that goes round the player keeps its waypoints this far from the player's tank. */
@@ -552,6 +550,7 @@ static void Tanks_ResetPlayer(void)
     Player->MaximumHull = 1;
     Player->Hull = 1;
     Player->ReloadMilliseconds = 0U;
+    Tanks_Game.MineCooldownMilliseconds = 0U;
     Player->AimRefreshMilliseconds = 0U;
     Player->InvulnerableMilliseconds = 2200U;
     Player->AiThinkMilliseconds = 0U;
@@ -1221,18 +1220,6 @@ static bool Tanks_DemoPilot(Tanks_TankTypeDef *Player, uint32_t DeltaMillisecond
     return Tanks_SteerTank(Player, Heading, Speed, Visible) && (Error < 28) && (Error > -28);
 }
 
-static uint8_t Tanks_CountPlayerMines(void)
-{
-    uint8_t Count = 0U;
-
-    for(uint8_t Index = 0U; Index < TANKS_MAX_MINES; Index++)
-    {
-        Count += (Tanks_Game.Mines[Index].Active && (Tanks_Game.Mines[Index].Owner == PLAYER_OWNER)) ? 1U : 0U;
-    }
-
-    return Count;
-}
-
 static void Tanks_UpdatePlayer(uint32_t DeltaMilliseconds)
 {
     Tanks_TankTypeDef *Player = &Tanks_Game.Player;
@@ -1263,10 +1250,21 @@ static void Tanks_UpdatePlayer(uint32_t DeltaMilliseconds)
         (void)Tanks_Fire(Player, PLAYER_OWNER);
     }
 
-    /* Secondary lays a mine behind the tank, a few at a time. */
-    if(!Tanks_Game.Demo && Tanks_Game.Input.Secondary.Pressed && (Tanks_CountPlayerMines() < PLAYER_MAX_MINES))
+    /* Secondary lays a mine behind the tank, one every PLAYER_MINE_COOLDOWN_MS. */
+    if(Tanks_Game.MineCooldownMilliseconds > DeltaMilliseconds)
     {
-        (void)Tanks_DropMine(Player, PLAYER_OWNER);
+        Tanks_Game.MineCooldownMilliseconds -= (uint16_t)DeltaMilliseconds;
+    }
+    else
+    {
+        Tanks_Game.MineCooldownMilliseconds = 0U;
+    }
+    if(!Tanks_Game.Demo && Tanks_Game.Input.Secondary.Pressed && (Tanks_Game.MineCooldownMilliseconds == 0U))
+    {
+        if(Tanks_DropMine(Player, PLAYER_OWNER))
+        {
+            Tanks_Game.MineCooldownMilliseconds = PLAYER_MINE_COOLDOWN_MS;
+        }
     }
 
     if((Player->LinearVelocity > 18) || (Player->LinearVelocity < -18))
@@ -1574,30 +1572,48 @@ static int16_t Tanks_LeadHeading(const Tanks_TankTypeDef *Enemy, int32_t BulletS
     return Tanks_AngleTo(Enemy->Position, Tanks_PointAhead(Player->Position, Player->Heading, (int16_t)Travel));
 }
 
-/* Put a mine down at Position; Owner is 0 for the player, or the enemy's index + 1. */
-static bool Tanks_PlaceMine(Tanks_VectorTypeDef Position, uint8_t Owner, uint16_t LifeMilliseconds)
+/*
+ * Put a mine down at Position; Owner is 0 for the player, or the enemy's
+ * index + 1. Mines stay until something sets them off. When every mine slot
+ * is taken, the player's newest mine replaces their oldest one.
+ */
+static bool Tanks_PlaceMine(Tanks_VectorTypeDef Position, uint8_t Owner)
 {
+    Tanks_MineTypeDef *Mine = NULL;
     if(Tanks_TileAtPosition(Position) != TANKS_TILE_FLOOR)
     {
         return false;
     }
-    for(uint8_t Index = 0U; Index < TANKS_MAX_MINES; Index++)
+    for(uint8_t Index = 0U; (Index < TANKS_MAX_MINES) && (Mine == NULL); Index++)
     {
-        Tanks_MineTypeDef *Mine = &Tanks_Game.Mines[Index];
-        if(Mine->Active)
+        if(!Tanks_Game.Mines[Index].Active)
         {
-            continue;
+            Mine = &Tanks_Game.Mines[Index];
         }
-        Mine->Position = Position;
-        Mine->ArmMilliseconds = 700U;
-        Mine->LifeMilliseconds = LifeMilliseconds;
-        Mine->Owner = Owner;
-        Mine->OwnerClear = false;
-        Mine->Active = true;
-        TanksAudio_PlayMineDropped(Position);
-        return true;
     }
-    return false;
+    if((Mine == NULL) && (Owner == PLAYER_OWNER))
+    {
+        for(uint8_t Index = 0U; Index < TANKS_MAX_MINES; Index++)
+        {
+            Tanks_MineTypeDef *Candidate = &Tanks_Game.Mines[Index];
+            if((Candidate->Owner == PLAYER_OWNER) && ((Mine == NULL) || (Candidate->LaidMilliseconds < Mine->LaidMilliseconds)))
+            {
+                Mine = Candidate;
+            }
+        }
+    }
+    if(Mine == NULL)
+    {
+        return false;
+    }
+    Mine->Position = Position;
+    Mine->LaidMilliseconds = Tanks_Game.RunMilliseconds;
+    Mine->ArmMilliseconds = 700U;
+    Mine->Owner = Owner;
+    Mine->OwnerClear = false;
+    Mine->Active = true;
+    TanksAudio_PlayMineDropped(Position);
+    return true;
 }
 
 /* Lay a mine just behind a tank. */
@@ -1606,7 +1622,7 @@ static bool Tanks_DropMine(const Tanks_TankTypeDef *Tank, uint8_t Owner)
     Tanks_VectorTypeDef Position;
     Position.X = Tank->Position.X - ((Tanks_Sine(Tank->Heading) * 24 * TANKS_FP_ONE) / TANKS_TRIG_ONE);
     Position.Y = Tank->Position.Y + ((Tanks_Cosine(Tank->Heading) * 24 * TANKS_FP_ONE) / TANKS_TRIG_ONE);
-    return Tanks_PlaceMine(Position, Owner, 9000U);
+    return Tanks_PlaceMine(Position, Owner);
 }
 
 /* Set a tank's tracks to turn towards DesiredHeading and drive at Speed. */
@@ -1769,7 +1785,7 @@ static int16_t Tanks_PlanMinelayer(Tanks_TankTypeDef *Enemy, uint8_t EnemyIndex,
     Distance = Tanks_DistancePixels(Enemy->Position, Spot);
     if(Distance <= MINELAYER_PLANT_PIXELS)
     {
-        if(Tanks_PlaceMine(Spot, (uint8_t)(EnemyIndex + 1U), MINE_LIFE_FOREVER))
+        if(Tanks_PlaceMine(Spot, (uint8_t)(EnemyIndex + 1U)))
         {
             Enemy->Mines++;
         }
@@ -2245,19 +2261,6 @@ static void Tanks_UpdateMines(uint32_t DeltaMilliseconds)
         Tanks_MineTypeDef *Mine = &Tanks_Game.Mines[MineIndex];
         if(!Mine->Active)
         {
-            continue;
-        }
-        if(Mine->LifeMilliseconds == MINE_LIFE_FOREVER)
-        {
-        }
-        else if(Mine->LifeMilliseconds > DeltaMilliseconds)
-        {
-            Mine->LifeMilliseconds -= (uint16_t)DeltaMilliseconds;
-        }
-        else
-        {
-            Mine->Active = false;
-            TanksAudio_PlayMineFizzle(Mine->Position);
             continue;
         }
         if(Mine->ArmMilliseconds > DeltaMilliseconds)
