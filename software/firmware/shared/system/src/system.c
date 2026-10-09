@@ -4,6 +4,9 @@
  *
  * Initializes the platform services and the application manager, then runs
  * the frame loop: global button handling, application update, and render.
+ *
+ * Holding both buttons is the system gesture: after a moment it returns to
+ * the menu, and held on in the menu it powers the device off.
  */
 
 #include "system.h"
@@ -50,66 +53,64 @@ _Static_assert(USB_AUDIO_OUTPUT_CHANNEL_COUNT == 1U, "USB audio output must be m
 
 typedef struct
 {
-    bool Pressed;
-    bool HoldDetected;
-    uint64_t PressStartTimeMilliseconds;
-} System_ButtonHoldStateTypeDef;
+    bool Held;
+    uint64_t NextActionTimeMilliseconds;
+} System_ButtonChordStateTypeDef;
 
 /* -------------------------------------------------------------------------- */
 /* Private data                                                               */
 /* -------------------------------------------------------------------------- */
 
-static System_ButtonHoldStateTypeDef System_PrimaryButtonHoldState;
-static System_ButtonHoldStateTypeDef System_SecondaryButtonHoldState;
+static System_ButtonChordStateTypeDef System_ButtonChordState;
 
 /* -------------------------------------------------------------------------- */
 /* Private functions                                                          */
 /* -------------------------------------------------------------------------- */
 
-/**
- * @brief Update one button hold state.
- *
- * A hold is reported exactly once for each uninterrupted button press. A
- * failed input read clears the state so that stale input cannot cause an
- * action when the input backend later recovers.
- *
- * @param State            Button hold state to update.
- * @param ButtonNumber     Input number assigned to the button.
- * @param TimeMilliseconds Current system time in milliseconds.
- *
- * @return true when the button has just reached the hold duration.
- */
-static bool System_UpdateButtonHold(System_ButtonHoldStateTypeDef *State, Input_NumberTypeDef ButtonNumber, uint64_t TimeMilliseconds)
+static bool System_IsButtonPressed(Input_NumberTypeDef ButtonNumber)
 {
     int32_t Value;
 
+    return Input_GetValue(ButtonNumber, &Value) && (Value != 0);
+}
+
+/**
+ * @brief Update the two-button gesture.
+ *
+ * Once both buttons have been held together for the hold time, an action is
+ * reported, then another after each further hold time while they stay held.
+ * Releasing either button, or a failed input read, starts the count again.
+ *
+ * @param State            Gesture state to update.
+ * @param TimeMilliseconds Current system time in milliseconds.
+ *
+ * @return true when the gesture has just reached the next hold time.
+ */
+static bool System_UpdateButtonChord(System_ButtonChordStateTypeDef *State, uint64_t TimeMilliseconds)
+{
     if(State == NULL)
     {
         return false;
     }
 
-    if(!Input_GetValue(ButtonNumber, &Value) || (Value == 0))
+    if(!System_IsButtonPressed(SYSTEM_INPUT_PRIMARY_BUTTON) || !System_IsButtonPressed(SYSTEM_INPUT_SECONDARY_BUTTON))
     {
-        State->Pressed = false;
-        State->HoldDetected = false;
-        State->PressStartTimeMilliseconds = 0ULL;
+        State->Held = false;
 
         return false;
     }
 
-    if(!State->Pressed)
+    if(!State->Held)
     {
-        State->Pressed = true;
-        State->HoldDetected = false;
-        State->PressStartTimeMilliseconds = TimeMilliseconds;
+        State->Held = true;
+        State->NextActionTimeMilliseconds = TimeMilliseconds + SYSTEM_BUTTON_HOLD_TIME_MILLISECONDS;
 
         return false;
     }
 
-    if(!State->HoldDetected &&
-       ((TimeMilliseconds - State->PressStartTimeMilliseconds) >= SYSTEM_BUTTON_HOLD_TIME_MILLISECONDS))
+    if(TimeMilliseconds >= State->NextActionTimeMilliseconds)
     {
-        State->HoldDetected = true;
+        State->NextActionTimeMilliseconds = TimeMilliseconds + SYSTEM_BUTTON_HOLD_TIME_MILLISECONDS;
 
         return true;
     }
@@ -154,8 +155,7 @@ int System_Run(void)
     uint32_t DeltaTimeMilliseconds;
     bool Running = true;
 
-    System_PrimaryButtonHoldState = (System_ButtonHoldStateTypeDef){ 0 };
-    System_SecondaryButtonHoldState = (System_ButtonHoldStateTypeDef){ 0 };
+    System_ButtonChordState = (System_ButtonChordStateTypeDef){ 0 };
 
     if(Storage_Init() != STORAGE_RESULT_OK)
     {
@@ -224,15 +224,18 @@ int System_Run(void)
             Running = false;
         }
 
-        if(System_UpdateButtonHold(&System_PrimaryButtonHoldState, SYSTEM_INPUT_PRIMARY_BUTTON, FrameStartTimeMilliseconds))
+        /* Both buttons held: back to the menu, or off when already there. */
+        if(System_UpdateButtonChord(&System_ButtonChordState, FrameStartTimeMilliseconds))
         {
-            SystemTasks_PowerOff();
-            Running = false;
-        }
-
-        if(System_UpdateButtonHold(&System_SecondaryButtonHoldState, SYSTEM_INPUT_SECONDARY_BUTTON, FrameStartTimeMilliseconds))
-        {
-            AppManager_OpenLauncher();
+            if(AppManager_IsLauncherActive())
+            {
+                SystemTasks_PowerOff();
+                Running = false;
+            }
+            else
+            {
+                AppManager_OpenLauncher();
+            }
         }
 
         AppManager_Update(DeltaTimeMilliseconds);

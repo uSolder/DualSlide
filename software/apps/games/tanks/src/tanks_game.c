@@ -32,7 +32,7 @@
 #define HUNTER_ROCKET_RANGE   (260)
 
 /* Testing only: 1 makes the player's tank indestructible. Set to 0 for release. */
-#define PLAYER_INVINCIBLE     (1)
+#define PLAYER_INVINCIBLE     (0)
 
 /* -------------------------------------------------------------------------- */
 /* Private function declarations                                              */

@@ -1019,8 +1019,9 @@ bool Pong_Init(void)
 {
     Pong_Input.LeftY = ((int16_t)RENDER_HEIGHT - PADDLE_NORMAL_HEIGHT) / 2;
     Pong_Input.RightY = Pong_Input.LeftY;
-    Pong_Input.PrimaryDown = false;
-    Pong_Input.SecondaryDown = false;
+    /* The launcher starts games on a held button: it must be let go before it counts. */
+    Pong_Input.PrimaryDown = true;
+    Pong_Input.SecondaryDown = true;
     Pong_Input.RightSliderArmed = false;
     Pong_Game.Screen = PONG_SCREEN_MENU;
     Pong_Game.TwoPlayer = false;

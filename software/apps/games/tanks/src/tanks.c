@@ -117,6 +117,14 @@ static void Tanks_UpdateButton(Tanks_ButtonTypeDef *Button, bool Down)
     Button->Down = Down;
     Button->Pressed = Button->Down && !Button->PreviousDown;
     Button->Released = !Button->Down && Button->PreviousDown;
+
+    /* The launcher starts games on a held button: that press does nothing. */
+    if(Button->HeldFromLaunch)
+    {
+        Button->HeldFromLaunch = Down;
+        Button->Pressed = false;
+        Button->Released = false;
+    }
 }
 
 static void Tanks_ReadInput(uint32_t DeltaMilliseconds)
@@ -197,6 +205,7 @@ bool Tanks_Init(void)
     Tanks_Game.Input.Primary.PreviousDown = false;
     Tanks_Game.Input.Primary.Pressed = false;
     Tanks_Game.Input.Primary.Released = false;
+    Tanks_Game.Input.Primary.HeldFromLaunch = true;
     Tanks_Game.Input.Secondary = Tanks_Game.Input.Primary;
     Tanks_Game.Message[0] = '\0';
     Tanks_Game.Paused = false;

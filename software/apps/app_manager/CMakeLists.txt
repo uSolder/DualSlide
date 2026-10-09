@@ -16,6 +16,7 @@ target_link_libraries(DualSlideAppManager
         DualSlideShared
         DualSlideSystem
         DualSlideLauncher
+        DualSlideSettingsApp
         DualSlideWindowWasher
         DualSlidePong
         DualSlideTanks

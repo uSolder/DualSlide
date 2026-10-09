@@ -19,7 +19,7 @@ extern "C" {
 /**
  * @brief Number of applications registered with the application manager.
  */
-#define NUM_APPS (4U)
+#define NUM_APPS (5U)
 
 /**
  * @brief Splash-screen position within the logical render target.
@@ -141,6 +141,11 @@ void AppManager_Resume(void);
  * application manager has not been initialized.
  */
 void AppManager_OpenLauncher(void);
+
+/**
+ * @brief Return whether the launcher, rather than an application, is active.
+ */
+bool AppManager_IsLauncherActive(void);
 
 /**
  * @brief Shuts down the application manager and active runtime component.

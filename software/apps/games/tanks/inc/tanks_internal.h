@@ -163,6 +163,7 @@ typedef struct
     bool PreviousDown;
     bool Pressed;
     bool Released;
+    bool HeldFromLaunch;
 } Tanks_ButtonTypeDef;
 
 typedef struct

@@ -6,6 +6,12 @@
  *  1. White uSolder brand screen inside the CRT.
  *  2. CRT channel-change shutters close over the brand, then open.
  *  3. The selected game preview remains displayed inside the CRT.
+ *
+ * Controls work like an old television:
+ *  - Tap primary or secondary: channel up or down.
+ *  - Hold either for a moment: start the tuned channel.
+ *  - Both held together: the system's menu and power gesture.
+ * The sliders do nothing here.
  */
 
 #include "launcher.h"
@@ -14,14 +20,11 @@
 #include "avenir_next_demi_usolder.h"
 #include "display.h"
 #include "input.h"
-#include "mixer.h"
 #include "open_sans.h"
 #include "open_sans_bold.h"
 #include "render.h"
-#include "settings.h"
 
 #include <limits.h>
-#include <math.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -41,14 +44,13 @@
 #define LAUNCHER_SCREEN_OPENING_WIDTH            (680U)
 #define LAUNCHER_SCREEN_OPENING_HEIGHT           (360U)
 
-/* Top-screen tab positions. */
-#define LAUNCHER_SETTINGS_BUTTON_X                (240)
+/* Top-screen tab positions: secondary (channel down), charging, primary (channel up). */
+#define LAUNCHER_CHANNEL_DOWN_TAB_X               (240)
 #define LAUNCHER_CHARGING_INDICATOR_X             (360)
-#define LAUNCHER_START_BUTTON_X                   (480)
+#define LAUNCHER_CHANNEL_UP_TAB_X                 (480)
 #define LAUNCHER_SCREEN_TAB_Y                     (0)
-#define LAUNCHER_SETTINGS_BUTTON_WIDTH            (80)
+#define LAUNCHER_CHANNEL_TAB_WIDTH                (80)
 #define LAUNCHER_CHARGING_INDICATOR_WIDTH         (80)
-#define LAUNCHER_START_BUTTON_WIDTH               (80)
 #define LAUNCHER_SCREEN_TAB_CAP_HEIGHT            (14U)
 #define LAUNCHER_SCREEN_TAB_SIDE_ANGLE            (8)
 #define LAUNCHER_SCREEN_TAB_BORDER_WIDTH          (5)
@@ -76,61 +78,11 @@
 #define INPUT_BATTERY_NUMBER          ((Input_NumberTypeDef)5U)
 #define INPUT_USB_POWER_NUMBER        ((Input_NumberTypeDef)6U)
 
-/*
- * The slider must enter a narrow hard-stop zone to change applications, then
- * return well away from that zone before another change can occur.
- */
-#define LAUNCHER_SLIDER_MINIMUM                  (0)
-#define LAUNCHER_SLIDER_MAXIMUM                  (65535)
-#define LAUNCHER_SLIDER_TOP_TRIGGER              (1000)
-#define LAUNCHER_SLIDER_BOTTOM_TRIGGER           (65535-1000)
-#define LAUNCHER_SLIDER_TOP_RELEASE              (1500)
-#define LAUNCHER_SLIDER_BOTTOM_RELEASE           (65535-1500)
+/* Holding a button this long starts the tuned channel. */
+#define LAUNCHER_START_HOLD_MS                   (600U)
 
-/*
- * The effector stops against the pressure plates rather than passing through
- * them. Button-centre coordinates are separate from the travel limits so the
- * visual mechanism remains mechanically believable.
- */
-#define SLIDER_TOP_BUTTON_CENTER                 (45)
-#define SLIDER_BOTTOM_BUTTON_CENTER              (480-45)
-#define SLIDER_TOP_LIMIT                         (60)
-#define SLIDER_BOTTOM_LIMIT                      (480-60)
-
-#define LAUNCHER_SELECTOR_SLOT_TOP_Y    (20)
-#define LAUNCHER_SELECTOR_SLOT_BOTTOM_Y (480-20)
-
-#define SLIDER_BUTTON_CAP_TRAVEL                 (8)
-#define SLIDER_EFFECTOR_TOP_EXTENT               (10)
-#define SLIDER_EFFECTOR_BOTTOM_EXTENT            (10)
-#define SLIDER_TOP_BUTTON_CONTACT_Y              (SLIDER_TOP_BUTTON_CENTER + 10)
-#define SLIDER_BOTTOM_BUTTON_CONTACT_Y           (SLIDER_BOTTOM_BUTTON_CENTER - 10)
-
-/*
- * Settings page, opened with the secondary button. The right slider's hard
- * stops choose a row; the left slider sets brightness or volume once it has
- * moved a little (so selecting a row never jumps its value to wherever the
- * slider happens to sit); primary twice erases saved scores; secondary saves
- * and returns.
- */
-#define LAUNCHER_SETTINGS_ROW_BRIGHTNESS         (0U)
-#define LAUNCHER_SETTINGS_ROW_VOLUME             (1U)
-#define LAUNCHER_SETTINGS_ROW_ERASE              (2U)
-#define LAUNCHER_SETTINGS_ROW_COUNT              (3U)
-#define LAUNCHER_SETTINGS_ROW_X                  (100)
-#define LAUNCHER_SETTINGS_ROW_Y                  (132)
-#define LAUNCHER_SETTINGS_ROW_WIDTH              (600U)
-#define LAUNCHER_SETTINGS_ROW_HEIGHT             (54U)
-#define LAUNCHER_SETTINGS_ROW_STEP               (70)
-#define LAUNCHER_SETTINGS_BAR_X                  (380)
-#define LAUNCHER_SETTINGS_BAR_WIDTH              (220U)
-#define LAUNCHER_SETTINGS_VALUE_RIGHT_X          (684)
-#define LAUNCHER_SETTINGS_TAKEOVER               (2000)
-#define LAUNCHER_SETTINGS_MESSAGE_MS             (2000U)
-#define LAUNCHER_SETTINGS_BLIP_CHANNEL           ((Mixer_ChannelTypeDef)0U)
-#define LAUNCHER_SETTINGS_BLIP_HZ                (880.0f)
-#define LAUNCHER_SETTINGS_BLIP_SECONDS           (0.06f)
-#define LAUNCHER_SETTINGS_BLIP_LEVEL             (0.3f)
+/* How long the channel number stays on screen after tuning. */
+#define LAUNCHER_OSD_MS                          (2500U)
 
 typedef enum
 {
@@ -154,27 +106,30 @@ typedef enum
     LAUNCHER_SCREEN_CONTENT_PREVIEW
 } Launcher_ScreenContentTypeDef;
 
+/**
+ * @brief One button: how long it has been held, and whether the two-button
+ *        gesture (or a press left over from before) has claimed it.
+ */
+typedef struct
+{
+    bool Down;
+    bool Released;
+    bool Claimed;
+    uint32_t HeldMilliseconds;
+} Launcher_ButtonTypeDef;
+
 typedef struct
 {
     uint32_t ElapsedMilliseconds;
     Launcher_PhaseTypeDef Phase;
     int SelectedApplication;
-    int16_t SliderEndEffectorY;
+    int TunedApplication;
     int SplashPaletteApplication;
     Launcher_PreviewTransitionTypeDef PreviewTransition;
     uint32_t PreviewTransitionElapsedMilliseconds;
-    bool RightSliderArmed;
-    bool PrimaryButtonPressed;
-    bool PrimaryButtonLaunchArmed;
-    bool SecondaryButtonPressed;
-    bool SettingsOpen;
-    uint8_t SettingsRow;
-    bool LeftSliderTakenOver;
-    int32_t LeftSliderAnchor;
-    bool EraseArmed;
-    bool EraseSucceeded;
-    uint32_t SettingsMessageMilliseconds;
-    uint8_t VolumeBlipStep;
+    uint32_t ChannelOsdMilliseconds;
+    Launcher_ButtonTypeDef Primary;
+    Launcher_ButtonTypeDef Secondary;
     bool USBPowerPresent;
     bool StartupChannelChangeStarted;
     bool StartupChannelChangeCompleted;
@@ -207,8 +162,6 @@ enum
 
 static Launcher_StateTypeDef Launcher_State;
 
-/* Volume preview blip: the main loop bumps the restart count, the audio generator restarts on seeing it. */
-static volatile uint32_t Launcher_BlipRestartCount;
 static Display_ColourTypeDef Launcher_Palette[256U];
 static uint32_t Launcher_PendingDeltaTimeMilliseconds;
 static bool Launcher_Initialized;
@@ -223,9 +176,8 @@ static void Launcher_DrawBrandName(Render_TargetTypeDef *Target);
 static void Launcher_DrawStartupBrandName(Render_TargetTypeDef *Target);
 static void Launcher_DrawBatteryVoltage(Render_TargetTypeDef *Target);
 
-static void Launcher_UpdateMenuInput(void);
-static void Launcher_UpdatePrimaryButton(void);
-static void Launcher_UpdateSecondaryButton(void);
+static void Launcher_UpdateChannel(void);
+static void Launcher_UpdateButtons(uint32_t DeltaTimeMilliseconds);
 static void Launcher_UpdateUSBPowerStatus(void);
 static void Launcher_UpdatePreviewTransition(uint32_t DeltaTimeMilliseconds);
 static bool Launcher_SetSplashPalette(uint16_t ApplicationIndex);
@@ -440,31 +392,28 @@ static void Launcher_DrawBatteryVoltage(Render_TargetTypeDef *Target)
     Render_DrawText(Target, &OpenSansBold20, BatteryText, TextX, LAUNCHER_SCREEN_TAB_LABEL_Y, TextColour);
 }
 
+/*
+ * Treat both buttons as already pressed, so letting go of a press left over
+ * from before (the power button at start-up, or the two-button gesture that
+ * returned here) does nothing.
+ */
+static void Launcher_ClaimButtons(void)
+{
+    Launcher_State.Primary = (Launcher_ButtonTypeDef){ .Down = true, .Claimed = true };
+    Launcher_State.Secondary = (Launcher_ButtonTypeDef){ .Down = true, .Claimed = true };
+}
+
 static void Launcher_Reset(void)
 {
     Launcher_State.ElapsedMilliseconds = 0U;
     Launcher_State.Phase = LAUNCHER_PHASE_WHITE;
     Launcher_State.SelectedApplication = 0;
-    Launcher_State.SliderEndEffectorY = (int16_t)((SLIDER_TOP_LIMIT + SLIDER_BOTTOM_LIMIT) / 2);
+    Launcher_State.TunedApplication = 0;
     Launcher_State.SplashPaletteApplication = -1;
     Launcher_State.PreviewTransition = LAUNCHER_PREVIEW_TRANSITION_NONE;
     Launcher_State.PreviewTransitionElapsedMilliseconds = 0U;
-    /*
-     * The right slider must first leave either hard stop.  This prevents an
-     * already-held slider from changing the page during startup or return.
-     */
-    Launcher_State.RightSliderArmed = false;
-    Launcher_State.PrimaryButtonPressed = false;
-    Launcher_State.PrimaryButtonLaunchArmed = false;
-    Launcher_State.SecondaryButtonPressed = false;
-    Launcher_State.SettingsOpen = false;
-    Launcher_State.SettingsRow = LAUNCHER_SETTINGS_ROW_BRIGHTNESS;
-    Launcher_State.LeftSliderTakenOver = false;
-    Launcher_State.LeftSliderAnchor = 0;
-    Launcher_State.EraseArmed = false;
-    Launcher_State.EraseSucceeded = false;
-    Launcher_State.SettingsMessageMilliseconds = 0U;
-    Launcher_State.VolumeBlipStep = 0U;
+    Launcher_State.ChannelOsdMilliseconds = 0U;
+    Launcher_ClaimButtons();
     Launcher_State.USBPowerPresent = false;
     Launcher_State.StartupChannelChangeStarted = false;
     Launcher_State.StartupChannelChangeCompleted = false;
@@ -503,477 +452,95 @@ static void Launcher_UpdatePhase(void)
     }
 }
 
-static void Launcher_SelectPreviousApplication(void)
+/* ------------------------------------------------------------------------- */
+/* Input                                                                     */
+/* ------------------------------------------------------------------------- */
+
+static void Launcher_TuneChannel(int Direction)
 {
     if(NUM_APPS == 0U)
     {
-        Launcher_State.SelectedApplication = 0;
         return;
     }
 
-    if(Launcher_State.SelectedApplication <= 0)
-    {
-        Launcher_State.SelectedApplication = (int)NUM_APPS - 1;
-    }
-    else
-    {
-        Launcher_State.SelectedApplication--;
-    }
+    Launcher_State.TunedApplication = (Launcher_State.TunedApplication + (int)NUM_APPS + Direction) % (int)NUM_APPS;
+    Launcher_State.ChannelOsdMilliseconds = LAUNCHER_OSD_MS;
 }
 
-static void Launcher_SelectNextApplication(void)
+/* The picture follows the tuned channel once any change already under way has finished. */
+static void Launcher_UpdateChannel(void)
 {
-    if(NUM_APPS == 0U)
+    if((Launcher_State.Phase != LAUNCHER_PHASE_MENU) ||
+       (Launcher_State.PreviewTransition != LAUNCHER_PREVIEW_TRANSITION_NONE) ||
+       (Launcher_State.TunedApplication == Launcher_State.SelectedApplication))
     {
-        Launcher_State.SelectedApplication = 0;
         return;
     }
 
-    Launcher_State.SelectedApplication++;
+    Launcher_State.SelectedApplication = Launcher_State.TunedApplication;
+    Launcher_State.PreviewTransition = LAUNCHER_PREVIEW_TRANSITION_CLOSE;
+    Launcher_State.PreviewTransitionElapsedMilliseconds = 0U;
+}
 
-    if(Launcher_State.SelectedApplication >= (int)NUM_APPS)
+static void Launcher_TrackButton(Launcher_ButtonTypeDef *Button, Input_NumberTypeDef Input, uint32_t DeltaTimeMilliseconds)
+{
+    int32_t Value;
+    const bool Down = Input_GetValue(Input, &Value) && (Value != 0);
+
+    if(Down && !Button->Down)
     {
-        Launcher_State.SelectedApplication = 0;
+        Button->HeldMilliseconds = 0U;
+        Button->Claimed = false;
     }
+    else if(Down)
+    {
+        Button->HeldMilliseconds = Launcher_ClampUnsigned(Button->HeldMilliseconds + DeltaTimeMilliseconds, 0U, UINT32_MAX / 2U);
+    }
+
+    Button->Released = !Down && Button->Down;
+    Button->Down = Down;
 }
 
 /*
- * Returns -1 for the top hard stop, +1 for the bottom one, and 0 otherwise.
- * After each stop the slider must move back clear of it before another counts.
+ * Tap primary or secondary: channel up or down. Hold either: start the tuned
+ * channel. Both together belong to the system gesture, so neither acts on its
+ * own.
  */
-static int Launcher_ProcessSliderHardStops(int32_t SliderValue, bool *Armed)
+static void Launcher_UpdateButtons(uint32_t DeltaTimeMilliseconds)
 {
-    if(Armed == NULL)
+    Launcher_ButtonTypeDef *const Buttons[2] = { &Launcher_State.Primary, &Launcher_State.Secondary };
+    static const int Directions[2] = { 1, -1 };
+
+    Launcher_TrackButton(&Launcher_State.Primary, INPUT_PRIMARY_BUTTON_NUMBER, DeltaTimeMilliseconds);
+    Launcher_TrackButton(&Launcher_State.Secondary, INPUT_SECONDARY_BUTTON_NUMBER, DeltaTimeMilliseconds);
+
+    if(Launcher_State.Primary.Down && Launcher_State.Secondary.Down)
     {
-        return 0;
+        Launcher_State.Primary.Claimed = true;
+        Launcher_State.Secondary.Claimed = true;
     }
 
-    if(!(*Armed))
+    for(uint8_t Index = 0U; Index < 2U; Index++)
     {
-        if((SliderValue >= LAUNCHER_SLIDER_TOP_RELEASE) && (SliderValue <= LAUNCHER_SLIDER_BOTTOM_RELEASE))
+        Launcher_ButtonTypeDef *Button = Buttons[Index];
+
+        if(Button->Claimed || (Launcher_State.Phase != LAUNCHER_PHASE_MENU) || (NUM_APPS == 0U))
         {
-            *Armed = true;
+            continue;
         }
 
-        return 0;
-    }
-
-    if(SliderValue <= LAUNCHER_SLIDER_TOP_TRIGGER)
-    {
-        *Armed = false;
-        return -1;
-    }
-
-    if(SliderValue >= LAUNCHER_SLIDER_BOTTOM_TRIGGER)
-    {
-        *Armed = false;
-        return 1;
-    }
-
-    return 0;
-}
-
-/* ------------------------------------------------------------------------- */
-/* Settings page                                                             */
-/* ------------------------------------------------------------------------- */
-
-/* A short decaying tone, so the volume can be heard while it is set. */
-static void Launcher_GenerateBlip(Audio_SampleTypeDef *Samples, uint32_t SampleCount, void *Context)
-{
-    static uint32_t RestartCount;
-    static uint32_t Sample;
-    const uint32_t LengthSamples = (uint32_t)(LAUNCHER_SETTINGS_BLIP_SECONDS * (float)MIXER_SAMPLE_RATE_HZ);
-
-    (void)Context;
-
-    if(RestartCount != Launcher_BlipRestartCount)
-    {
-        RestartCount = Launcher_BlipRestartCount;
-        Sample = 0U;
-    }
-
-    for(uint32_t Index = 0U; Index < SampleCount; Index++)
-    {
-        float Value = 0.0f;
-
-        if(Sample < LengthSamples)
+        if(Button->Down && (Button->HeldMilliseconds >= LAUNCHER_START_HOLD_MS))
         {
-            const float Envelope = 1.0f - ((float)Sample / (float)LengthSamples);
-
-            Value = sinf(6.2831853f * LAUNCHER_SETTINGS_BLIP_HZ * (float)Sample / (float)MIXER_SAMPLE_RATE_HZ) * Envelope * LAUNCHER_SETTINGS_BLIP_LEVEL;
-            Sample++;
-        }
-
-        Samples[Index] = (Audio_SampleTypeDef)(Value * 32767.0f);
-    }
-}
-
-static void Launcher_PlayBlip(void)
-{
-    Launcher_BlipRestartCount++;
-    (void)Mixer_PlayGenerator(LAUNCHER_SETTINGS_BLIP_CHANNEL, Launcher_GenerateBlip, NULL);
-}
-
-static void Launcher_SelectSettingsRow(uint8_t Row, bool LeftSliderAvailable, int32_t LeftSliderValue)
-{
-    Launcher_State.SettingsRow = Row;
-    Launcher_State.EraseArmed = false;
-    Launcher_State.LeftSliderTakenOver = false;
-
-    if(LeftSliderAvailable)
-    {
-        Launcher_State.LeftSliderAnchor = LeftSliderValue;
-    }
-}
-
-static void Launcher_OpenSettings(void)
-{
-    int32_t LeftSliderValue;
-    const bool LeftSliderAvailable = Input_GetValue(INPUT_LEFT_SLIDER_NUMBER, &LeftSliderValue);
-
-    Launcher_State.SettingsOpen = true;
-    Launcher_State.SettingsMessageMilliseconds = 0U;
-    Launcher_State.VolumeBlipStep = (uint8_t)(Settings_GetVolume() / 10U);
-    Launcher_State.RightSliderArmed = false;
-    Launcher_SelectSettingsRow(LAUNCHER_SETTINGS_ROW_BRIGHTNESS, LeftSliderAvailable, LeftSliderValue);
-}
-
-static void Launcher_CloseSettings(void)
-{
-    (void)Settings_Save();
-    Launcher_State.SettingsOpen = false;
-    Launcher_State.EraseArmed = false;
-    Launcher_State.RightSliderArmed = false;
-}
-
-static void Launcher_UpdateSettingsInput(bool LeftSliderAvailable, int32_t LeftSliderValue, bool RightSliderAvailable, int32_t RightSliderValue)
-{
-    uint8_t Percent;
-
-    if(RightSliderAvailable)
-    {
-        const int Direction = Launcher_ProcessSliderHardStops(RightSliderValue, &Launcher_State.RightSliderArmed);
-
-        if(Direction != 0)
-        {
-            Launcher_SelectSettingsRow((uint8_t)(((int)Launcher_State.SettingsRow + (int)LAUNCHER_SETTINGS_ROW_COUNT + Direction) % (int)LAUNCHER_SETTINGS_ROW_COUNT),
-                                       LeftSliderAvailable, LeftSliderValue);
-        }
-    }
-
-    if(!LeftSliderAvailable || (Launcher_State.SettingsRow == LAUNCHER_SETTINGS_ROW_ERASE))
-    {
-        return;
-    }
-
-    /* The left slider takes over only once it is moved, then the level follows it. */
-    if(!Launcher_State.LeftSliderTakenOver)
-    {
-        const int32_t Moved = LeftSliderValue - Launcher_State.LeftSliderAnchor;
-
-        if((Moved < LAUNCHER_SETTINGS_TAKEOVER) && (Moved > -LAUNCHER_SETTINGS_TAKEOVER))
-        {
+            /* Claimed, so letting go after a failed start does nothing. */
+            Button->Claimed = true;
+            (void)AppManager_StartApplication((uint16_t)Launcher_State.TunedApplication);
             return;
         }
 
-        Launcher_State.LeftSliderTakenOver = true;
-    }
-
-    Percent = (uint8_t)Launcher_MapRange((uint32_t)Launcher_ClampUnsigned((uint32_t)((LeftSliderValue < 0) ? 0 : LeftSliderValue), LAUNCHER_SLIDER_MINIMUM, LAUNCHER_SLIDER_MAXIMUM),
-                                         LAUNCHER_SLIDER_MINIMUM, LAUNCHER_SLIDER_MAXIMUM, 0U, SETTINGS_PERCENT_MAXIMUM);
-
-    if(Launcher_State.SettingsRow == LAUNCHER_SETTINGS_ROW_BRIGHTNESS)
-    {
-        Settings_SetBrightness(Percent);
-    }
-    else if(Percent != Settings_GetVolume())
-    {
-        Settings_SetVolume(Percent);
-
-        /* A blip each time the volume crosses a tenth of its range. */
-        if((Percent / 10U) != Launcher_State.VolumeBlipStep)
+        if(Button->Released)
         {
-            Launcher_State.VolumeBlipStep = (uint8_t)(Percent / 10U);
-            Launcher_PlayBlip();
+            Launcher_TuneChannel(Directions[Index]);
         }
-    }
-}
-
-/* Primary on the erase row: the first press asks for confirmation, the second erases. */
-static void Launcher_SettingsPrimaryReleased(void)
-{
-    if(Launcher_State.SettingsRow != LAUNCHER_SETTINGS_ROW_ERASE)
-    {
-        return;
-    }
-
-    if(!Launcher_State.EraseArmed)
-    {
-        Launcher_State.EraseArmed = true;
-        Launcher_State.SettingsMessageMilliseconds = 0U;
-        return;
-    }
-
-    Launcher_State.EraseArmed = false;
-    Launcher_State.EraseSucceeded = Settings_EraseSavedData();
-    Launcher_State.SettingsMessageMilliseconds = LAUNCHER_SETTINGS_MESSAGE_MS;
-}
-
-static void Launcher_FormatPercent(uint8_t Percent, char *Buffer)
-{
-    uint8_t Length = 0U;
-
-    if(Percent >= 100U)
-    {
-        Buffer[Length++] = '1';
-        Buffer[Length++] = '0';
-        Buffer[Length++] = '0';
-    }
-    else
-    {
-        if(Percent >= 10U)
-        {
-            Buffer[Length++] = (char)('0' + (Percent / 10U));
-        }
-
-        Buffer[Length++] = (char)('0' + (Percent % 10U));
-    }
-
-    Buffer[Length++] = '%';
-    Buffer[Length] = '\0';
-}
-
-static void Launcher_DrawRightAlignedText(Render_TargetTypeDef *Target, const Font *FontAsset, const char *Text, int16_t RightX, int16_t Y, uint8_t Colour)
-{
-    Render_DrawText(Target, FontAsset, Text, (int16_t)(RightX - (int16_t)Launcher_MeasureTextWidth(FontAsset, Text)), Y, Colour);
-}
-
-static void Launcher_DrawSettings(Render_TargetTypeDef *Target)
-{
-    static const char *const Labels[LAUNCHER_SETTINGS_ROW_COUNT] = { "BRIGHTNESS", "VOLUME", "ERASE SAVED SCORES" };
-    static const char Hint[] = "RIGHT SLIDER: SELECT   LEFT SLIDER: ADJUST   SECONDARY: BACK";
-    const Render_RectTypeDef Background = { LAUNCHER_SCREEN_OPENING_X, LAUNCHER_SCREEN_OPENING_Y, LAUNCHER_SCREEN_OPENING_WIDTH, LAUNCHER_SCREEN_OPENING_HEIGHT };
-    const int16_t CentreX = (int16_t)(LAUNCHER_SCREEN_OPENING_X + ((int16_t)LAUNCHER_SCREEN_OPENING_WIDTH / 2));
-
-    Render_FillRect(Target, &Background, COLOUR_PANEL);
-    Render_DrawText(Target, &OpenSansBold28, "SETTINGS", (int16_t)(CentreX - ((int16_t)Launcher_MeasureTextWidth(&OpenSansBold28, "SETTINGS") / 2)), 76, COLOUR_WHITE);
-
-    for(uint8_t Row = 0U; Row < LAUNCHER_SETTINGS_ROW_COUNT; Row++)
-    {
-        const int16_t RowY = (int16_t)(LAUNCHER_SETTINGS_ROW_Y + ((int16_t)Row * LAUNCHER_SETTINGS_ROW_STEP));
-        const int16_t TextY = (int16_t)(RowY + 12);
-        const bool Selected = Row == Launcher_State.SettingsRow;
-        const Render_RectTypeDef RowRect = { LAUNCHER_SETTINGS_ROW_X, RowY, LAUNCHER_SETTINGS_ROW_WIDTH, LAUNCHER_SETTINGS_ROW_HEIGHT };
-        const Render_RectTypeDef Accent = { LAUNCHER_SETTINGS_ROW_X, RowY, 6U, LAUNCHER_SETTINGS_ROW_HEIGHT };
-
-        Render_FillRect(Target, &RowRect, Selected ? COLOUR_BLUE_DARK : COLOUR_NEAR_BLACK);
-
-        if(Selected)
-        {
-            Render_FillRect(Target, &Accent, COLOUR_BLUE);
-        }
-
-        Render_DrawText(Target, &OpenSansBold20, Labels[Row], (int16_t)(LAUNCHER_SETTINGS_ROW_X + 24), TextY, Selected ? COLOUR_WHITE : COLOUR_LIGHT_GREY);
-
-        if(Row == LAUNCHER_SETTINGS_ROW_ERASE)
-        {
-            if(Launcher_State.SettingsMessageMilliseconds > 0U)
-            {
-                Launcher_DrawRightAlignedText(Target, &OpenSansBold20, Launcher_State.EraseSucceeded ? "ERASED" : "FAILED", LAUNCHER_SETTINGS_VALUE_RIGHT_X, TextY,
-                                              Launcher_State.EraseSucceeded ? COLOUR_GREEN : COLOUR_RED);
-            }
-            else if(Selected && Launcher_State.EraseArmed)
-            {
-                Launcher_DrawRightAlignedText(Target, &OpenSansBold20, "PRESS AGAIN", LAUNCHER_SETTINGS_VALUE_RIGHT_X, TextY, COLOUR_RED_LIGHT);
-            }
-        }
-        else
-        {
-            const uint8_t Percent = (Row == LAUNCHER_SETTINGS_ROW_BRIGHTNESS) ? Settings_GetBrightness() : Settings_GetVolume();
-            const Render_RectTypeDef Track = { LAUNCHER_SETTINGS_BAR_X, (int16_t)(RowY + 19), LAUNCHER_SETTINGS_BAR_WIDTH, 16U };
-            const Render_RectTypeDef Fill = { LAUNCHER_SETTINGS_BAR_X, (int16_t)(RowY + 19), (uint16_t)((LAUNCHER_SETTINGS_BAR_WIDTH * Percent) / 100U), 16U };
-            char PercentText[5];
-
-            Launcher_FormatPercent(Percent, PercentText);
-            Render_FillRect(Target, &Track, COLOUR_BEZEL_DARK);
-
-            if(Fill.Width > 0U)
-            {
-                Render_FillRect(Target, &Fill, (Row == LAUNCHER_SETTINGS_ROW_BRIGHTNESS) ? COLOUR_YELLOW : COLOUR_CYAN);
-            }
-
-            Launcher_DrawRightAlignedText(Target, &OpenSansBold20, PercentText, LAUNCHER_SETTINGS_VALUE_RIGHT_X, TextY, COLOUR_WHITE);
-        }
-    }
-
-    Render_DrawText(Target, &OpenSans16, Hint, (int16_t)(CentreX - ((int16_t)Launcher_MeasureTextWidth(&OpenSans16, Hint) / 2)), 372, COLOUR_LIGHT_GREY);
-}
-
-static int16_t Launcher_MapSliderToEndEffectorY(int32_t SliderValue)
-{
-    if(SliderValue <= LAUNCHER_SLIDER_MINIMUM)
-    {
-        return SLIDER_BOTTOM_LIMIT;
-    }
-
-    if(SliderValue >= LAUNCHER_SLIDER_MAXIMUM)
-    {
-        return SLIDER_TOP_LIMIT;
-    }
-
-    return (int16_t)(SLIDER_BOTTOM_LIMIT - (((SliderValue - LAUNCHER_SLIDER_MINIMUM) * (SLIDER_BOTTOM_LIMIT - SLIDER_TOP_LIMIT)) / (LAUNCHER_SLIDER_MAXIMUM - LAUNCHER_SLIDER_MINIMUM)));
-}
-
-static void Launcher_UpdateMenuInput(void)
-{
-    int32_t LeftSliderValue;
-    int32_t RightSliderValue;
-    bool LeftSliderAvailable = false;
-    bool RightSliderAvailable = false;
-    bool SelectionChanged = false;
-
-    if(Input_GetValue(INPUT_LEFT_SLIDER_NUMBER, &LeftSliderValue))
-    {
-        LeftSliderAvailable = true;
-    }
-
-    if(Input_GetValue(INPUT_RIGHT_SLIDER_NUMBER, &RightSliderValue))
-    {
-        RightSliderAvailable = true;
-        Launcher_State.SliderEndEffectorY = Launcher_MapSliderToEndEffectorY(RightSliderValue);
-    }
-    else if(LeftSliderAvailable)
-    {
-        Launcher_State.SliderEndEffectorY = Launcher_MapSliderToEndEffectorY(LeftSliderValue);
-    }
-
-    if(Launcher_State.Phase != LAUNCHER_PHASE_MENU)
-    {
-        return;
-    }
-
-    if(Launcher_State.SettingsOpen)
-    {
-        Launcher_UpdateSettingsInput(LeftSliderAvailable, LeftSliderValue, RightSliderAvailable, RightSliderValue);
-        return;
-    }
-
-    /*
-     * The selected preview is protected from repeated selection changes while
-     * its shutters are moving, but the physical slider remains responsive.
-     */
-    if(Launcher_State.PreviewTransition != LAUNCHER_PREVIEW_TRANSITION_NONE)
-    {
-        return;
-    }
-
-    if(RightSliderAvailable)
-    {
-        const int Direction = Launcher_ProcessSliderHardStops(RightSliderValue, &Launcher_State.RightSliderArmed);
-
-        if(Direction < 0)
-        {
-            Launcher_SelectPreviousApplication();
-            SelectionChanged = true;
-        }
-        else if(Direction > 0)
-        {
-            Launcher_SelectNextApplication();
-            SelectionChanged = true;
-        }
-    }
-
-    if(SelectionChanged)
-    {
-        Launcher_State.PreviewTransition = LAUNCHER_PREVIEW_TRANSITION_CLOSE;
-        Launcher_State.PreviewTransitionElapsedMilliseconds = 0U;
-    }
-}
-
-static void Launcher_UpdatePrimaryButton(void)
-{
-    int32_t PrimaryButtonValue;
-
-    if(!Input_GetValue(INPUT_PRIMARY_BUTTON_NUMBER, &PrimaryButtonValue))
-    {
-        Launcher_State.PrimaryButtonPressed = false;
-        Launcher_State.PrimaryButtonLaunchArmed = false;
-        return;
-    }
-
-    if(Launcher_State.SettingsOpen)
-    {
-        const bool Released = Launcher_State.PrimaryButtonPressed && (PrimaryButtonValue == 0);
-
-        Launcher_State.PrimaryButtonPressed = PrimaryButtonValue != 0;
-        Launcher_State.PrimaryButtonLaunchArmed = false;
-
-        if(Released)
-        {
-            Launcher_SettingsPrimaryReleased();
-        }
-
-        return;
-    }
-
-    if(PrimaryButtonValue != 0)
-    {
-        Launcher_State.PrimaryButtonPressed = true;
-
-        /* A press only arms launch while a stable menu preview is visible. */
-        if((Launcher_State.Phase == LAUNCHER_PHASE_MENU) &&
-           (Launcher_State.PreviewTransition == LAUNCHER_PREVIEW_TRANSITION_NONE) &&
-           (NUM_APPS > 0U))
-        {
-            Launcher_State.PrimaryButtonLaunchArmed = true;
-        }
-
-        return;
-    }
-
-    Launcher_State.PrimaryButtonPressed = false;
-
-    if(!Launcher_State.PrimaryButtonLaunchArmed)
-    {
-        return;
-    }
-
-    Launcher_State.PrimaryButtonLaunchArmed = false;
-
-    if((Launcher_State.Phase == LAUNCHER_PHASE_MENU) &&
-       (Launcher_State.PreviewTransition == LAUNCHER_PREVIEW_TRANSITION_NONE) &&
-       (NUM_APPS > 0U))
-    {
-        (void)AppManager_StartApplication((uint16_t)Launcher_State.SelectedApplication);
-    }
-}
-
-static void Launcher_UpdateSecondaryButton(void)
-{
-    int32_t SecondaryButtonValue;
-    bool Released;
-
-    if(!Input_GetValue(INPUT_SECONDARY_BUTTON_NUMBER, &SecondaryButtonValue))
-    {
-        Launcher_State.SecondaryButtonPressed = false;
-        return;
-    }
-
-    Released = Launcher_State.SecondaryButtonPressed && (SecondaryButtonValue == 0);
-    Launcher_State.SecondaryButtonPressed = SecondaryButtonValue != 0;
-
-    if(!Released || (Launcher_State.Phase != LAUNCHER_PHASE_MENU) || (Launcher_State.PreviewTransition != LAUNCHER_PREVIEW_TRANSITION_NONE))
-    {
-        return;
-    }
-
-    if(Launcher_State.SettingsOpen)
-    {
-        Launcher_CloseSettings();
-    }
-    else
-    {
-        Launcher_OpenSettings();
     }
 }
 
@@ -1024,6 +591,11 @@ static void Launcher_UpdatePreviewTransition(uint32_t DeltaTimeMilliseconds)
     }
 }
 
+static uint32_t Launcher_CountDown(uint32_t Milliseconds, uint32_t DeltaTimeMilliseconds)
+{
+    return (Milliseconds > DeltaTimeMilliseconds) ? (Milliseconds - DeltaTimeMilliseconds) : 0U;
+}
+
 static void Launcher_UpdateSimulation(uint32_t DeltaTimeMilliseconds)
 {
     if(Launcher_State.ElapsedMilliseconds < LAUNCHER_WHITE_END_MS)
@@ -1036,20 +608,12 @@ static void Launcher_UpdateSimulation(uint32_t DeltaTimeMilliseconds)
         }
     }
 
-    if(Launcher_State.SettingsMessageMilliseconds > DeltaTimeMilliseconds)
-    {
-        Launcher_State.SettingsMessageMilliseconds -= DeltaTimeMilliseconds;
-    }
-    else
-    {
-        Launcher_State.SettingsMessageMilliseconds = 0U;
-    }
+    Launcher_State.ChannelOsdMilliseconds = Launcher_CountDown(Launcher_State.ChannelOsdMilliseconds, DeltaTimeMilliseconds);
 
     Launcher_UpdatePhase();
-    Launcher_UpdateMenuInput();
+    Launcher_UpdateButtons(DeltaTimeMilliseconds);
+    Launcher_UpdateChannel();
     Launcher_UpdatePreviewTransition(DeltaTimeMilliseconds);
-    Launcher_UpdatePrimaryButton();
-    Launcher_UpdateSecondaryButton();
     Launcher_UpdateUSBPowerStatus();
 }
 
@@ -1155,6 +719,46 @@ static void Launcher_DrawPreviewTransition(Render_TargetTypeDef *Target)
 
     Render_FillRect(Target, &TopShutter, COLOUR_NEAR_BLACK);
     Render_FillRect(Target, &BottomShutter, COLOUR_NEAR_BLACK);
+}
+
+/* TV on-screen text: green with a dark drop shadow, readable over any picture. */
+static void Launcher_DrawOsdText(Render_TargetTypeDef *Target, const Font *FontAsset, const char *Text, int16_t X, int16_t Y, uint8_t Colour)
+{
+    Render_DrawText(Target, FontAsset, Text, (int16_t)(X + 2), (int16_t)(Y + 2), COLOUR_BLACK);
+    Render_DrawText(Target, FontAsset, Text, X, Y, Colour);
+}
+
+/* The channel number, shown for a moment after tuning. */
+static void Launcher_DrawMenuOsd(Render_TargetTypeDef *Target)
+{
+    char Channel[8] = "CH ";
+
+    if(Launcher_State.ChannelOsdMilliseconds == 0U)
+    {
+        return;
+    }
+
+    Channel[3] = (char)('1' + (Launcher_State.TunedApplication % 9));
+    Channel[4] = '\0';
+    Launcher_DrawOsdText(Target, &OpenSansBold36, Channel, 84, 72, COLOUR_GREEN);
+}
+
+/* While a button is held, a bar under its tab label fills until the channel starts. */
+static void Launcher_DrawHoldProgress(Render_TargetTypeDef *Target, int16_t X, const Launcher_ButtonTypeDef *Button, uint8_t Colour)
+{
+    Render_RectTypeDef Bar = { (int16_t)(X + 12), 47, 0U, 4U };
+
+    if(!Button->Down || Button->Claimed)
+    {
+        return;
+    }
+
+    Bar.Width = (uint16_t)(((uint32_t)(LAUNCHER_CHANNEL_TAB_WIDTH - 24) * Launcher_ClampUnsigned(Button->HeldMilliseconds, 0U, LAUNCHER_START_HOLD_MS)) / LAUNCHER_START_HOLD_MS);
+
+    if(Bar.Width > 0U)
+    {
+        Render_FillRect(Target, &Bar, Colour);
+    }
 }
 
 static void Launcher_DrawMenuScreen(Render_TargetTypeDef *Target, Launcher_ScreenContentTypeDef Content)
@@ -1283,18 +887,10 @@ static void Launcher_DrawMenuScreen(Render_TargetTypeDef *Target, Launcher_Scree
         }
 
         /*
-         * Render the settings page, or the selected application's splash
-         * screen, only within the CRT opening. Splash-screen callbacks must
-         * preserve the active clip region.
+         * Render the selected application's splash screen only within the CRT
+         * opening. Splash-screen callbacks must preserve the active clip region.
          */
-        if(Launcher_State.SettingsOpen)
-        {
-            Launcher_DrawSettings(Target);
-        }
-        else
-        {
-            Launcher_DrawSelectedApplicationSplash(Target);
-        }
+        Launcher_DrawSelectedApplicationSplash(Target);
     }
 
     Render_ResetClipRect();
@@ -1338,246 +934,6 @@ static void Launcher_DrawMenuScreen(Render_TargetTypeDef *Target, Launcher_Scree
         Render_FillRect(Target, &BottomRightCornerC, COLOUR_PANEL);
     }
 
-    {
-        const int16_t EndEffectorY = Launcher_State.SliderEndEffectorY;
-
-        int16_t UpperCapPress = 0;
-        int16_t LowerCapPress = 0;
-
-        /* Move a plate only after the effector's edge reaches its face. */
-        if((EndEffectorY - SLIDER_EFFECTOR_TOP_EXTENT) < SLIDER_TOP_BUTTON_CONTACT_Y)
-        {
-            UpperCapPress = (int16_t)(SLIDER_TOP_BUTTON_CONTACT_Y - (EndEffectorY - SLIDER_EFFECTOR_TOP_EXTENT));
-        }
-
-        if((EndEffectorY + SLIDER_EFFECTOR_BOTTOM_EXTENT) > SLIDER_BOTTOM_BUTTON_CONTACT_Y)
-        {
-            LowerCapPress = (int16_t)((EndEffectorY + SLIDER_EFFECTOR_BOTTOM_EXTENT) - SLIDER_BOTTOM_BUTTON_CONTACT_Y);
-        }
-
-        if(UpperCapPress > SLIDER_BUTTON_CAP_TRAVEL)
-        {
-            UpperCapPress = SLIDER_BUTTON_CAP_TRAVEL;
-        }
-
-        if(LowerCapPress > SLIDER_BUTTON_CAP_TRAVEL)
-        {
-            LowerCapPress = SLIDER_BUTTON_CAP_TRAVEL;
-        }
-
-        {
-            const Render_RectTypeDef ChannelTopShadow = {
-                758,
-                LAUNCHER_SELECTOR_SLOT_TOP_Y,
-                22U,
-                3U
-            };
-
-            const Render_RectTypeDef ChannelLeftShadow = {
-                758,
-                LAUNCHER_SELECTOR_SLOT_TOP_Y,
-                3U,
-                (uint16_t)(LAUNCHER_SELECTOR_SLOT_BOTTOM_Y - LAUNCHER_SELECTOR_SLOT_TOP_Y)
-            };
-
-            const Render_RectTypeDef ChannelInterior = {
-                761,
-                (int16_t)(LAUNCHER_SELECTOR_SLOT_TOP_Y + 3),
-                16U,
-                (uint16_t)(LAUNCHER_SELECTOR_SLOT_BOTTOM_Y - LAUNCHER_SELECTOR_SLOT_TOP_Y - 6)
-            };
-
-            const Render_RectTypeDef ChannelBottomHighlight = {
-                758,
-                (int16_t)(LAUNCHER_SELECTOR_SLOT_BOTTOM_Y - 3),
-                22U,
-                3U
-            };
-
-            const Render_RectTypeDef ChannelRightHighlight = {
-                777,
-                LAUNCHER_SELECTOR_SLOT_TOP_Y,
-                3U,
-                (uint16_t)(LAUNCHER_SELECTOR_SLOT_BOTTOM_Y - LAUNCHER_SELECTOR_SLOT_TOP_Y)
-            };
-
-            const Render_RectTypeDef UpperBlend = {
-                761,
-                (int16_t)(LAUNCHER_SELECTOR_SLOT_TOP_Y - 3),
-                16U,
-                3U
-            };
-
-            const Render_RectTypeDef LowerBlend = {
-                761,
-                LAUNCHER_SELECTOR_SLOT_BOTTOM_Y,
-                16U,
-                3U
-            };
-
-            Render_FillRect(Target, &ChannelInterior, COLOUR_BEZEL_DARK);
-            Render_FillRect(Target, &ChannelTopShadow, COLOUR_NEAR_BLACK);
-            Render_FillRect(Target, &ChannelLeftShadow, COLOUR_NEAR_BLACK);
-            Render_FillRect(Target, &ChannelBottomHighlight, COLOUR_PANEL);
-            Render_FillRect(Target, &ChannelRightHighlight, COLOUR_PANEL);
-            Render_FillRect(Target, &UpperBlend, COLOUR_BEZEL);
-            Render_FillRect(Target, &LowerBlend, COLOUR_BEZEL);
-        }
-
-        {
-            const Render_RectTypeDef UpperSocket = {
-                762,
-                (int16_t)(SLIDER_TOP_BUTTON_CENTER - 22),
-                14U,
-                24U
-            };
-
-            const Render_RectTypeDef UpperSocketShadow = {
-                762,
-                (int16_t)(SLIDER_TOP_BUTTON_CENTER - 22),
-                14U,
-                3U
-            };
-
-            const Render_RectTypeDef LowerSocket = {
-                762,
-                (int16_t)(SLIDER_BOTTOM_BUTTON_CENTER - 2),
-                14U,
-                24U
-            };
-
-            const Render_RectTypeDef LowerSocketShadow = {
-                762,
-                (int16_t)(SLIDER_BOTTOM_BUTTON_CENTER - 2),
-                14U,
-                3U
-            };
-
-            Render_FillRect(Target, &UpperSocket, COLOUR_NEAR_BLACK);
-            Render_FillRect(Target, &UpperSocketShadow, COLOUR_BEZEL_DARK);
-            Render_FillRect(Target, &LowerSocket, COLOUR_NEAR_BLACK);
-            Render_FillRect(Target, &LowerSocketShadow, COLOUR_BEZEL_DARK);
-        }
-
-        {
-            const Render_RectTypeDef EffectorStick = {
-                779,
-                (int16_t)(EndEffectorY - 3),
-                21U,
-                6U
-            };
-
-            const Render_RectTypeDef EffectorBallCentre = {
-                760,
-                (int16_t)(EndEffectorY - (SLIDER_EFFECTOR_TOP_EXTENT - 2)),
-                18U,
-                16U
-            };
-
-            const Render_RectTypeDef EffectorBallTop = {
-                763,
-                (int16_t)(EndEffectorY - SLIDER_EFFECTOR_TOP_EXTENT),
-                12U,
-                3U
-            };
-
-            const Render_RectTypeDef EffectorBallBottom = {
-                763,
-                (int16_t)(EndEffectorY + (SLIDER_EFFECTOR_BOTTOM_EXTENT - 3)),
-                12U,
-                3U
-            };
-
-            const Render_RectTypeDef EffectorBallUpperSide = {
-                761,
-                (int16_t)(EndEffectorY - (SLIDER_EFFECTOR_TOP_EXTENT - 1)),
-                16U,
-                2U
-            };
-
-            const Render_RectTypeDef EffectorBallLowerSide = {
-                761,
-                (int16_t)(EndEffectorY + (SLIDER_EFFECTOR_BOTTOM_EXTENT - 3)),
-                16U,
-                2U
-            };
-
-            Render_FillRect(Target, &EffectorStick, COLOUR_NEAR_BLACK);
-            Render_FillRect(Target, &EffectorBallCentre, COLOUR_RED);
-            Render_FillRect(Target, &EffectorBallTop, COLOUR_RED);
-            Render_FillRect(Target, &EffectorBallBottom, COLOUR_RED);
-            Render_FillRect(Target, &EffectorBallUpperSide, COLOUR_RED);
-            Render_FillRect(Target, &EffectorBallLowerSide, COLOUR_RED);
-        }
-
-        {
-            const Render_RectTypeDef UpperCapShadow = {
-                762,
-                (int16_t)(SLIDER_TOP_BUTTON_CENTER - 10 - UpperCapPress),
-                16U,
-                24U
-            };
-
-            const Render_RectTypeDef UpperCapMiddle = {
-                761,
-                (int16_t)(SLIDER_TOP_BUTTON_CENTER - 12 - UpperCapPress),
-                16U,
-                22U
-            };
-
-            const Render_RectTypeDef UpperCapFace = {
-                763,
-                (int16_t)(SLIDER_TOP_BUTTON_CENTER - 9 - UpperCapPress),
-                12U,
-                17U
-            };
-
-            const Render_RectTypeDef UpperCapHighlight = {
-                764,
-                (int16_t)(SLIDER_TOP_BUTTON_CENTER - 8 - UpperCapPress),
-                10U,
-                2U
-            };
-
-            const Render_RectTypeDef LowerCapShadow = {
-                762,
-                (int16_t)(SLIDER_BOTTOM_BUTTON_CENTER - 10 + LowerCapPress),
-                16U,
-                24U
-            };
-
-            const Render_RectTypeDef LowerCapMiddle = {
-                761,
-                (int16_t)(SLIDER_BOTTOM_BUTTON_CENTER - 12 + LowerCapPress),
-                16U,
-                22U
-            };
-
-            const Render_RectTypeDef LowerCapFace = {
-                763,
-                (int16_t)(SLIDER_BOTTOM_BUTTON_CENTER - 9 + LowerCapPress),
-                12U,
-                17U
-            };
-
-            const Render_RectTypeDef LowerCapHighlight = {
-                764,
-                (int16_t)(SLIDER_BOTTOM_BUTTON_CENTER - 8 + LowerCapPress),
-                10U,
-                2U
-            };
-
-            Render_FillRect(Target, &UpperCapShadow, COLOUR_BEZEL_DARK);
-            Render_FillRect(Target, &UpperCapMiddle, COLOUR_RED_DARK);
-            Render_FillRect(Target, &UpperCapFace, COLOUR_RED);
-            Render_FillRect(Target, &UpperCapHighlight, COLOUR_RED_LIGHT);
-
-            Render_FillRect(Target, &LowerCapShadow, COLOUR_BEZEL_DARK);
-            Render_FillRect(Target, &LowerCapMiddle, COLOUR_RED_DARK);
-            Render_FillRect(Target, &LowerCapFace, COLOUR_RED);
-            Render_FillRect(Target, &LowerCapHighlight, COLOUR_RED_LIGHT);
-        }
-    }
 
     Render_SetClipRect(&ScreenOpening);
 
@@ -1595,14 +951,20 @@ static void Launcher_DrawMenuScreen(Render_TargetTypeDef *Target, Launcher_Scree
 
         Launcher_DrawPreviewTransition(Target);
 
+        if(Launcher_State.Phase == LAUNCHER_PHASE_MENU)
+        {
+            Launcher_DrawMenuOsd(Target);
+        }
+
     Render_ResetClipRect();
 
     Launcher_DrawScreenTab(
         Target,
-        LAUNCHER_SETTINGS_BUTTON_X,
-        LAUNCHER_SETTINGS_BUTTON_WIDTH,
-        "SETTINGS",
-        (Launcher_State.SecondaryButtonPressed || Launcher_State.SettingsOpen) ? COLOUR_BLUE : COLOUR_BLUE_DARK);
+        LAUNCHER_CHANNEL_DOWN_TAB_X,
+        LAUNCHER_CHANNEL_TAB_WIDTH,
+        "CH -",
+        (Launcher_State.Secondary.Down && !Launcher_State.Secondary.Claimed) ? COLOUR_BLUE : COLOUR_BLUE_DARK);
+    Launcher_DrawHoldProgress(Target, LAUNCHER_CHANNEL_DOWN_TAB_X, &Launcher_State.Secondary, COLOUR_BLUE);
     Launcher_DrawScreenTab(
         Target,
         LAUNCHER_CHARGING_INDICATOR_X,
@@ -1612,10 +974,11 @@ static void Launcher_DrawMenuScreen(Render_TargetTypeDef *Target, Launcher_Scree
     Launcher_DrawBatteryVoltage(Target);
     Launcher_DrawScreenTab(
         Target,
-        LAUNCHER_START_BUTTON_X,
-        LAUNCHER_START_BUTTON_WIDTH,
-        "START",
-        Launcher_State.PrimaryButtonPressed ? COLOUR_RED : COLOUR_RED_DARK);
+        LAUNCHER_CHANNEL_UP_TAB_X,
+        LAUNCHER_CHANNEL_TAB_WIDTH,
+        "CH +",
+        (Launcher_State.Primary.Down && !Launcher_State.Primary.Claimed) ? COLOUR_RED : COLOUR_RED_DARK);
+    Launcher_DrawHoldProgress(Target, LAUNCHER_CHANNEL_UP_TAB_X, &Launcher_State.Primary, COLOUR_RED);
     Launcher_DrawBrandName(Target);
 }
 
@@ -1752,27 +1115,19 @@ void Launcher_Render(void)
 
 void Launcher_Pause(void)
 {
-    if(Launcher_State.SettingsOpen)
-    {
-        Launcher_CloseSettings();
-    }
 
     Launcher_Paused = true;
 }
 
 void Launcher_Resume(void)
 {
-    /* Require a fresh move away from the hard stop after an application exits. */
-    Launcher_State.RightSliderArmed = false;
+    /* The buttons that brought us back are still held; letting go must do nothing. */
+    Launcher_ClaimButtons();
     Launcher_Paused = false;
 }
 
 void Launcher_Shutdown(void)
 {
-    if(Launcher_State.SettingsOpen)
-    {
-        Launcher_CloseSettings();
-    }
 
     Launcher_Initialized = false;
     Launcher_Paused = false;

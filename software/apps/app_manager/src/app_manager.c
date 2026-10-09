@@ -9,6 +9,7 @@
 #include "mixer.h"
 #include "music.h"
 #include "pong.h"
+#include "settings_app.h"
 #include "tanks.h"
 #include "template_game.h"
 #include "window_washer.h"
@@ -103,6 +104,16 @@ static const AppManager_ApplicationInterfaceTypeDef AppManager_Applications[NUM_
         .Pause = Tanks_Pause,
         .Resume = Tanks_Resume,
         .Shutdown = Tanks_Shutdown
+    },
+    {
+        .Init = SettingsApp_Init,
+        .Update = SettingsApp_Update,
+        .Render = SettingsApp_Render,
+        .GetSplashScreenPalette = SettingsApp_GetSplashScreenPalette,
+        .DrawSplashScreen = SettingsApp_DrawSplashScreen,
+        .Pause = SettingsApp_Pause,
+        .Resume = SettingsApp_Resume,
+        .Shutdown = SettingsApp_Shutdown
     }
 };
 
@@ -372,6 +383,11 @@ void AppManager_OpenLauncher(void)
     {
         AppManager_LauncherInterface.Resume();
     }
+}
+
+bool AppManager_IsLauncherActive(void)
+{
+    return AppManager_Initialized && (AppManager_State == APP_MANAGER_STATE_LAUNCHER);
 }
 
 void AppManager_Shutdown(void)
