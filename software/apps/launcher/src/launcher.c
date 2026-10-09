@@ -8,8 +8,8 @@
  *  3. The selected game preview remains displayed inside the CRT.
  *
  * Controls work like an old television:
- *  - Tap primary or secondary: channel up or down.
- *  - Hold either for a moment: start the tuned channel.
+ *  - Secondary: next channel, looping back to the first.
+ *  - Primary: start the tuned channel.
  *  - Both held together: the system's menu and power gesture.
  * The sliders do nothing here.
  */
@@ -44,12 +44,12 @@
 #define LAUNCHER_SCREEN_OPENING_WIDTH            (680U)
 #define LAUNCHER_SCREEN_OPENING_HEIGHT           (360U)
 
-/* Top-screen tab positions: secondary (channel down), charging, primary (channel up). */
-#define LAUNCHER_CHANNEL_DOWN_TAB_X               (240)
+/* Top-screen tab positions: secondary (channel up), charging, primary (start). */
+#define LAUNCHER_CHANNEL_TAB_X                    (240)
 #define LAUNCHER_CHARGING_INDICATOR_X             (360)
-#define LAUNCHER_CHANNEL_UP_TAB_X                 (480)
+#define LAUNCHER_START_TAB_X                      (480)
 #define LAUNCHER_SCREEN_TAB_Y                     (0)
-#define LAUNCHER_CHANNEL_TAB_WIDTH                (80)
+#define LAUNCHER_BUTTON_TAB_WIDTH                 (80)
 #define LAUNCHER_CHARGING_INDICATOR_WIDTH         (80)
 #define LAUNCHER_SCREEN_TAB_CAP_HEIGHT            (14U)
 #define LAUNCHER_SCREEN_TAB_SIDE_ANGLE            (8)
@@ -78,9 +78,6 @@
 #define INPUT_BATTERY_NUMBER          ((Input_NumberTypeDef)5U)
 #define INPUT_USB_POWER_NUMBER        ((Input_NumberTypeDef)6U)
 
-/* Holding a button this long starts the tuned channel. */
-#define LAUNCHER_START_HOLD_MS                   (600U)
-
 /* How long the channel number stays on screen after tuning. */
 #define LAUNCHER_OSD_MS                          (2500U)
 
@@ -107,15 +104,14 @@ typedef enum
 } Launcher_ScreenContentTypeDef;
 
 /**
- * @brief One button: how long it has been held, and whether the two-button
- *        gesture (or a press left over from before) has claimed it.
+ * @brief One button, and whether the two-button gesture (or a press left over
+ *        from before) has claimed it.
  */
 typedef struct
 {
     bool Down;
     bool Released;
     bool Claimed;
-    uint32_t HeldMilliseconds;
 } Launcher_ButtonTypeDef;
 
 typedef struct
@@ -177,7 +173,7 @@ static void Launcher_DrawStartupBrandName(Render_TargetTypeDef *Target);
 static void Launcher_DrawBatteryVoltage(Render_TargetTypeDef *Target);
 
 static void Launcher_UpdateChannel(void);
-static void Launcher_UpdateButtons(uint32_t DeltaTimeMilliseconds);
+static void Launcher_UpdateButtons(void);
 static void Launcher_UpdateUSBPowerStatus(void);
 static void Launcher_UpdatePreviewTransition(uint32_t DeltaTimeMilliseconds);
 static bool Launcher_SetSplashPalette(uint16_t ApplicationIndex);
@@ -456,14 +452,14 @@ static void Launcher_UpdatePhase(void)
 /* Input                                                                     */
 /* ------------------------------------------------------------------------- */
 
-static void Launcher_TuneChannel(int Direction)
+static void Launcher_TuneNextChannel(void)
 {
     if(NUM_APPS == 0U)
     {
         return;
     }
 
-    Launcher_State.TunedApplication = (Launcher_State.TunedApplication + (int)NUM_APPS + Direction) % (int)NUM_APPS;
+    Launcher_State.TunedApplication = (Launcher_State.TunedApplication + 1) % (int)NUM_APPS;
     Launcher_State.ChannelOsdMilliseconds = LAUNCHER_OSD_MS;
 }
 
@@ -482,19 +478,14 @@ static void Launcher_UpdateChannel(void)
     Launcher_State.PreviewTransitionElapsedMilliseconds = 0U;
 }
 
-static void Launcher_TrackButton(Launcher_ButtonTypeDef *Button, Input_NumberTypeDef Input, uint32_t DeltaTimeMilliseconds)
+static void Launcher_TrackButton(Launcher_ButtonTypeDef *Button, Input_NumberTypeDef Input)
 {
     int32_t Value;
     const bool Down = Input_GetValue(Input, &Value) && (Value != 0);
 
     if(Down && !Button->Down)
     {
-        Button->HeldMilliseconds = 0U;
         Button->Claimed = false;
-    }
-    else if(Down)
-    {
-        Button->HeldMilliseconds = Launcher_ClampUnsigned(Button->HeldMilliseconds + DeltaTimeMilliseconds, 0U, UINT32_MAX / 2U);
     }
 
     Button->Released = !Down && Button->Down;
@@ -502,17 +493,14 @@ static void Launcher_TrackButton(Launcher_ButtonTypeDef *Button, Input_NumberTyp
 }
 
 /*
- * Tap primary or secondary: channel up or down. Hold either: start the tuned
- * channel. Both together belong to the system gesture, so neither acts on its
- * own.
+ * A press of secondary tunes the next channel; a press of primary starts the
+ * tuned one. Each acts when let go, so a press that becomes the two-button
+ * gesture does neither.
  */
-static void Launcher_UpdateButtons(uint32_t DeltaTimeMilliseconds)
+static void Launcher_UpdateButtons(void)
 {
-    Launcher_ButtonTypeDef *const Buttons[2] = { &Launcher_State.Primary, &Launcher_State.Secondary };
-    static const int Directions[2] = { 1, -1 };
-
-    Launcher_TrackButton(&Launcher_State.Primary, INPUT_PRIMARY_BUTTON_NUMBER, DeltaTimeMilliseconds);
-    Launcher_TrackButton(&Launcher_State.Secondary, INPUT_SECONDARY_BUTTON_NUMBER, DeltaTimeMilliseconds);
+    Launcher_TrackButton(&Launcher_State.Primary, INPUT_PRIMARY_BUTTON_NUMBER);
+    Launcher_TrackButton(&Launcher_State.Secondary, INPUT_SECONDARY_BUTTON_NUMBER);
 
     if(Launcher_State.Primary.Down && Launcher_State.Secondary.Down)
     {
@@ -520,27 +508,20 @@ static void Launcher_UpdateButtons(uint32_t DeltaTimeMilliseconds)
         Launcher_State.Secondary.Claimed = true;
     }
 
-    for(uint8_t Index = 0U; Index < 2U; Index++)
+    if((Launcher_State.Phase != LAUNCHER_PHASE_MENU) || (NUM_APPS == 0U))
     {
-        Launcher_ButtonTypeDef *Button = Buttons[Index];
+        return;
+    }
 
-        if(Button->Claimed || (Launcher_State.Phase != LAUNCHER_PHASE_MENU) || (NUM_APPS == 0U))
-        {
-            continue;
-        }
+    if(Launcher_State.Primary.Released && !Launcher_State.Primary.Claimed)
+    {
+        (void)AppManager_StartApplication((uint16_t)Launcher_State.TunedApplication);
+        return;
+    }
 
-        if(Button->Down && (Button->HeldMilliseconds >= LAUNCHER_START_HOLD_MS))
-        {
-            /* Claimed, so letting go after a failed start does nothing. */
-            Button->Claimed = true;
-            (void)AppManager_StartApplication((uint16_t)Launcher_State.TunedApplication);
-            return;
-        }
-
-        if(Button->Released)
-        {
-            Launcher_TuneChannel(Directions[Index]);
-        }
+    if(Launcher_State.Secondary.Released && !Launcher_State.Secondary.Claimed)
+    {
+        Launcher_TuneNextChannel();
     }
 }
 
@@ -611,7 +592,7 @@ static void Launcher_UpdateSimulation(uint32_t DeltaTimeMilliseconds)
     Launcher_State.ChannelOsdMilliseconds = Launcher_CountDown(Launcher_State.ChannelOsdMilliseconds, DeltaTimeMilliseconds);
 
     Launcher_UpdatePhase();
-    Launcher_UpdateButtons(DeltaTimeMilliseconds);
+    Launcher_UpdateButtons();
     Launcher_UpdateChannel();
     Launcher_UpdatePreviewTransition(DeltaTimeMilliseconds);
     Launcher_UpdateUSBPowerStatus();
@@ -741,24 +722,6 @@ static void Launcher_DrawMenuOsd(Render_TargetTypeDef *Target)
     Channel[3] = (char)('1' + (Launcher_State.TunedApplication % 9));
     Channel[4] = '\0';
     Launcher_DrawOsdText(Target, &OpenSansBold36, Channel, 84, 72, COLOUR_GREEN);
-}
-
-/* While a button is held, a bar under its tab label fills until the channel starts. */
-static void Launcher_DrawHoldProgress(Render_TargetTypeDef *Target, int16_t X, const Launcher_ButtonTypeDef *Button, uint8_t Colour)
-{
-    Render_RectTypeDef Bar = { (int16_t)(X + 12), 47, 0U, 4U };
-
-    if(!Button->Down || Button->Claimed)
-    {
-        return;
-    }
-
-    Bar.Width = (uint16_t)(((uint32_t)(LAUNCHER_CHANNEL_TAB_WIDTH - 24) * Launcher_ClampUnsigned(Button->HeldMilliseconds, 0U, LAUNCHER_START_HOLD_MS)) / LAUNCHER_START_HOLD_MS);
-
-    if(Bar.Width > 0U)
-    {
-        Render_FillRect(Target, &Bar, Colour);
-    }
 }
 
 static void Launcher_DrawMenuScreen(Render_TargetTypeDef *Target, Launcher_ScreenContentTypeDef Content)
@@ -960,11 +923,10 @@ static void Launcher_DrawMenuScreen(Render_TargetTypeDef *Target, Launcher_Scree
 
     Launcher_DrawScreenTab(
         Target,
-        LAUNCHER_CHANNEL_DOWN_TAB_X,
-        LAUNCHER_CHANNEL_TAB_WIDTH,
-        "CH -",
+        LAUNCHER_CHANNEL_TAB_X,
+        LAUNCHER_BUTTON_TAB_WIDTH,
+        "CH +",
         (Launcher_State.Secondary.Down && !Launcher_State.Secondary.Claimed) ? COLOUR_BLUE : COLOUR_BLUE_DARK);
-    Launcher_DrawHoldProgress(Target, LAUNCHER_CHANNEL_DOWN_TAB_X, &Launcher_State.Secondary, COLOUR_BLUE);
     Launcher_DrawScreenTab(
         Target,
         LAUNCHER_CHARGING_INDICATOR_X,
@@ -974,11 +936,10 @@ static void Launcher_DrawMenuScreen(Render_TargetTypeDef *Target, Launcher_Scree
     Launcher_DrawBatteryVoltage(Target);
     Launcher_DrawScreenTab(
         Target,
-        LAUNCHER_CHANNEL_UP_TAB_X,
-        LAUNCHER_CHANNEL_TAB_WIDTH,
-        "CH +",
+        LAUNCHER_START_TAB_X,
+        LAUNCHER_BUTTON_TAB_WIDTH,
+        "START",
         (Launcher_State.Primary.Down && !Launcher_State.Primary.Claimed) ? COLOUR_RED : COLOUR_RED_DARK);
-    Launcher_DrawHoldProgress(Target, LAUNCHER_CHANNEL_UP_TAB_X, &Launcher_State.Primary, COLOUR_RED);
     Launcher_DrawBrandName(Target);
 }
 
