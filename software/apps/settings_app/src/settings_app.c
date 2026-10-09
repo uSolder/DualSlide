@@ -16,14 +16,13 @@
 #include "settings_app.h"
 
 #include "app_manager.h"
-#include "audio.h"
 #include "display.h"
 #include "input.h"
-#include "mixer.h"
 #include "open_sans.h"
 #include "open_sans_bold.h"
 #include "render.h"
-#include "settings.h"
+#include "sound.h"
+#include "system.h"
 
 #include <limits.h>
 #include <math.h>
@@ -61,11 +60,6 @@
 /* How long the result of an erase stays on screen. */
 #define SETTINGS_APP_MESSAGE_MS            (2000U)
 
-/* Volume preview blip. */
-#define SETTINGS_APP_BLIP_CHANNEL          ((Mixer_ChannelTypeDef)0U)
-#define SETTINGS_APP_BLIP_HZ               (880.0f)
-#define SETTINGS_APP_BLIP_SECONDS          (0.06f)
-#define SETTINGS_APP_BLIP_LEVEL            (0.3f)
 
 /* -------------------------------------------------------------------------- */
 /* Private types                                                              */
@@ -153,8 +147,11 @@ static SettingsApp_StateTypeDef SettingsApp_State;
 static bool SettingsApp_Initialized;
 static bool SettingsApp_Paused;
 
-/* Volume preview blip: the main loop bumps the restart count, the audio generator restarts on seeing it. */
-static volatile uint32_t SettingsApp_BlipRestartCount;
+/* Volume preview: a short beep, so the volume can be heard while it is set. */
+static const Sound_LayerTypeDef SettingsApp_BlipLayers[] = {
+    { .Hz = 880.0f, .Decay = 0.08f, .Volume = 0.3f },
+};
+static const Sound_TypeDef SettingsApp_Blip = { SOUND_LAYERS(SettingsApp_BlipLayers), .Single = true };
 
 /* -------------------------------------------------------------------------- */
 /* Private functions                                                          */
@@ -258,47 +255,6 @@ static uint8_t SettingsApp_SliderToPercent(int32_t Value, uint32_t Minimum, uint
 }
 
 /* ------------------------------------------------------------------------- */
-/* Volume blip                                                               */
-/* ------------------------------------------------------------------------- */
-
-/* A short decaying tone, so the volume can be heard while it is set. */
-static void SettingsApp_GenerateBlip(Audio_SampleTypeDef *Samples, uint32_t SampleCount, void *Context)
-{
-    static uint32_t RestartCount;
-    static uint32_t Sample;
-    const uint32_t LengthSamples = (uint32_t)(SETTINGS_APP_BLIP_SECONDS * (float)MIXER_SAMPLE_RATE_HZ);
-
-    (void)Context;
-
-    if(RestartCount != SettingsApp_BlipRestartCount)
-    {
-        RestartCount = SettingsApp_BlipRestartCount;
-        Sample = 0U;
-    }
-
-    for(uint32_t Index = 0U; Index < SampleCount; Index++)
-    {
-        float Value = 0.0f;
-
-        if(Sample < LengthSamples)
-        {
-            const float Envelope = 1.0f - ((float)Sample / (float)LengthSamples);
-
-            Value = sinf(6.2831853f * SETTINGS_APP_BLIP_HZ * (float)Sample / (float)MIXER_SAMPLE_RATE_HZ) * Envelope * SETTINGS_APP_BLIP_LEVEL;
-            Sample++;
-        }
-
-        Samples[Index] = (Audio_SampleTypeDef)(Value * 32767.0f);
-    }
-}
-
-static void SettingsApp_PlayBlip(void)
-{
-    SettingsApp_BlipRestartCount++;
-    (void)Mixer_PlayGenerator(SETTINGS_APP_BLIP_CHANNEL, SettingsApp_GenerateBlip, NULL);
-}
-
-/* ------------------------------------------------------------------------- */
 /* Input                                                                     */
 /* ------------------------------------------------------------------------- */
 
@@ -317,21 +273,21 @@ static void SettingsApp_UpdateSlider(void)
 
     if(SettingsApp_State.Row == SETTINGS_APP_ROW_BRIGHTNESS)
     {
-        Settings_SetBrightness(SettingsApp_SliderToPercent(Value, SETTINGS_BRIGHTNESS_MINIMUM_PERCENT, SETTINGS_PERCENT_MAXIMUM));
+        System_SetBrightness(SettingsApp_SliderToPercent(Value, SYSTEM_BRIGHTNESS_MINIMUM_PERCENT, SYSTEM_PERCENT_MAXIMUM));
         return;
     }
 
-    Percent = SettingsApp_SliderToPercent(Value, 0U, SETTINGS_PERCENT_MAXIMUM);
+    Percent = SettingsApp_SliderToPercent(Value, 0U, SYSTEM_PERCENT_MAXIMUM);
 
-    if(Percent != Settings_GetVolume())
+    if(Percent != System_GetVolume())
     {
-        Settings_SetVolume(Percent);
+        System_SetVolume(Percent);
 
         /* A blip each time the volume crosses a tenth of its range. */
         if((Percent / 10U) != SettingsApp_State.VolumeBlipStep)
         {
             SettingsApp_State.VolumeBlipStep = (uint8_t)(Percent / 10U);
-            SettingsApp_PlayBlip();
+            (void)Sound_Play(&SettingsApp_Blip);
         }
     }
 }
@@ -392,7 +348,7 @@ static void SettingsApp_UpdateButtons(uint32_t DeltaTimeMilliseconds)
     if(SettingsApp_Erasing() && (SettingsApp_State.Primary.HeldMilliseconds >= SETTINGS_APP_ERASE_HOLD_MS))
     {
         SettingsApp_State.Primary.Claimed = true;
-        SettingsApp_State.EraseSucceeded = Settings_EraseSavedData();
+        SettingsApp_State.EraseSucceeded = System_EraseSavedData();
         SettingsApp_State.MessageMilliseconds = SETTINGS_APP_MESSAGE_MS;
         return;
     }
@@ -465,7 +421,7 @@ static void SettingsApp_DrawLevelRow(Render_TargetTypeDef *Target, SettingsApp_R
 
     SettingsApp_FormatPercent(Percent, Text);
     SettingsApp_DrawRowValue(Target, RowY, &OpenSansBold28, Text, 12, ValueColour);
-    SettingsApp_DrawRowBar(Target, RowY, ((uint32_t)(Percent - Minimum) * 1000U) / (SETTINGS_PERCENT_MAXIMUM - Minimum), ValueColour);
+    SettingsApp_DrawRowBar(Target, RowY, ((uint32_t)(Percent - Minimum) * 1000U) / (SYSTEM_PERCENT_MAXIMUM - Minimum), ValueColour);
 }
 
 static void SettingsApp_DrawEraseRow(Render_TargetTypeDef *Target)
@@ -496,8 +452,8 @@ static void SettingsApp_DrawScene(Render_TargetTypeDef *Target)
     Render_FillRect(Target, &Screen, COLOUR_BACKGROUND);
     SettingsApp_DrawCentredText(Target, &OpenSansBold36, "SETTINGS", CentreX, 24, COLOUR_WHITE);
 
-    SettingsApp_DrawLevelRow(Target, SETTINGS_APP_ROW_VOLUME, "VOLUME", Settings_GetVolume(), 0U, COLOUR_CYAN);
-    SettingsApp_DrawLevelRow(Target, SETTINGS_APP_ROW_BRIGHTNESS, "BRIGHTNESS", Settings_GetBrightness(), SETTINGS_BRIGHTNESS_MINIMUM_PERCENT, COLOUR_YELLOW);
+    SettingsApp_DrawLevelRow(Target, SETTINGS_APP_ROW_VOLUME, "VOLUME", System_GetVolume(), 0U, COLOUR_CYAN);
+    SettingsApp_DrawLevelRow(Target, SETTINGS_APP_ROW_BRIGHTNESS, "BRIGHTNESS", System_GetBrightness(), SYSTEM_BRIGHTNESS_MINIMUM_PERCENT, COLOUR_YELLOW);
     SettingsApp_DrawEraseRow(Target);
 
     if(SettingsApp_State.Row == SETTINGS_APP_ROW_ERASE)
@@ -565,7 +521,7 @@ bool SettingsApp_Init(void)
     }
 
     SettingsApp_State = (SettingsApp_StateTypeDef){ 0 };
-    SettingsApp_State.VolumeBlipStep = (uint8_t)(Settings_GetVolume() / 10U);
+    SettingsApp_State.VolumeBlipStep = (uint8_t)(System_GetVolume() / 10U);
 
     /* The hold that started this page is still down; letting go must do nothing. */
     SettingsApp_ClaimButtons();
@@ -652,7 +608,7 @@ void SettingsApp_Render(void)
 
 void SettingsApp_Pause(void)
 {
-    (void)Settings_Save();
+    (void)System_SaveSettings();
     SettingsApp_Paused = true;
 }
 
@@ -669,7 +625,7 @@ void SettingsApp_Resume(void)
 
 void SettingsApp_Shutdown(void)
 {
-    (void)Settings_Save();
+    (void)System_SaveSettings();
     SettingsApp_Initialized = false;
     SettingsApp_Paused = false;
 }

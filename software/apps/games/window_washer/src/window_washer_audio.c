@@ -2,10 +2,10 @@
  * @file window_washer_audio.c
  * @brief Generated sound effects for the Window Washer game.
  *
- * Each sound is a mixer generator running in the audio output context. The
- * game passes only a restart count and a target value (cart speed or wind
- * level) to each generator; the generator owns and resets all of its own
- * synthesis state, and smooths targets so changes never step audibly.
+ * Each sound is a mixer synth running in the audio output context, and owns
+ * all of its state. Playing a synth restarts it. The cart and wind follow
+ * target values (cart speed, wind level) the game sends as messages, and
+ * smooth them so changes never step audibly; the crash is sent its strength.
  *
  * Building blocks:
  * - Noise from a xorshift generator, shaped by one-pole low-pass filters and
@@ -18,11 +18,13 @@
 #include "window_washer_audio.h"
 
 #include "mixer.h"
+#include "synth.h"
 
 #include <math.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 /* -------------------------------------------------------------------------- */
 /* Private configuration                                                      */
@@ -35,9 +37,6 @@
 #define WWA_CRASH_CHANNEL                   ((Mixer_ChannelTypeDef)4U)
 #define WWA_YELL_CHANNEL                    ((Mixer_ChannelTypeDef)5U)
 
-#define WWA_SAMPLE_RATE                     ((float)MIXER_SAMPLE_RATE_HZ)
-#define WWA_TWO_PI                          (6.2831853f)
-#define WWA_FULL_SCALE                      (32767.0f)
 
 /* Overall loudness of every Window Washer sound. */
 #define WWA_MASTER_LEVEL                    (0.6f)
@@ -164,13 +163,13 @@
 /* -------------------------------------------------------------------------- */
 
 /**
- * @brief Values the game passes to one generator.
+ * @brief Message from the game to the cart or wind synth.
  */
 typedef struct
 {
-    volatile uint32_t RestartCount;
-    volatile float Target;
-} WindowWasherAudio_ControlTypeDef;
+    bool Restart;
+    float Target;
+} WindowWasherAudio_ControlMessageTypeDef;
 
 /**
  * @brief Two-pole resonator: a decaying sine when struck.
@@ -186,8 +185,8 @@ typedef struct
 
 typedef struct
 {
-    uint32_t RestartCount;
     uint32_t Random;
+    float Target;
     float Speed;
     float Rumble1;
     float Rumble2;
@@ -202,8 +201,8 @@ typedef struct
 
 typedef struct
 {
-    uint32_t RestartCount;
     uint32_t Random;
+    float Target;
     float Level;
     float Body1;
     float Body2;
@@ -263,15 +262,6 @@ typedef struct
     uint32_t SwellCountdown;
 } WindowWasherAudio_CityStateTypeDef;
 
-/**
- * @brief State-variable filter, used here as a band-pass.
- */
-typedef struct
-{
-    float Low;
-    float Band;
-} WindowWasherAudio_FilterTypeDef;
-
 typedef struct
 {
     uint32_t RestartCount;
@@ -285,8 +275,8 @@ typedef struct
     float Jitter;
     float CycleLevel;
     float Tone;
-    WindowWasherAudio_FilterTypeDef Resonance;
-    WindowWasherAudio_FilterTypeDef Swish;
+    Synth_FilterTypeDef Resonance;
+    Synth_FilterTypeDef Swish;
 } WindowWasherAudio_SqueegeeStateTypeDef;
 
 typedef struct
@@ -343,14 +333,6 @@ typedef struct
 static const float WindowWasherAudio_BellPartialRatios[WWA_CITY_BELL_PARTIALS] = { 1.0f, 2.42f, 3.87f };
 static const float WindowWasherAudio_BellPartialLevels[WWA_CITY_BELL_PARTIALS] = { 1.0f, 0.5f, 0.3f };
 
-/* Main loop to audio context. */
-static WindowWasherAudio_ControlTypeDef WindowWasherAudio_CartControl;
-static WindowWasherAudio_ControlTypeDef WindowWasherAudio_WindControl;
-static WindowWasherAudio_ControlTypeDef WindowWasherAudio_CityControl;
-static WindowWasherAudio_ControlTypeDef WindowWasherAudio_SqueegeeControl;
-static WindowWasherAudio_ControlTypeDef WindowWasherAudio_CrashControl;
-static WindowWasherAudio_ControlTypeDef WindowWasherAudio_YellControl;
-
 /* Main loop only. */
 static bool WindowWasherAudio_CityPlaying;
 
@@ -366,40 +348,10 @@ static WindowWasherAudio_YellStateTypeDef WindowWasherAudio_Yell;
 /* Synthesis helpers                                                          */
 /* -------------------------------------------------------------------------- */
 
-static float WindowWasherAudio_Noise(uint32_t *State)
-{
-    uint32_t Value = *State;
-
-    Value ^= Value << 13U;
-    Value ^= Value >> 17U;
-    Value ^= Value << 5U;
-    *State = Value;
-
-    return ((float)(int32_t)Value) * (1.0f / 2147483648.0f);
-}
-
-/* Uniform value from Minimum to Maximum. */
-static float WindowWasherAudio_RandomRange(uint32_t *State, float Minimum, float Maximum)
-{
-    return Minimum + ((WindowWasherAudio_Noise(State) * 0.5f) + 0.5f) * (Maximum - Minimum);
-}
-
-/* One-pole low-pass coefficient for a cutoff frequency. */
-static float WindowWasherAudio_LowPassCoefficient(float CutoffHz)
-{
-    return 1.0f - expf(-WWA_TWO_PI * CutoffHz / WWA_SAMPLE_RATE);
-}
-
-/* Per-sample multiplier that decays to 1/e in DecaySeconds. */
-static float WindowWasherAudio_DecayCoefficient(float DecaySeconds)
-{
-    return expf(-1.0f / (DecaySeconds * WWA_SAMPLE_RATE));
-}
-
 static void WindowWasherAudio_TuneResonator(WindowWasherAudio_ResonatorTypeDef *Resonator, float FrequencyHz, float DecaySeconds)
 {
-    const float Radius = WindowWasherAudio_DecayCoefficient(DecaySeconds);
-    const float Angle = WWA_TWO_PI * FrequencyHz / WWA_SAMPLE_RATE;
+    const float Radius = Synth_DecayCoefficient(DecaySeconds);
+    const float Angle = SYNTH_TWO_PI * FrequencyHz / SYNTH_SAMPLE_RATE;
 
     Resonator->Coefficient1 = 2.0f * Radius * cosf(Angle);
     Resonator->Coefficient2 = Radius * Radius;
@@ -422,25 +374,12 @@ static float WindowWasherAudio_RunResonator(WindowWasherAudio_ResonatorTypeDef *
     return Output;
 }
 
-/* State-variable band-pass; keep FrequencyHz below about MIXER_SAMPLE_RATE_HZ / 7. */
-static float WindowWasherAudio_BandPass(WindowWasherAudio_FilterTypeDef *Filter, float Input, float FrequencyHz, float Damping)
-{
-    const float Coefficient = WWA_TWO_PI * FrequencyHz / WWA_SAMPLE_RATE;
-    float High;
-
-    Filter->Low += Coefficient * Filter->Band;
-    High = Input - Filter->Low - (Damping * Filter->Band);
-    Filter->Band += Coefficient * High;
-
-    return Filter->Band;
-}
-
 /* Formant resonators are chained in series, which keeps the vowel's natural balance. */
 static void WindowWasherAudio_TuneFormant(WindowWasherAudio_FormantTypeDef *Formant, float FrequencyHz, float BandwidthHz)
 {
-    const float Radius = expf(-0.5f * WWA_TWO_PI * BandwidthHz / WWA_SAMPLE_RATE);
+    const float Radius = expf(-0.5f * SYNTH_TWO_PI * BandwidthHz / SYNTH_SAMPLE_RATE);
 
-    Formant->B = 2.0f * Radius * cosf(WWA_TWO_PI * FrequencyHz / WWA_SAMPLE_RATE);
+    Formant->B = 2.0f * Radius * cosf(SYNTH_TWO_PI * FrequencyHz / SYNTH_SAMPLE_RATE);
     Formant->C = -(Radius * Radius);
     Formant->A = 1.0f - Formant->B - Formant->C;
 }
@@ -455,52 +394,29 @@ static float WindowWasherAudio_RunFormant(WindowWasherAudio_FormantTypeDef *Form
     return Output;
 }
 
-static Audio_SampleTypeDef WindowWasherAudio_ToSample(float Value)
-{
-    Value *= WWA_MASTER_LEVEL;
-
-    if(Value > 1.0f)
-    {
-        Value = 1.0f;
-    }
-    else if(Value < -1.0f)
-    {
-        Value = -1.0f;
-    }
-
-    return (Audio_SampleTypeDef)(Value * WWA_FULL_SCALE);
-}
-
 /* -------------------------------------------------------------------------- */
 /* Cart                                                                       */
 /* -------------------------------------------------------------------------- */
 
-static void WindowWasherAudio_GenerateCart(Audio_SampleTypeDef *Samples, uint32_t SampleCount, void *Context)
+static void WindowWasherAudio_RenderCart(float *Samples, uint32_t SampleCount, void *Context)
 {
     WindowWasherAudio_CartStateTypeDef *State = &WindowWasherAudio_Cart;
-    const float Smoothing = 1.0f / (WWA_CART_SMOOTHING_SECONDS * WWA_SAMPLE_RATE);
-    const float ThudCoefficient = WindowWasherAudio_LowPassCoefficient(WWA_CART_THUD_CUTOFF_HZ);
-    const float ThudDecay = WindowWasherAudio_DecayCoefficient(WWA_CART_THUD_DECAY_SECONDS);
-    const float TargetSpeed = WindowWasherAudio_CartControl.Target;
+    const float Smoothing = 1.0f / (WWA_CART_SMOOTHING_SECONDS * SYNTH_SAMPLE_RATE);
+    const float ThudCoefficient = Synth_LowPassCoefficient(WWA_CART_THUD_CUTOFF_HZ);
+    const float ThudDecay = Synth_DecayCoefficient(WWA_CART_THUD_DECAY_SECONDS);
+    const float TargetSpeed = State->Target;
     float RumbleCoefficient;
     float GrindCoefficient;
 
     (void)Context;
 
-    if(State->RestartCount != WindowWasherAudio_CartControl.RestartCount)
-    {
-        *State = (WindowWasherAudio_CartStateTypeDef){ 0 };
-        State->RestartCount = WindowWasherAudio_CartControl.RestartCount;
-        State->Random = 0x2F6B1C45U;
-    }
-
     /* A faster cart rumbles deeper and fuller: open the filters with speed. */
-    RumbleCoefficient = WindowWasherAudio_LowPassCoefficient(WWA_CART_RUMBLE_MINIMUM_HZ + ((WWA_CART_RUMBLE_MAXIMUM_HZ - WWA_CART_RUMBLE_MINIMUM_HZ) * State->Speed));
-    GrindCoefficient = WindowWasherAudio_LowPassCoefficient(WWA_CART_GRIND_HARMONICS * (WWA_CART_HUM_MINIMUM_HZ + ((WWA_CART_HUM_MAXIMUM_HZ - WWA_CART_HUM_MINIMUM_HZ) * State->Speed)));
+    RumbleCoefficient = Synth_LowPassCoefficient(WWA_CART_RUMBLE_MINIMUM_HZ + ((WWA_CART_RUMBLE_MAXIMUM_HZ - WWA_CART_RUMBLE_MINIMUM_HZ) * State->Speed));
+    GrindCoefficient = Synth_LowPassCoefficient(WWA_CART_GRIND_HARMONICS * (WWA_CART_HUM_MINIMUM_HZ + ((WWA_CART_HUM_MAXIMUM_HZ - WWA_CART_HUM_MINIMUM_HZ) * State->Speed)));
 
     for(uint32_t Index = 0U; Index < SampleCount; Index++)
     {
-        const float Noise = WindowWasherAudio_Noise(&State->Random);
+        const float Noise = Synth_Noise(&State->Random);
         float RotationHz;
         float Wheel;
         float Rotary;
@@ -511,7 +427,7 @@ static void WindowWasherAudio_GenerateCart(Audio_SampleTypeDef *Samples, uint32_
 
         /* Wheel rotation; each turn is one soft thud from the rail. */
         RotationHz = WWA_CART_ROTATION_MINIMUM_HZ + ((WWA_CART_ROTATION_MAXIMUM_HZ - WWA_CART_ROTATION_MINIMUM_HZ) * State->Speed);
-        State->RotationPhase += RotationHz / WWA_SAMPLE_RATE;
+        State->RotationPhase += RotationHz / SYNTH_SAMPLE_RATE;
 
         if(State->RotationPhase >= 1.0f)
         {
@@ -526,7 +442,7 @@ static void WindowWasherAudio_GenerateCart(Audio_SampleTypeDef *Samples, uint32_
 
         /* Metallic grind: a rounded sawtooth whose pitch wavers with each turn. */
         GrindHz = (WWA_CART_HUM_MINIMUM_HZ + ((WWA_CART_HUM_MAXIMUM_HZ - WWA_CART_HUM_MINIMUM_HZ) * State->Speed)) * (1.0f + (WWA_CART_PITCH_WOBBLE * Wheel));
-        State->GrindPhase += GrindHz / WWA_SAMPLE_RATE;
+        State->GrindPhase += GrindHz / SYNTH_SAMPLE_RATE;
         State->GrindPhase -= (State->GrindPhase >= 1.0f) ? 1.0f : 0.0f;
         State->Grind1 += GrindCoefficient * (((2.0f * State->GrindPhase) - 1.0f) - State->Grind1);
         State->Grind2 += GrindCoefficient * (State->Grind1 - State->Grind2);
@@ -543,34 +459,54 @@ static void WindowWasherAudio_GenerateCart(Audio_SampleTypeDef *Samples, uint32_
         Output = Rotary * ((State->Grind2 * WWA_CART_GRIND_LEVEL) + (State->Rumble2 * WWA_CART_RUMBLE_LEVEL));
         Output += State->Thud2 * WWA_CART_THUD_LEVEL;
 
-        Samples[Index] = WindowWasherAudio_ToSample(Output * State->Speed * WWA_CART_LEVEL);
+        Samples[Index] = (Output * State->Speed * WWA_CART_LEVEL) * WWA_MASTER_LEVEL;
     }
 }
+
+static void WindowWasherAudio_ReceiveCart(const void *Message, uint32_t Size, void *Context)
+{
+    const WindowWasherAudio_ControlMessageTypeDef *Control = (const WindowWasherAudio_ControlMessageTypeDef *)Message;
+    WindowWasherAudio_CartStateTypeDef *State = &WindowWasherAudio_Cart;
+
+    (void)Context;
+
+    if(Size != sizeof(*Control))
+    {
+        return;
+    }
+
+    if(Control->Restart)
+    {
+        *State = (WindowWasherAudio_CartStateTypeDef){ 0 };
+        State->Random = 0x2F6B1C45U;
+    }
+
+    State->Target = Control->Target;
+}
+
+static const Mixer_SynthTypeDef WindowWasherAudio_CartSynth =
+{
+    .Start = NULL,
+    .Receive = WindowWasherAudio_ReceiveCart,
+    .Render = WindowWasherAudio_RenderCart
+};
 
 /* -------------------------------------------------------------------------- */
 /* Wind                                                                       */
 /* -------------------------------------------------------------------------- */
 
-static void WindowWasherAudio_GenerateWind(Audio_SampleTypeDef *Samples, uint32_t SampleCount, void *Context)
+static void WindowWasherAudio_RenderWind(float *Samples, uint32_t SampleCount, void *Context)
 {
     WindowWasherAudio_WindStateTypeDef *State = &WindowWasherAudio_Wind;
-    const float Smoothing = 1.0f / (WWA_WIND_SMOOTHING_SECONDS * WWA_SAMPLE_RATE);
-    const float BodyCoefficient = WindowWasherAudio_LowPassCoefficient(WWA_WIND_BODY_CUTOFF_HZ);
-    const float TargetLevel = WindowWasherAudio_WindControl.Target;
+    const float Smoothing = 1.0f / (WWA_WIND_SMOOTHING_SECONDS * SYNTH_SAMPLE_RATE);
+    const float BodyCoefficient = Synth_LowPassCoefficient(WWA_WIND_BODY_CUTOFF_HZ);
+    const float TargetLevel = State->Target;
 
     (void)Context;
 
-    if(State->RestartCount != WindowWasherAudio_WindControl.RestartCount)
-    {
-        *State = (WindowWasherAudio_WindStateTypeDef){ 0 };
-        State->RestartCount = WindowWasherAudio_WindControl.RestartCount;
-        State->Random = 0x6C8E9CF5U;
-        State->Level = TargetLevel;
-    }
-
     for(uint32_t Index = 0U; Index < SampleCount; Index++)
     {
-        const float Noise = WindowWasherAudio_Noise(&State->Random);
+        const float Noise = Synth_Noise(&State->Random);
         float Coefficient;
         float High;
 
@@ -578,9 +514,9 @@ static void WindowWasherAudio_GenerateWind(Audio_SampleTypeDef *Samples, uint32_
         if(State->GustCountdown == 0U)
         {
             State->GustCountdown = WWA_WIND_GUST_UPDATE_SAMPLES;
-            State->GustSeconds += (float)WWA_WIND_GUST_UPDATE_SAMPLES / WWA_SAMPLE_RATE;
-            State->Gust = 0.6f + (0.25f * sinf(WWA_TWO_PI * 0.13f * State->GustSeconds)) +
-                          (0.15f * sinf((WWA_TWO_PI * 0.37f * State->GustSeconds) + 1.3f));
+            State->GustSeconds += (float)WWA_WIND_GUST_UPDATE_SAMPLES / SYNTH_SAMPLE_RATE;
+            State->Gust = 0.6f + (0.25f * sinf(SYNTH_TWO_PI * 0.13f * State->GustSeconds)) +
+                          (0.15f * sinf((SYNTH_TWO_PI * 0.37f * State->GustSeconds) + 1.3f));
             State->WhistleFrequency = WWA_WIND_WHISTLE_MINIMUM_HZ +
                                       ((WWA_WIND_WHISTLE_MAXIMUM_HZ - WWA_WIND_WHISTLE_MINIMUM_HZ) * (State->Gust - 0.2f));
         }
@@ -593,46 +529,71 @@ static void WindowWasherAudio_GenerateWind(Audio_SampleTypeDef *Samples, uint32_
         State->Body2 += BodyCoefficient * (State->Body1 - State->Body2);
 
         /* Whistle: noise through a band-pass that follows the gusts. */
-        Coefficient = WWA_TWO_PI * State->WhistleFrequency / WWA_SAMPLE_RATE;
+        Coefficient = SYNTH_TWO_PI * State->WhistleFrequency / SYNTH_SAMPLE_RATE;
         State->WhistleLow += Coefficient * State->WhistleBand;
         High = Noise - State->WhistleLow - (WWA_WIND_WHISTLE_DAMPING * State->WhistleBand);
         State->WhistleBand += Coefficient * High;
 
-        Samples[Index] = WindowWasherAudio_ToSample(((State->Body2 * 4.0f) + (State->WhistleBand * 0.35f)) * State->Gust * State->Level);
+        Samples[Index] = (((State->Body2 * 4.0f) + (State->WhistleBand * 0.35f)) * State->Gust * State->Level) * WWA_MASTER_LEVEL;
     }
 }
+
+static void WindowWasherAudio_ReceiveWind(const void *Message, uint32_t Size, void *Context)
+{
+    const WindowWasherAudio_ControlMessageTypeDef *Control = (const WindowWasherAudio_ControlMessageTypeDef *)Message;
+    WindowWasherAudio_WindStateTypeDef *State = &WindowWasherAudio_Wind;
+
+    (void)Context;
+
+    if(Size != sizeof(*Control))
+    {
+        return;
+    }
+
+    /* A restart starts at the target level rather than fading up to it. */
+    if(Control->Restart)
+    {
+        *State = (WindowWasherAudio_WindStateTypeDef){ 0 };
+        State->Random = 0x6C8E9CF5U;
+        State->Level = Control->Target;
+    }
+
+    State->Target = Control->Target;
+}
+
+static const Mixer_SynthTypeDef WindowWasherAudio_WindSynth =
+{
+    .Start = NULL,
+    .Receive = WindowWasherAudio_ReceiveWind,
+    .Render = WindowWasherAudio_RenderWind
+};
 
 /* -------------------------------------------------------------------------- */
 /* City                                                                       */
 /* -------------------------------------------------------------------------- */
 
-static uint32_t WindowWasherAudio_Seconds(float Seconds)
-{
-    return (uint32_t)(Seconds * WWA_SAMPLE_RATE);
-}
-
 static void WindowWasherAudio_StartHorn(WindowWasherAudio_CityStateTypeDef *State)
 {
     WindowWasherAudio_HornTypeDef *Horn = &State->Horn;
-    const float PitchHz = WindowWasherAudio_RandomRange(&State->Random, 300.0f, 420.0f);
-    const bool DoubleHonk = WindowWasherAudio_Noise(&State->Random) > 0.2f;
+    const float PitchHz = Synth_RandomRange(&State->Random, 300.0f, 420.0f);
+    const bool DoubleHonk = Synth_Noise(&State->Random) > 0.2f;
 
     /* Two tones a major third apart, like most car horns. */
-    Horn->Step1 = PitchHz / WWA_SAMPLE_RATE;
-    Horn->Step2 = (PitchHz * 1.26f) / WWA_SAMPLE_RATE;
-    Horn->Level = WindowWasherAudio_RandomRange(&State->Random, 0.12f, 0.3f);
+    Horn->Step1 = PitchHz / SYNTH_SAMPLE_RATE;
+    Horn->Step2 = (PitchHz * 1.26f) / SYNTH_SAMPLE_RATE;
+    Horn->Level = Synth_RandomRange(&State->Random, 0.12f, 0.3f);
 
     if(DoubleHonk)
     {
-        Horn->SecondHonkStart = WindowWasherAudio_Seconds(0.14f);
-        Horn->SecondHonkEnd = WindowWasherAudio_Seconds(0.26f);
-        Horn->SamplesTotal = WindowWasherAudio_Seconds(0.45f);
+        Horn->SecondHonkStart = Synth_Seconds(0.14f);
+        Horn->SecondHonkEnd = Synth_Seconds(0.26f);
+        Horn->SamplesTotal = Synth_Seconds(0.45f);
     }
     else
     {
         Horn->SecondHonkStart = 0U;
         Horn->SecondHonkEnd = 0U;
-        Horn->SamplesTotal = WindowWasherAudio_Seconds(WindowWasherAudio_RandomRange(&State->Random, 0.2f, 0.5f));
+        Horn->SamplesTotal = Synth_Seconds(Synth_RandomRange(&State->Random, 0.2f, 0.5f));
     }
 
     Horn->SamplesRemaining = Horn->SamplesTotal;
@@ -641,7 +602,7 @@ static void WindowWasherAudio_StartHorn(WindowWasherAudio_CityStateTypeDef *Stat
 static float WindowWasherAudio_RunHorn(WindowWasherAudio_HornTypeDef *Horn, float ToneCoefficient)
 {
     const uint32_t Elapsed = Horn->SamplesTotal - Horn->SamplesRemaining;
-    const uint32_t RampSamples = WindowWasherAudio_Seconds(0.012f);
+    const uint32_t RampSamples = Synth_Seconds(0.012f);
     uint32_t FromEdge;
     float Tone;
 
@@ -686,8 +647,8 @@ static float WindowWasherAudio_RunHorn(WindowWasherAudio_HornTypeDef *Horn, floa
 static void WindowWasherAudio_StartBell(WindowWasherAudio_CityStateTypeDef *State)
 {
     WindowWasherAudio_BellTypeDef *Bell = &State->Bell;
-    const float PitchHz = WindowWasherAudio_RandomRange(&State->Random, 1500.0f, 2100.0f);
-    const float Level = WindowWasherAudio_RandomRange(&State->Random, 0.08f, 0.18f);
+    const float PitchHz = Synth_RandomRange(&State->Random, 1500.0f, 2100.0f);
+    const float Level = Synth_RandomRange(&State->Random, 0.08f, 0.18f);
 
     for(uint32_t Partial = 0U; Partial < WWA_CITY_BELL_PARTIALS; Partial++)
     {
@@ -696,7 +657,7 @@ static void WindowWasherAudio_StartBell(WindowWasherAudio_CityStateTypeDef *Stat
     }
 
     /* Bicycle bells ring twice: "ring-ring". */
-    Bell->SecondStrikeCountdown = WindowWasherAudio_Seconds(WWA_CITY_RING_GAP_SECONDS);
+    Bell->SecondStrikeCountdown = Synth_Seconds(WWA_CITY_RING_GAP_SECONDS);
     Bell->SecondStrikeLevel = Level;
 }
 
@@ -731,7 +692,7 @@ static float WindowWasherAudio_RunBell(WindowWasherAudio_BellTypeDef *Bell)
  */
 static void WindowWasherAudio_ScheduleCity(WindowWasherAudio_CityStateTypeDef *State)
 {
-    const uint32_t BellCount = (WindowWasherAudio_Noise(&State->Random) > 0.0f) ? 2U : 1U;
+    const uint32_t BellCount = (Synth_Noise(&State->Random) > 0.0f) ? 2U : 1U;
 
     State->EventCount = 0U;
     State->NextEvent = 0U;
@@ -741,14 +702,14 @@ static void WindowWasherAudio_ScheduleCity(WindowWasherAudio_CityStateTypeDef *S
         const float Earliest = (Honk == 0U) ? 0.1f : 0.8f;
         const float Latest = (Honk == 0U) ? 0.6f : WWA_CITY_EVENT_LATEST_SECONDS;
 
-        State->Events[State->EventCount].Sample = WindowWasherAudio_Seconds(WindowWasherAudio_RandomRange(&State->Random, Earliest, Latest));
+        State->Events[State->EventCount].Sample = Synth_Seconds(Synth_RandomRange(&State->Random, Earliest, Latest));
         State->Events[State->EventCount].Bell = false;
         State->EventCount++;
     }
 
     for(uint32_t Bell = 0U; Bell < BellCount; Bell++)
     {
-        State->Events[State->EventCount].Sample = WindowWasherAudio_Seconds(WindowWasherAudio_RandomRange(&State->Random, 0.5f, WWA_CITY_EVENT_LATEST_SECONDS));
+        State->Events[State->EventCount].Sample = Synth_Seconds(Synth_RandomRange(&State->Random, 0.5f, WWA_CITY_EVENT_LATEST_SECONDS));
         State->Events[State->EventCount].Bell = true;
         State->EventCount++;
     }
@@ -771,7 +732,7 @@ static void WindowWasherAudio_ScheduleCity(WindowWasherAudio_CityStateTypeDef *S
     /* Keep events apart so each honk and bell is heard on its own. */
     for(uint32_t Index = 1U; Index < State->EventCount; Index++)
     {
-        const uint32_t Earliest = State->Events[Index - 1U].Sample + WindowWasherAudio_Seconds(WWA_CITY_EVENT_MINIMUM_GAP_SECONDS);
+        const uint32_t Earliest = State->Events[Index - 1U].Sample + Synth_Seconds(WWA_CITY_EVENT_MINIMUM_GAP_SECONDS);
 
         if(State->Events[Index].Sample < Earliest)
         {
@@ -780,28 +741,18 @@ static void WindowWasherAudio_ScheduleCity(WindowWasherAudio_CityStateTypeDef *S
     }
 }
 
-static void WindowWasherAudio_GenerateCity(Audio_SampleTypeDef *Samples, uint32_t SampleCount, void *Context)
+static void WindowWasherAudio_RenderCity(float *Samples, uint32_t SampleCount, void *Context)
 {
     WindowWasherAudio_CityStateTypeDef *State = &WindowWasherAudio_City;
-    const uint32_t HoldSamples = WindowWasherAudio_Seconds((float)WWA_CITY_HOLD_MILLISECONDS / 1000.0f);
-    const uint32_t FadeSamples = WindowWasherAudio_Seconds((float)WWA_CITY_FADE_MILLISECONDS / 1000.0f);
-    const float TrafficCoefficient = WindowWasherAudio_LowPassCoefficient(WWA_CITY_TRAFFIC_CUTOFF_HZ);
-    const float ToneCoefficient = WindowWasherAudio_LowPassCoefficient(WWA_CITY_HORN_TONE_CUTOFF_HZ);
-    const float NoiseHighPassCoefficient = WindowWasherAudio_LowPassCoefficient(WWA_CITY_NOISE_HIGH_PASS_HZ);
-    const float NoiseLowCoefficient = WindowWasherAudio_LowPassCoefficient(WWA_CITY_NOISE_CUTOFF_HZ);
-    const float SwellCoefficient = WindowWasherAudio_LowPassCoefficient(0.5f);
+    const uint32_t HoldSamples = Synth_Seconds((float)WWA_CITY_HOLD_MILLISECONDS / 1000.0f);
+    const uint32_t FadeSamples = Synth_Seconds((float)WWA_CITY_FADE_MILLISECONDS / 1000.0f);
+    const float TrafficCoefficient = Synth_LowPassCoefficient(WWA_CITY_TRAFFIC_CUTOFF_HZ);
+    const float ToneCoefficient = Synth_LowPassCoefficient(WWA_CITY_HORN_TONE_CUTOFF_HZ);
+    const float NoiseHighPassCoefficient = Synth_LowPassCoefficient(WWA_CITY_NOISE_HIGH_PASS_HZ);
+    const float NoiseLowCoefficient = Synth_LowPassCoefficient(WWA_CITY_NOISE_CUTOFF_HZ);
+    const float SwellCoefficient = Synth_LowPassCoefficient(0.5f);
 
     (void)Context;
-
-    if(State->RestartCount != WindowWasherAudio_CityControl.RestartCount)
-    {
-        *State = (WindowWasherAudio_CityStateTypeDef){ 0 };
-        State->RestartCount = WindowWasherAudio_CityControl.RestartCount;
-        State->Random = 0x9E3779B9U ^ (State->RestartCount * 0x85EBCA6BU);
-        WindowWasherAudio_ScheduleCity(State);
-        State->Swell = 1.0f;
-        State->SwellTarget = 1.0f;
-    }
 
     for(uint32_t Index = 0U; Index < SampleCount; Index++)
     {
@@ -811,7 +762,7 @@ static void WindowWasherAudio_GenerateCity(Audio_SampleTypeDef *Samples, uint32_
 
         if(State->Sample >= (HoldSamples + FadeSamples))
         {
-            Samples[Index] = 0;
+            Samples[Index] = 0.0f;
             continue;
         }
 
@@ -830,20 +781,20 @@ static void WindowWasherAudio_GenerateCity(Audio_SampleTypeDef *Samples, uint32_
         }
 
         /* Distant traffic: deep, twice low-passed noise. */
-        State->Traffic1 += TrafficCoefficient * (WindowWasherAudio_Noise(&State->Random) - State->Traffic1);
+        State->Traffic1 += TrafficCoefficient * (Synth_Noise(&State->Random) - State->Traffic1);
         State->Traffic2 += TrafficCoefficient * (State->Traffic1 - State->Traffic2);
 
         /* City roar: soft mid-band noise that slowly swells and settles. */
         if(State->SwellCountdown == 0U)
         {
-            State->SwellTarget = 1.0f + (WWA_CITY_NOISE_SWELL_DEPTH * WindowWasherAudio_Noise(&State->Random));
-            State->SwellCountdown = WindowWasherAudio_Seconds(WindowWasherAudio_RandomRange(&State->Random, WWA_CITY_NOISE_SWELL_MINIMUM_SECONDS, WWA_CITY_NOISE_SWELL_MAXIMUM_SECONDS));
+            State->SwellTarget = 1.0f + (WWA_CITY_NOISE_SWELL_DEPTH * Synth_Noise(&State->Random));
+            State->SwellCountdown = Synth_Seconds(Synth_RandomRange(&State->Random, WWA_CITY_NOISE_SWELL_MINIMUM_SECONDS, WWA_CITY_NOISE_SWELL_MAXIMUM_SECONDS));
         }
 
         State->SwellCountdown--;
         State->Swell += SwellCoefficient * (State->SwellTarget - State->Swell);
 
-        Roar = WindowWasherAudio_Noise(&State->Random);
+        Roar = Synth_Noise(&State->Random);
         State->NoiseHighPass1 += NoiseHighPassCoefficient * (Roar - State->NoiseHighPass1);
         Roar -= State->NoiseHighPass1;
         State->NoiseHighPass2 += NoiseHighPassCoefficient * (Roar - State->NoiseHighPass2);
@@ -857,9 +808,31 @@ static void WindowWasherAudio_GenerateCity(Audio_SampleTypeDef *Samples, uint32_
         Fade = (State->Sample < HoldSamples) ? 1.0f : (1.0f - ((float)(State->Sample - HoldSamples) / (float)FadeSamples));
         State->Sample++;
 
-        Samples[Index] = WindowWasherAudio_ToSample(Output * Fade * WWA_CITY_LEVEL);
+        Samples[Index] = (Output * Fade * WWA_CITY_LEVEL) * WWA_MASTER_LEVEL;
     }
 }
+
+static void WindowWasherAudio_StartCity(void *Context)
+{
+    WindowWasherAudio_CityStateTypeDef *State = &WindowWasherAudio_City;
+    const uint32_t RestartCount = State->RestartCount + 1U;
+
+    (void)Context;
+
+    *State = (WindowWasherAudio_CityStateTypeDef){ 0 };
+    State->RestartCount = RestartCount;
+    State->Random = 0x9E3779B9U ^ (State->RestartCount * 0x85EBCA6BU);
+    WindowWasherAudio_ScheduleCity(State);
+    State->Swell = 1.0f;
+    State->SwellTarget = 1.0f;
+}
+
+static const Mixer_SynthTypeDef WindowWasherAudio_CitySynth =
+{
+    .Start = WindowWasherAudio_StartCity,
+    .Receive = NULL,
+    .Render = WindowWasherAudio_RenderCity
+};
 
 /* -------------------------------------------------------------------------- */
 /* Squeegee                                                                   */
@@ -869,13 +842,13 @@ static void WindowWasherAudio_GenerateCity(Audio_SampleTypeDef *Samples, uint32_
 static void WindowWasherAudio_StartStroke(WindowWasherAudio_SqueegeeStateTypeDef *State)
 {
     State->StrokeSample = 0U;
-    State->StrokeSamples = WindowWasherAudio_Seconds(WWA_SQUEEGEE_STROKE_SECONDS * (1.0f + (WWA_SQUEEGEE_STROKE_VARIATION * WindowWasherAudio_Noise(&State->Random))));
+    State->StrokeSamples = Synth_Seconds(WWA_SQUEEGEE_STROKE_SECONDS * (1.0f + (WWA_SQUEEGEE_STROKE_VARIATION * Synth_Noise(&State->Random))));
     State->StrokeSamples = (State->StrokeSamples > 0U) ? State->StrokeSamples : 1U;
 
     if(State->Stroke > 0U)
     {
         State->Pitch *= WWA_SQUEEGEE_STROKE_PITCH_STEP;
-        State->GapSamples = WindowWasherAudio_Seconds(WWA_SQUEEGEE_GAP_SECONDS);
+        State->GapSamples = Synth_Seconds(WWA_SQUEEGEE_GAP_SECONDS);
     }
 }
 
@@ -885,28 +858,18 @@ static void WindowWasherAudio_StartStroke(WindowWasherAudio_SqueegeeStateTypeDef
  * slow it catches irregularly, a gritty chatter. Both ring the glass, over
  * the swish of water under the blade.
  */
-static void WindowWasherAudio_GenerateSqueegee(Audio_SampleTypeDef *Samples, uint32_t SampleCount, void *Context)
+static void WindowWasherAudio_RenderSqueegee(float *Samples, uint32_t SampleCount, void *Context)
 {
     WindowWasherAudio_SqueegeeStateTypeDef *State = &WindowWasherAudio_Squeegee;
-    const float ToneCoefficient = WindowWasherAudio_LowPassCoefficient(WWA_SQUEEGEE_TONE_CUTOFF_HZ);
-    const uint32_t AttackSamples = WindowWasherAudio_Seconds(WWA_SQUEEGEE_ATTACK_SECONDS) + 1U;
-    const uint32_t ReleaseSamples = WindowWasherAudio_Seconds(WWA_SQUEEGEE_RELEASE_SECONDS) + 1U;
+    const float ToneCoefficient = Synth_LowPassCoefficient(WWA_SQUEEGEE_TONE_CUTOFF_HZ);
+    const uint32_t AttackSamples = Synth_Seconds(WWA_SQUEEGEE_ATTACK_SECONDS) + 1U;
+    const uint32_t ReleaseSamples = Synth_Seconds(WWA_SQUEEGEE_RELEASE_SECONDS) + 1U;
 
     (void)Context;
 
-    if(State->RestartCount != WindowWasherAudio_SqueegeeControl.RestartCount)
-    {
-        *State = (WindowWasherAudio_SqueegeeStateTypeDef){ 0 };
-        State->RestartCount = WindowWasherAudio_SqueegeeControl.RestartCount;
-        State->Random = 0x51ED27A3U ^ (State->RestartCount * 0x27D4EB2FU);
-        State->Pitch = 1.0f + (WWA_SQUEEGEE_PITCH_VARIATION * WindowWasherAudio_Noise(&State->Random));
-        State->CycleLevel = 1.0f;
-        WindowWasherAudio_StartStroke(State);
-    }
-
     for(uint32_t Index = 0U; Index < SampleCount; Index++)
     {
-        const float Noise = WindowWasherAudio_Noise(&State->Random);
+        const float Noise = Synth_Noise(&State->Random);
         float Progress;
         float Speed;
         float Lock;
@@ -921,27 +884,27 @@ static void WindowWasherAudio_GenerateSqueegee(Audio_SampleTypeDef *Samples, uin
         if((State->Stroke >= WWA_SQUEEGEE_STROKES) || (State->GapSamples > 0U))
         {
             State->GapSamples -= (State->GapSamples > 0U) ? 1U : 0U;
-            Samples[Index] = 0;
+            Samples[Index] = 0.0f;
             continue;
         }
 
         /* Blade speed rises and falls over the stroke. */
         Progress = (float)State->StrokeSample / (float)State->StrokeSamples;
-        Speed = sinf(0.5f * WWA_TWO_PI * Progress);
+        Speed = sinf(0.5f * SYNTH_TWO_PI * Progress);
 
         /* Fast enough and the blade locks into an even squeal. */
         Lock = (Speed - WWA_SQUEEGEE_LOCK_SPEED) / WWA_SQUEEGEE_LOCK_SOFTNESS;
         Lock = (Lock < 0.0f) ? 0.0f : ((Lock > 1.0f) ? 1.0f : Lock);
 
         SqueakHz = (WWA_SQUEEGEE_LOW_HZ + ((WWA_SQUEEGEE_HIGH_HZ - WWA_SQUEEGEE_LOW_HZ) * Speed)) * State->Pitch * (1.0f + State->Jitter);
-        State->Phase += SqueakHz / WWA_SAMPLE_RATE;
+        State->Phase += SqueakHz / SYNTH_SAMPLE_RATE;
 
         /* Every slip varies a little in timing and strength. */
         if(State->Phase >= 1.0f)
         {
             State->Phase -= 1.0f;
             State->Jitter = WWA_SQUEEGEE_JITTER * Noise;
-            State->CycleLevel = 1.0f + (WWA_SQUEEGEE_ROUGHNESS * WindowWasherAudio_Noise(&State->Random));
+            State->CycleLevel = 1.0f + (WWA_SQUEEGEE_ROUGHNESS * Synth_Noise(&State->Random));
         }
 
         /* Stick-slip: a slow build while the rubber sticks, then a sudden slip. */
@@ -957,21 +920,21 @@ static void WindowWasherAudio_GenerateSqueegee(Audio_SampleTypeDef *Samples, uin
         State->Tone += ToneCoefficient * (Wave - State->Tone);
 
         /* Slow blade: random catches instead of a steady tone. */
-        if((0.5f + (0.5f * WindowWasherAudio_Noise(&State->Random))) < ((WWA_SQUEEGEE_GRIT_RATE_HZ * (1.0f - Lock)) / WWA_SAMPLE_RATE))
+        if((0.5f + (0.5f * Synth_Noise(&State->Random))) < ((WWA_SQUEEGEE_GRIT_RATE_HZ * (1.0f - Lock)) / SYNTH_SAMPLE_RATE))
         {
-            Grit = WindowWasherAudio_Noise(&State->Random);
+            Grit = Synth_Noise(&State->Random);
         }
 
         Direct = (State->Tone * Lock * State->CycleLevel) + (Grit * WWA_SQUEEGEE_GRIT_LEVEL);
-        Ring = WindowWasherAudio_BandPass(&State->Resonance, Direct, WWA_SQUEEGEE_RESONANCE_HZ, WWA_SQUEEGEE_RESONANCE_DAMPING) * WWA_SQUEEGEE_RESONANCE_DAMPING;
-        Swish = WindowWasherAudio_BandPass(&State->Swish, Noise, WWA_SQUEEGEE_SWISH_HZ, WWA_SQUEEGEE_SWISH_DAMPING) * Speed;
+        Ring = Synth_BandPass(&State->Resonance, Direct, Synth_BandPassCoefficient(WWA_SQUEEGEE_RESONANCE_HZ), WWA_SQUEEGEE_RESONANCE_DAMPING) * WWA_SQUEEGEE_RESONANCE_DAMPING;
+        Swish = Synth_BandPass(&State->Swish, Noise, Synth_BandPassCoefficient(WWA_SQUEEGEE_SWISH_HZ), WWA_SQUEEGEE_SWISH_DAMPING) * Speed;
 
         Envelope = 1.0f;
         Envelope = (State->StrokeSample < AttackSamples) ? ((float)State->StrokeSample / (float)AttackSamples) : Envelope;
         Envelope = ((State->StrokeSamples - State->StrokeSample) < ReleaseSamples) ? ((float)(State->StrokeSamples - State->StrokeSample) / (float)ReleaseSamples) : Envelope;
         Envelope *= (1.0f - WWA_SQUEEGEE_SPEED_LOUDNESS) + (WWA_SQUEEGEE_SPEED_LOUDNESS * Speed);
 
-        Samples[Index] = WindowWasherAudio_ToSample(((Direct * (1.0f - WWA_SQUEEGEE_RESONANCE_LEVEL)) + (Ring * WWA_SQUEEGEE_RESONANCE_LEVEL) + (Swish * WWA_SQUEEGEE_SWISH_LEVEL)) * Envelope * WWA_SQUEEGEE_LEVEL);
+        Samples[Index] = (((Direct * (1.0f - WWA_SQUEEGEE_RESONANCE_LEVEL)) + (Ring * WWA_SQUEEGEE_RESONANCE_LEVEL) + (Swish * WWA_SQUEEGEE_SWISH_LEVEL)) * Envelope * WWA_SQUEEGEE_LEVEL) * WWA_MASTER_LEVEL;
 
         State->StrokeSample++;
 
@@ -983,6 +946,28 @@ static void WindowWasherAudio_GenerateSqueegee(Audio_SampleTypeDef *Samples, uin
     }
 }
 
+static void WindowWasherAudio_StartSqueegee(void *Context)
+{
+    WindowWasherAudio_SqueegeeStateTypeDef *State = &WindowWasherAudio_Squeegee;
+    const uint32_t RestartCount = State->RestartCount + 1U;
+
+    (void)Context;
+
+    *State = (WindowWasherAudio_SqueegeeStateTypeDef){ 0 };
+    State->RestartCount = RestartCount;
+    State->Random = 0x51ED27A3U ^ (State->RestartCount * 0x27D4EB2FU);
+    State->Pitch = 1.0f + (WWA_SQUEEGEE_PITCH_VARIATION * Synth_Noise(&State->Random));
+    State->CycleLevel = 1.0f;
+    WindowWasherAudio_StartStroke(State);
+}
+
+static const Mixer_SynthTypeDef WindowWasherAudio_SqueegeeSynth =
+{
+    .Start = WindowWasherAudio_StartSqueegee,
+    .Receive = NULL,
+    .Render = WindowWasherAudio_RenderSqueegee
+};
+
 /* -------------------------------------------------------------------------- */
 /* Crash                                                                      */
 /* -------------------------------------------------------------------------- */
@@ -991,33 +976,15 @@ static void WindowWasherAudio_GenerateSqueegee(Audio_SampleTypeDef *Samples, uin
  * The cart hitting the end of its track: a falling bass thump, a burst of
  * impact noise, and a short clank. Harder hits are louder and brighter.
  */
-static void WindowWasherAudio_GenerateCrash(Audio_SampleTypeDef *Samples, uint32_t SampleCount, void *Context)
+static void WindowWasherAudio_RenderCrash(float *Samples, uint32_t SampleCount, void *Context)
 {
     WindowWasherAudio_CrashStateTypeDef *State = &WindowWasherAudio_Crash;
-    const uint32_t LengthSamples = WindowWasherAudio_Seconds(WWA_CRASH_SECONDS);
-    const float BodyDecay = WindowWasherAudio_DecayCoefficient(WWA_CRASH_BODY_DECAY_SECONDS);
-    const float PitchDrop = WindowWasherAudio_DecayCoefficient(WWA_CRASH_PITCH_DROP_SECONDS);
-    const float ImpactDecay = WindowWasherAudio_DecayCoefficient(WWA_CRASH_IMPACT_DECAY_SECONDS);
+    const uint32_t LengthSamples = Synth_Seconds(WWA_CRASH_SECONDS);
+    const float BodyDecay = Synth_DecayCoefficient(WWA_CRASH_BODY_DECAY_SECONDS);
+    const float PitchDrop = Synth_DecayCoefficient(WWA_CRASH_PITCH_DROP_SECONDS);
+    const float ImpactDecay = Synth_DecayCoefficient(WWA_CRASH_IMPACT_DECAY_SECONDS);
 
     (void)Context;
-
-    if(State->RestartCount != WindowWasherAudio_CrashControl.RestartCount)
-    {
-        const float Strength = WindowWasherAudio_CrashControl.Target;
-
-        *State = (WindowWasherAudio_CrashStateTypeDef){ 0 };
-        State->RestartCount = WindowWasherAudio_CrashControl.RestartCount;
-        State->Random = 0x7F4A7C15U ^ (State->RestartCount * 0x94D049BBU);
-        State->Strength = WWA_CRASH_MINIMUM_STRENGTH + ((1.0f - WWA_CRASH_MINIMUM_STRENGTH) * Strength);
-        State->BodyHz = WWA_CRASH_BODY_START_HZ;
-        State->BodyEnvelope = 1.0f;
-        State->ImpactEnvelope = 1.0f;
-        State->ImpactCoefficient = WindowWasherAudio_LowPassCoefficient(400.0f + (800.0f * Strength));
-        WindowWasherAudio_TuneResonator(&State->Clank[0], 330.0f, 0.22f);
-        WindowWasherAudio_TuneResonator(&State->Clank[1], 710.0f, 0.15f);
-        WindowWasherAudio_StrikeResonator(&State->Clank[0], 0.25f * State->Strength);
-        WindowWasherAudio_StrikeResonator(&State->Clank[1], 0.15f * State->Strength);
-    }
 
     for(uint32_t Index = 0U; Index < SampleCount; Index++)
     {
@@ -1025,25 +992,69 @@ static void WindowWasherAudio_GenerateCrash(Audio_SampleTypeDef *Samples, uint32
 
         if(State->Sample >= LengthSamples)
         {
-            Samples[Index] = 0;
+            Samples[Index] = 0.0f;
             continue;
         }
 
         State->Sample++;
 
         State->BodyHz = WWA_CRASH_BODY_END_HZ + ((State->BodyHz - WWA_CRASH_BODY_END_HZ) * PitchDrop);
-        State->BodyPhase += State->BodyHz / WWA_SAMPLE_RATE;
+        State->BodyPhase += State->BodyHz / SYNTH_SAMPLE_RATE;
         State->BodyPhase -= (State->BodyPhase >= 1.0f) ? 1.0f : 0.0f;
         State->BodyEnvelope *= BodyDecay;
         State->ImpactEnvelope *= ImpactDecay;
-        State->Impact += State->ImpactCoefficient * ((WindowWasherAudio_Noise(&State->Random) * State->ImpactEnvelope) - State->Impact);
+        State->Impact += State->ImpactCoefficient * ((Synth_Noise(&State->Random) * State->ImpactEnvelope) - State->Impact);
 
-        Output = State->Strength * ((sinf(WWA_TWO_PI * State->BodyPhase) * State->BodyEnvelope * 0.9f) + (State->Impact * 2.5f));
+        Output = State->Strength * ((sinf(SYNTH_TWO_PI * State->BodyPhase) * State->BodyEnvelope * 0.9f) + (State->Impact * 2.5f));
         Output += WindowWasherAudio_RunResonator(&State->Clank[0]) + WindowWasherAudio_RunResonator(&State->Clank[1]);
 
-        Samples[Index] = WindowWasherAudio_ToSample(Output * WWA_CRASH_LEVEL);
+        Samples[Index] = (Output * WWA_CRASH_LEVEL) * WWA_MASTER_LEVEL;
     }
 }
+
+static void WindowWasherAudio_StartCrash(void *Context)
+{
+    WindowWasherAudio_CrashStateTypeDef *State = &WindowWasherAudio_Crash;
+    const uint32_t RestartCount = State->RestartCount + 1U;
+
+    (void)Context;
+
+    *State = (WindowWasherAudio_CrashStateTypeDef){ 0 };
+    State->RestartCount = RestartCount;
+    State->Random = 0x7F4A7C15U ^ (State->RestartCount * 0x94D049BBU);
+    State->BodyHz = WWA_CRASH_BODY_START_HZ;
+    State->BodyEnvelope = 1.0f;
+    State->ImpactEnvelope = 1.0f;
+    WindowWasherAudio_TuneResonator(&State->Clank[0], 330.0f, 0.22f);
+    WindowWasherAudio_TuneResonator(&State->Clank[1], 710.0f, 0.15f);
+}
+
+/* The message is the impact strength, 0 to 1: harder hits are louder and brighter. */
+static void WindowWasherAudio_ReceiveCrash(const void *Message, uint32_t Size, void *Context)
+{
+    WindowWasherAudio_CrashStateTypeDef *State = &WindowWasherAudio_Crash;
+    float Strength;
+
+    (void)Context;
+
+    if(Size != sizeof(Strength))
+    {
+        return;
+    }
+
+    (void)memcpy(&Strength, Message, sizeof(Strength));
+    State->Strength = WWA_CRASH_MINIMUM_STRENGTH + ((1.0f - WWA_CRASH_MINIMUM_STRENGTH) * Strength);
+    State->ImpactCoefficient = Synth_LowPassCoefficient(400.0f + (800.0f * Strength));
+    WindowWasherAudio_StrikeResonator(&State->Clank[0], 0.25f * State->Strength);
+    WindowWasherAudio_StrikeResonator(&State->Clank[1], 0.15f * State->Strength);
+}
+
+static const Mixer_SynthTypeDef WindowWasherAudio_CrashSynth =
+{
+    .Start = WindowWasherAudio_StartCrash,
+    .Receive = WindowWasherAudio_ReceiveCrash,
+    .Render = WindowWasherAudio_RenderCrash
+};
 
 /* -------------------------------------------------------------------------- */
 /* Yell                                                                       */
@@ -1057,15 +1068,15 @@ static void WindowWasherAudio_GenerateCrash(Audio_SampleTypeDef *Samples, uint32
  * and a high-pass keeps the low voice out of the small speaker's excursion
  * limit.
  */
-static void WindowWasherAudio_GenerateYell(Audio_SampleTypeDef *Samples, uint32_t SampleCount, void *Context)
+static void WindowWasherAudio_RenderYell(float *Samples, uint32_t SampleCount, void *Context)
 {
     static const float StartHz[WWA_YELL_FORMANTS] = { 350.0f, 750.0f, 2400.0f, 3300.0f };     /* "w"         */
     static const float OpenHz[WWA_YELL_FORMANTS] = { 850.0f, 1300.0f, 2600.0f, 3400.0f };     /* shouted "a" */
     static const float CloseHz[WWA_YELL_FORMANTS] = { 600.0f, 950.0f, 2500.0f, 3300.0f };     /* "oh"        */
     static const float BandwidthHz[WWA_YELL_FORMANTS] = { 90.0f, 110.0f, 160.0f, 250.0f };
     WindowWasherAudio_YellStateTypeDef *State = &WindowWasherAudio_Yell;
-    const uint32_t LengthSamples = WindowWasherAudio_Seconds(WWA_YELL_SECONDS);
-    const float HighPassCoefficient = WindowWasherAudio_LowPassCoefficient(WWA_YELL_HIGH_PASS_HZ);
+    const uint32_t LengthSamples = Synth_Seconds(WWA_YELL_SECONDS);
+    const float HighPassCoefficient = Synth_LowPassCoefficient(WWA_YELL_HIGH_PASS_HZ);
     const float OpenPeak = WWA_YELL_OPEN_QUOTIENT * (1.0f - WWA_YELL_CLOSING_FRACTION);
     float BlockSeconds;
     float BlockProgress;
@@ -1073,16 +1084,7 @@ static void WindowWasherAudio_GenerateYell(Audio_SampleTypeDef *Samples, uint32_
 
     (void)Context;
 
-    if(State->RestartCount != WindowWasherAudio_YellControl.RestartCount)
-    {
-        *State = (WindowWasherAudio_YellStateTypeDef){ 0 };
-        State->RestartCount = WindowWasherAudio_YellControl.RestartCount;
-        State->Random = 0x3C6EF372U ^ (State->RestartCount * 0xA54FF53AU);
-        State->Pitch = WindowWasherAudio_RandomRange(&State->Random, 0.92f, 1.08f);
-        State->CycleLevel = 1.0f;
-    }
-
-    BlockSeconds = (float)State->Sample / WWA_SAMPLE_RATE;
+    BlockSeconds = (float)State->Sample / SYNTH_SAMPLE_RATE;
     BlockProgress = (BlockSeconds < WWA_YELL_SECONDS) ? (BlockSeconds / WWA_YELL_SECONDS) : 1.0f;
 
     /* The vowel opens from "w" to "a", holds, then sags toward "oh". */
@@ -1103,11 +1105,11 @@ static void WindowWasherAudio_GenerateYell(Audio_SampleTypeDef *Samples, uint32_
     }
 
     /* Air absorption: the highs drop away first as he falls further. */
-    DistanceCoefficient = WindowWasherAudio_LowPassCoefficient(6000.0f - (4800.0f * BlockProgress));
+    DistanceCoefficient = Synth_LowPassCoefficient(6000.0f - (4800.0f * BlockProgress));
 
     for(uint32_t Index = 0U; Index < SampleCount; Index++)
     {
-        const float Noise = WindowWasherAudio_Noise(&State->Random);
+        const float Noise = Synth_Noise(&State->Random);
         float Seconds;
         float Progress;
         float PitchHz;
@@ -1117,11 +1119,11 @@ static void WindowWasherAudio_GenerateYell(Audio_SampleTypeDef *Samples, uint32_
 
         if(State->Sample >= LengthSamples)
         {
-            Samples[Index] = 0;
+            Samples[Index] = 0.0f;
             continue;
         }
 
-        Seconds = (float)State->Sample / WWA_SAMPLE_RATE;
+        Seconds = (float)State->Sample / SYNTH_SAMPLE_RATE;
         Progress = Seconds / WWA_YELL_SECONDS;
         State->Sample++;
 
@@ -1134,12 +1136,12 @@ static void WindowWasherAudio_GenerateYell(Audio_SampleTypeDef *Samples, uint32_
             PitchHz = WWA_YELL_PEAK_HZ + ((WWA_YELL_END_HZ - WWA_YELL_PEAK_HZ) * ((Seconds - WWA_YELL_RISE_SECONDS) / (WWA_YELL_SECONDS - WWA_YELL_RISE_SECONDS)));
         }
 
-        State->VibratoPhase += WWA_YELL_VIBRATO_HZ / WWA_SAMPLE_RATE;
+        State->VibratoPhase += WWA_YELL_VIBRATO_HZ / SYNTH_SAMPLE_RATE;
         State->VibratoPhase -= (State->VibratoPhase >= 1.0f) ? 1.0f : 0.0f;
-        PitchHz *= State->Pitch * (1.0f + (WWA_YELL_VIBRATO_DEPTH * sinf(WWA_TWO_PI * State->VibratoPhase)) + (WWA_YELL_JITTER * State->Jitter));
+        PitchHz *= State->Pitch * (1.0f + (WWA_YELL_VIBRATO_DEPTH * sinf(SYNTH_TWO_PI * State->VibratoPhase)) + (WWA_YELL_JITTER * State->Jitter));
 
         /* A real voice never repeats a cycle exactly: vary each one's pitch and level. */
-        State->Phase += PitchHz / WWA_SAMPLE_RATE;
+        State->Phase += PitchHz / SYNTH_SAMPLE_RATE;
 
         if(State->Phase >= 1.0f)
         {
@@ -1147,7 +1149,7 @@ static void WindowWasherAudio_GenerateYell(Audio_SampleTypeDef *Samples, uint32_
 
             State->Phase -= 1.0f;
             State->Jitter += 0.3f * (Noise - State->Jitter);
-            State->CycleLevel = 1.0f + (WWA_YELL_SHIMMER * WindowWasherAudio_Noise(&State->Random));
+            State->CycleLevel = 1.0f + (WWA_YELL_SHIMMER * Synth_Noise(&State->Random));
             State->OddCycle = !State->OddCycle;
 
             /* Strained voice: every other pulse weaker, for a raspy undertone. */
@@ -1160,11 +1162,11 @@ static void WindowWasherAudio_GenerateYell(Audio_SampleTypeDef *Samples, uint32_
         /* Airflow through the vocal folds: a smooth opening, a quicker close. */
         if(State->Phase < OpenPeak)
         {
-            Flow = 0.5f * (1.0f - cosf(0.5f * WWA_TWO_PI * State->Phase / OpenPeak));
+            Flow = 0.5f * (1.0f - cosf(0.5f * SYNTH_TWO_PI * State->Phase / OpenPeak));
         }
         else if(State->Phase < WWA_YELL_OPEN_QUOTIENT)
         {
-            Flow = cosf(0.25f * WWA_TWO_PI * (State->Phase - OpenPeak) / (WWA_YELL_OPEN_QUOTIENT - OpenPeak));
+            Flow = cosf(0.25f * SYNTH_TWO_PI * (State->Phase - OpenPeak) / (WWA_YELL_OPEN_QUOTIENT - OpenPeak));
         }
         else
         {
@@ -1174,7 +1176,7 @@ static void WindowWasherAudio_GenerateYell(Audio_SampleTypeDef *Samples, uint32_
         Flow *= State->CycleLevel;
 
         /* The mouth radiates the change in airflow, plus breath while the folds are open. */
-        Voice = (Flow - State->PreviousFlow) * (WWA_SAMPLE_RATE / PitchHz) * WWA_YELL_CLOSING_FRACTION * 0.5f;
+        Voice = (Flow - State->PreviousFlow) * (SYNTH_SAMPLE_RATE / PitchHz) * WWA_YELL_CLOSING_FRACTION * 0.5f;
         Voice += Noise * WWA_YELL_BREATH * (0.3f + Flow) * (1.0f + Progress);
         State->PreviousFlow = Flow;
 
@@ -1199,13 +1201,42 @@ static void WindowWasherAudio_GenerateYell(Audio_SampleTypeDef *Samples, uint32_
         Envelope = (Seconds < WWA_YELL_ATTACK_SECONDS) ? (Seconds / WWA_YELL_ATTACK_SECONDS) : 1.0f;
         Envelope *= (1.0f - Progress) / (1.0f + (3.0f * Progress * Progress));
 
-        Samples[Index] = WindowWasherAudio_ToSample(State->Distance * Envelope * WWA_YELL_LEVEL);
+        Samples[Index] = (State->Distance * Envelope * WWA_YELL_LEVEL) * WWA_MASTER_LEVEL;
     }
 }
+
+static void WindowWasherAudio_StartYell(void *Context)
+{
+    WindowWasherAudio_YellStateTypeDef *State = &WindowWasherAudio_Yell;
+    const uint32_t RestartCount = State->RestartCount + 1U;
+
+    (void)Context;
+
+    *State = (WindowWasherAudio_YellStateTypeDef){ 0 };
+    State->RestartCount = RestartCount;
+    State->Random = 0x3C6EF372U ^ (State->RestartCount * 0xA54FF53AU);
+    State->Pitch = Synth_RandomRange(&State->Random, 0.92f, 1.08f);
+    State->CycleLevel = 1.0f;
+}
+
+static const Mixer_SynthTypeDef WindowWasherAudio_YellSynth =
+{
+    .Start = WindowWasherAudio_StartYell,
+    .Receive = NULL,
+    .Render = WindowWasherAudio_RenderYell
+};
 
 /* -------------------------------------------------------------------------- */
 /* Public functions                                                           */
 /* -------------------------------------------------------------------------- */
+
+/* Send the cart or wind synth a target, restarting it first when Restart is true. */
+static void WindowWasherAudio_SendControl(Mixer_ChannelTypeDef Channel, bool Restart, float Target)
+{
+    const WindowWasherAudio_ControlMessageTypeDef Message = { Restart, Target };
+
+    (void)Mixer_Send(Channel, &Message, sizeof(Message));
+}
 
 void WindowWasherAudio_StartRound(void)
 {
@@ -1214,15 +1245,11 @@ void WindowWasherAudio_StartRound(void)
     (void)Mixer_Stop(WWA_CRASH_CHANNEL);
     (void)Mixer_Stop(WWA_YELL_CHANNEL);
 
-    WindowWasherAudio_CartControl.Target = 0.0f;
-    WindowWasherAudio_CartControl.RestartCount++;
-    WindowWasherAudio_WindControl.Target = WWA_WIND_MINIMUM_LEVEL;
-    WindowWasherAudio_WindControl.RestartCount++;
-    WindowWasherAudio_CityControl.RestartCount++;
-
-    (void)Mixer_PlayGenerator(WWA_CART_CHANNEL, WindowWasherAudio_GenerateCart, NULL);
-    (void)Mixer_PlayGenerator(WWA_WIND_CHANNEL, WindowWasherAudio_GenerateWind, NULL);
-    WindowWasherAudio_CityPlaying = Mixer_PlayGenerator(WWA_CITY_CHANNEL, WindowWasherAudio_GenerateCity, NULL);
+    (void)Mixer_PlaySynth(WWA_CART_CHANNEL, &WindowWasherAudio_CartSynth, NULL);
+    WindowWasherAudio_SendControl(WWA_CART_CHANNEL, true, 0.0f);
+    (void)Mixer_PlaySynth(WWA_WIND_CHANNEL, &WindowWasherAudio_WindSynth, NULL);
+    WindowWasherAudio_SendControl(WWA_WIND_CHANNEL, true, WWA_WIND_MINIMUM_LEVEL);
+    WindowWasherAudio_CityPlaying = Mixer_PlaySynth(WWA_CITY_CHANNEL, &WindowWasherAudio_CitySynth, NULL);
 }
 
 void WindowWasherAudio_Update(float CartSpeed, uint64_t RoundElapsedMilliseconds)
@@ -1232,8 +1259,8 @@ void WindowWasherAudio_Update(float CartSpeed, uint64_t RoundElapsedMilliseconds
     WindRamp = (WindRamp > 1.0f) ? 1.0f : WindRamp;
     CartSpeed = (CartSpeed > 1.0f) ? 1.0f : ((CartSpeed < 0.0f) ? 0.0f : CartSpeed);
 
-    WindowWasherAudio_CartControl.Target = CartSpeed;
-    WindowWasherAudio_WindControl.Target = WWA_WIND_MINIMUM_LEVEL + ((WWA_WIND_MAXIMUM_LEVEL - WWA_WIND_MINIMUM_LEVEL) * WindRamp);
+    WindowWasherAudio_SendControl(WWA_CART_CHANNEL, false, CartSpeed);
+    WindowWasherAudio_SendControl(WWA_WIND_CHANNEL, false, WWA_WIND_MINIMUM_LEVEL + ((WWA_WIND_MAXIMUM_LEVEL - WWA_WIND_MINIMUM_LEVEL) * WindRamp));
 
     /* The city has faded out; free its channel. */
     if(WindowWasherAudio_CityPlaying && (RoundElapsedMilliseconds >= WWA_CITY_STOP_MILLISECONDS))
@@ -1256,22 +1283,21 @@ void WindowWasherAudio_Stop(void)
 
 void WindowWasherAudio_PlaySqueegee(void)
 {
-    WindowWasherAudio_SqueegeeControl.RestartCount++;
-    (void)Mixer_PlayGenerator(WWA_SQUEEGEE_CHANNEL, WindowWasherAudio_GenerateSqueegee, NULL);
+    (void)Mixer_PlaySynth(WWA_SQUEEGEE_CHANNEL, &WindowWasherAudio_SqueegeeSynth, NULL);
 }
 
 void WindowWasherAudio_PlayCrash(float ImpactSpeed)
 {
-    WindowWasherAudio_CrashControl.Target = (ImpactSpeed > 1.0f) ? 1.0f : ((ImpactSpeed < 0.0f) ? 0.0f : ImpactSpeed);
-    WindowWasherAudio_CrashControl.RestartCount++;
-    WindowWasherAudio_YellControl.RestartCount++;
+    const float Strength = (ImpactSpeed > 1.0f) ? 1.0f : ((ImpactSpeed < 0.0f) ? 0.0f : ImpactSpeed);
 
-    (void)Mixer_PlayGenerator(WWA_CRASH_CHANNEL, WindowWasherAudio_GenerateCrash, NULL);
-    (void)Mixer_PlayGenerator(WWA_YELL_CHANNEL, WindowWasherAudio_GenerateYell, NULL);
+    (void)Mixer_PlaySynth(WWA_CRASH_CHANNEL, &WindowWasherAudio_CrashSynth, NULL);
+    (void)Mixer_Send(WWA_CRASH_CHANNEL, &Strength, sizeof(Strength));
+    (void)Mixer_PlaySynth(WWA_YELL_CHANNEL, &WindowWasherAudio_YellSynth, NULL);
 }
 
+/* The cart and wind carry on from where they were paused. */
 void WindowWasherAudio_Resume(void)
 {
-    (void)Mixer_PlayGenerator(WWA_CART_CHANNEL, WindowWasherAudio_GenerateCart, NULL);
-    (void)Mixer_PlayGenerator(WWA_WIND_CHANNEL, WindowWasherAudio_GenerateWind, NULL);
+    (void)Mixer_PlaySynth(WWA_CART_CHANNEL, &WindowWasherAudio_CartSynth, NULL);
+    (void)Mixer_PlaySynth(WWA_WIND_CHANNEL, &WindowWasherAudio_WindSynth, NULL);
 }

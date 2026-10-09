@@ -3,14 +3,22 @@
  * @brief Eight-channel audio mixer for applications and the system UI.
  *
  * The mixer owns the system audio stream. Each mixer channel plays one source
- * at a time: either a PCM sound clip or a generator callback that produces
- * samples on demand. The mixer sums the active channels, applies each
- * channel's volume, and delivers mono PCM at MIXER_SAMPLE_RATE_HZ through
- * Mixer_FillAudioBuffer(), so applications never mix audio themselves.
+ * at a time: a PCM sound clip, a synth, or a raw generator callback. The
+ * mixer sums the active channels, applies each channel's volume, and delivers
+ * mono PCM at MIXER_SAMPLE_RATE_HZ through Mixer_FillAudioBuffer(), so
+ * applications never mix audio themselves.
+ *
+ * A synth is the usual way to make sound in code. It renders floating-point
+ * samples, and the game loop talks to it with Mixer_Send(): each message is
+ * copied and handed to the synth's Receive function in the audio context,
+ * in order with every other request, so the synth owns all of its state and
+ * nothing is shared between the game loop and the audio. See synth.h for
+ * building blocks.
  *
  * Mixer channels 0 to MIXER_APPLICATION_CHANNEL_COUNT - 1 belong to the
  * running application and are stopped whenever the active application
- * changes. MIXER_SYSTEM_CHANNEL is reserved for system sounds.
+ * changes. MIXER_SOUND_CHANNEL carries the sound effects engine (sound.h),
+ * and MIXER_SYSTEM_CHANNEL is reserved for system sounds.
  *
  * All functions except Mixer_FillAudioBuffer() must be called from the main
  * loop. Requests take effect when the audio output next asks for samples,
@@ -40,13 +48,19 @@ extern "C" {
 #define MIXER_CHANNEL_COUNT                 (8U)
 
 /** Mixer channels 0 to this value - 1 belong to the running application. */
-#define MIXER_APPLICATION_CHANNEL_COUNT     (7U)
+#define MIXER_APPLICATION_CHANNEL_COUNT     (6U)
+
+/** Mixer channel the sound effects engine plays on. */
+#define MIXER_SOUND_CHANNEL                 ((Mixer_ChannelTypeDef)6U)
 
 /** Mixer channel reserved for system sounds. */
 #define MIXER_SYSTEM_CHANNEL                ((Mixer_ChannelTypeDef)7U)
 
 /** Channel volume that plays a source at its original level. */
 #define MIXER_VOLUME_MAX                    (256U)
+
+/** Largest message Mixer_Send() carries, in bytes. */
+#define MIXER_MESSAGE_SIZE                  (24U)
 
 /** Mixer channel number, 0 to MIXER_CHANNEL_COUNT - 1. */
 typedef uint8_t Mixer_ChannelTypeDef;
@@ -71,6 +85,35 @@ typedef struct
  * file I/O, or wait on a mutex.
  */
 typedef void (*Mixer_GeneratorTypeDef)(Audio_SampleTypeDef *Samples, uint32_t SampleCount, void *Context);
+
+/**
+ * @brief A synth: the functions the mixer calls for one synth source.
+ *
+ * Every function runs in the audio output context, with the Context given to
+ * Mixer_PlaySynth(), and follows the rules of Mixer_GeneratorTypeDef. Keep the
+ * structure itself in const storage; the mixer holds a pointer to it.
+ */
+typedef struct
+{
+    /**
+     * Called once when Mixer_PlaySynth() takes effect, before any message or
+     * sample: reset the synth's state here. May be NULL.
+     */
+    void (*Start)(void *Context);
+
+    /**
+     * Called for each message sent with Mixer_Send(), in the order sent,
+     * before the next samples are rendered. Message points to a copy that is
+     * valid only during the call. May be NULL.
+     */
+    void (*Receive)(const void *Message, uint32_t Size, void *Context);
+
+    /**
+     * Write SampleCount samples, nominally -1.0 to 1.0. The mixer clips
+     * anything outside that range.
+     */
+    void (*Render)(float *Samples, uint32_t SampleCount, void *Context);
+} Mixer_SynthTypeDef;
 
 /* -------------------------------------------------------------------------- */
 /* Mixer control                                                              */
@@ -106,6 +149,35 @@ bool Mixer_PlaySound(Mixer_ChannelTypeDef Channel, const Mixer_SoundTypeDef *Sou
  * @return true if the request was queued; otherwise false.
  */
 bool Mixer_PlayGenerator(Mixer_ChannelTypeDef Channel, Mixer_GeneratorTypeDef Generator, void *Context);
+
+/**
+ * @brief Play a synth on a mixer channel, replacing its current source.
+ *
+ * The synth's Start function runs first, so playing a synth again restarts
+ * it. It then renders until the channel is stopped or given another source.
+ *
+ * @param Channel Mixer channel to use.
+ * @param Synth   The synth's functions; must remain valid while it plays.
+ * @param Context Value passed to every synth function call.
+ *
+ * @return true if the request was queued; otherwise false.
+ */
+bool Mixer_PlaySynth(Mixer_ChannelTypeDef Channel, const Mixer_SynthTypeDef *Synth, void *Context);
+
+/**
+ * @brief Send a message to the synth playing on a mixer channel.
+ *
+ * The message is copied, so it may be a local variable. It is delivered after
+ * every request made before it, including Mixer_PlaySynth(), and is dropped if
+ * the channel is not playing a synth with a Receive function by then.
+ *
+ * @param Channel Mixer channel whose synth receives the message.
+ * @param Message Message bytes.
+ * @param Size    Message size, at most MIXER_MESSAGE_SIZE.
+ *
+ * @return true if the message was queued; otherwise false.
+ */
+bool Mixer_Send(Mixer_ChannelTypeDef Channel, const void *Message, uint32_t Size);
 
 /**
  * @brief Silence a mixer channel.

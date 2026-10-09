@@ -2,15 +2,15 @@
  * @file tanks_audio.c
  * @brief Generated sound effects and jingles for TANKS.
  *
- * Three mixer generators run while the game is open:
+ * Three mixer synths run while the game is open:
  *
- * - Ambience follows control values the game loop writes every frame: how
- *   fast the player's tank and the enemy tanks are moving, and how close
- *   rockets are. Each tread is a rhythm of track-link clacks and clinks, an
- *   engine buzz and rolling gravel, all quickening with speed.
- * - Effects play one-shot sounds from a pool of voices. The game loop posts
- *   events to a lock-free queue; the generator starts a voice for each at
- *   the next audio block, stealing the oldest voice when all are busy.
+ * - Ambience follows the values the game loop sends every frame: how fast
+ *   the player's tank and the enemy tanks are moving, and how close rockets
+ *   are. Each tread is a rhythm of track-link clacks and clinks, an engine
+ *   buzz and rolling gravel, all quickening with speed.
+ * - Effects play one-shot sounds from a pool of voices. The game loop sends
+ *   one message per sound; the synth starts a voice for each, stealing the
+ *   oldest voice when all are busy.
  * - Jingles sequence short brass, snare and bell phrases.
  *
  * Thumps and booms are built from pitch-dropping tones pushed through a soft
@@ -21,11 +21,13 @@
 #include "tanks_audio.h"
 
 #include "mixer.h"
+#include "synth.h"
 
 #include <math.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 /* -------------------------------------------------------------------------- */
 /* Private configuration                                                      */
@@ -35,10 +37,6 @@
 #define TA_EFFECTS_CHANNEL                  ((Mixer_ChannelTypeDef)1U)
 #define TA_JINGLE_CHANNEL                   ((Mixer_ChannelTypeDef)2U)
 
-#define TA_SAMPLE_RATE                      ((float)MIXER_SAMPLE_RATE_HZ)
-#define TA_SAMPLE_PERIOD                    (1.0f / TA_SAMPLE_RATE)
-#define TA_TWO_PI                           (6.2831853f)
-#define TA_FULL_SCALE                       (32767.0f)
 #define TA_SILENT                           (0.0001f)
 
 /* Overall level of every TANKS sound. */
@@ -91,7 +89,6 @@
 
 /* Effects */
 #define TA_EFFECT_VOICES                    (10U)
-#define TA_EVENT_QUEUE_SIZE                 (32U)
 #define TA_SHOT_LEVEL                       (0.32f)
 #define TA_ENEMY_SHOT_LEVEL                 (0.25f)
 #define TA_ENEMY_SHOT_PITCH                 (0.88f)
@@ -188,15 +185,10 @@ typedef struct
     float CutoffTargetHz;
     float CutoffGlide;
     float Filter[4];
+    Synth_FilterTypeDef Band;
     float Pop;
     TanksAudio_ToneTypeDef Tones[3];
 } TanksAudio_VoiceTypeDef;
-
-typedef struct
-{
-    volatile uint32_t RestartCount;
-    volatile uint32_t FirstEvent;
-} TanksAudio_EffectsControlTypeDef;
 
 typedef struct
 {
@@ -207,16 +199,15 @@ typedef struct
 } TanksAudio_EffectsStateTypeDef;
 
 /**
- * @brief Values the game loop writes every frame for the ambience.
+ * @brief Values the game loop sends every frame for the ambience.
  */
 typedef struct
 {
-    volatile uint32_t RestartCount;
-    volatile float PlayerActivity;
-    volatile float EnemyActivity;
-    volatile float EnemyLevel;
-    volatile float RocketLevel;
-} TanksAudio_AmbienceControlTypeDef;
+    float PlayerActivity;
+    float EnemyActivity;
+    float EnemyLevel;
+    float RocketLevel;
+} TanksAudio_AmbienceMessageTypeDef;
 
 typedef struct
 {
@@ -272,12 +263,13 @@ typedef struct
 {
     uint32_t RestartCount;
     uint32_t Random;
+    TanksAudio_AmbienceMessageTypeDef Control;
     TanksAudio_TreadTypeDef Player;
     TanksAudio_TreadTypeDef Enemies;
     float Rocket;
     float RocketPhase;
     float RocketLow;
-    float RocketBand[2];
+    Synth_FilterTypeDef RocketBand;
     float Flutter;
     float HighPass[2];
 } TanksAudio_AmbienceStateTypeDef;
@@ -299,12 +291,6 @@ typedef struct
     const TanksAudio_NoteTypeDef *Notes;
     uint32_t NoteCount;
 } TanksAudio_JingleDefinitionTypeDef;
-
-typedef struct
-{
-    volatile uint32_t RestartCount;
-    volatile uint32_t Jingle;
-} TanksAudio_JingleControlTypeDef;
 
 typedef struct
 {
@@ -430,18 +416,9 @@ static const TanksAudio_JingleDefinitionTypeDef TanksAudio_Jingles[] = {
 static const TanksAudio_TreadConfigTypeDef TanksAudio_PlayerTread = { 5.0f, 16.0f, 640.0f, 42.0f, 70.0f, TA_TREAD_PLAYER_LEVEL };
 static const TanksAudio_TreadConfigTypeDef TanksAudio_EnemyTread = { 6.0f, 18.0f, 900.0f, 60.0f, 95.0f, TA_TREAD_ENEMY_LEVEL };
 
-static TanksAudio_AmbienceControlTypeDef TanksAudio_AmbienceControl;
-static TanksAudio_EffectsControlTypeDef TanksAudio_EffectsControl;
-static TanksAudio_JingleControlTypeDef TanksAudio_JingleControl;
-
 static TanksAudio_AmbienceStateTypeDef TanksAudio_Ambience;
 static TanksAudio_EffectsStateTypeDef TanksAudio_Effects;
 static TanksAudio_JingleStateTypeDef TanksAudio_JinglePlayer;
-
-/* Single-producer (game loop), single-consumer (audio) event queue. */
-static TanksAudio_EventTypeDef TanksAudio_Events[TA_EVENT_QUEUE_SIZE];
-static uint32_t TanksAudio_EventHead;
-static uint32_t TanksAudio_EventTail;
 
 /* Game-loop bookkeeping for mine beeps. */
 static uint16_t TanksAudio_MineBeepMilliseconds[TANKS_MAX_MINES];
@@ -456,45 +433,12 @@ static bool TanksAudio_LastValid[TANKS_MAX_ENEMIES + 1U];
 /* Synthesis helpers                                                          */
 /* -------------------------------------------------------------------------- */
 
-static float TanksAudio_Noise(uint32_t *State)
-{
-    uint32_t Value = *State;
-
-    Value ^= Value << 13U;
-    Value ^= Value >> 17U;
-    Value ^= Value << 5U;
-    *State = Value;
-
-    return ((float)Value / 2147483648.0f) - 1.0f;
-}
-
-static float TanksAudio_RandomRange(uint32_t *State, float Minimum, float Maximum)
-{
-    return Minimum + ((Maximum - Minimum) * (0.5f + (0.5f * TanksAudio_Noise(State))));
-}
-
-static float TanksAudio_LowPassCoefficient(float CutoffHz)
-{
-    return 1.0f - expf(-TA_TWO_PI * CutoffHz * TA_SAMPLE_PERIOD);
-}
-
 /* Cheap low-pass coefficient for cutoffs that change every sample; close below a few kHz, darker above. */
 static float TanksAudio_SweepCoefficient(float CutoffHz)
 {
-    const float Omega = TA_TWO_PI * CutoffHz * TA_SAMPLE_PERIOD;
+    const float Omega = SYNTH_TWO_PI * CutoffHz * SYNTH_SAMPLE_PERIOD;
 
     return Omega / (1.0f + Omega);
-}
-
-/* Per-sample multiplier that decays to 1/e in Seconds; 0 stops at once. */
-static float TanksAudio_DecayCoefficient(float Seconds)
-{
-    return (Seconds > 0.0f) ? expf(-1.0f / (Seconds * TA_SAMPLE_RATE)) : 0.0f;
-}
-
-static uint32_t TanksAudio_Seconds(float Seconds)
-{
-    return (uint32_t)(Seconds * TA_SAMPLE_RATE);
 }
 
 /*
@@ -517,7 +461,7 @@ static float TanksAudio_Sine(float Phase)
         Turns = -0.5f - Turns;
     }
 
-    X = TA_TWO_PI * Turns;
+    X = SYNTH_TWO_PI * Turns;
     Square = X * X;
 
     return -X * (1.0f - (Square * (0.16666667f - (Square * (0.0083333333f - (Square * 0.00019841270f))))));
@@ -533,9 +477,9 @@ static void TanksAudio_StartTone(TanksAudio_ToneTypeDef *Tone, float StartHz, fl
     Tone->Phase = 0.0f;
     Tone->Hz = StartHz;
     Tone->TargetHz = EndHz;
-    Tone->Glide = 1.0f - TanksAudio_DecayCoefficient(GlideSeconds);
+    Tone->Glide = 1.0f - Synth_DecayCoefficient(GlideSeconds);
     Tone->Amplitude = Amplitude;
-    Tone->Decay = TanksAudio_DecayCoefficient(DecaySeconds);
+    Tone->Decay = Synth_DecayCoefficient(DecaySeconds);
 }
 
 static float TanksAudio_RunTone(TanksAudio_ToneTypeDef *Tone)
@@ -549,7 +493,7 @@ static float TanksAudio_RunTone(TanksAudio_ToneTypeDef *Tone)
 
     Output = TanksAudio_Sine(Tone->Phase) * Tone->Amplitude;
     Tone->Hz += Tone->Glide * (Tone->TargetHz - Tone->Hz);
-    Tone->Phase += Tone->Hz * TA_SAMPLE_PERIOD;
+    Tone->Phase += Tone->Hz * SYNTH_SAMPLE_PERIOD;
     Tone->Phase -= floorf(Tone->Phase);
     Tone->Amplitude *= Tone->Decay;
 
@@ -577,21 +521,6 @@ static float TanksAudio_PolyBlep(float Phase, float Step)
     return Correction;
 }
 
-/*
- * Resonant band-pass (state-variable filter). Frequency is 2 * pi * f / fs;
- * keep f below about 4 kHz. Lower damping rings more narrowly.
- */
-static float TanksAudio_BandPass(float *State, float Input, float Frequency, float Damping)
-{
-    float High;
-
-    State[0] += Frequency * State[1];
-    High = Input - State[0] - (Damping * State[1]);
-    State[1] += Frequency * High;
-
-    return State[1];
-}
-
 /* Two-pole high-pass shared by every generator's output. */
 static float TanksAudio_HighPass(float *State, float Input, float Coefficient)
 {
@@ -603,22 +532,6 @@ static float TanksAudio_HighPass(float *State, float Input, float Coefficient)
     Output -= State[1];
 
     return Output;
-}
-
-static Audio_SampleTypeDef TanksAudio_ToSample(float Value)
-{
-    Value *= TA_MASTER_LEVEL;
-
-    if(Value > 1.0f)
-    {
-        Value = 1.0f;
-    }
-    else if(Value < -1.0f)
-    {
-        Value = -1.0f;
-    }
-
-    return (Audio_SampleTypeDef)(Value * TA_FULL_SCALE);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -635,7 +548,7 @@ static Audio_SampleTypeDef TanksAudio_ToSample(float Value)
 static float TanksAudio_RunTread(TanksAudio_TreadTypeDef *Tread, const TanksAudio_TreadConfigTypeDef *Config, uint32_t *Random,
                                  float ActivityTarget, float LevelTarget, const TanksAudio_TreadCoefficientsTypeDef *Coefficients)
 {
-    const float Noise = TanksAudio_Noise(Random);
+    const float Noise = Synth_Noise(Random);
     float Body;
     float Click;
     float Rattle;
@@ -651,14 +564,14 @@ static float TanksAudio_RunTread(TanksAudio_TreadTypeDef *Tread, const TanksAudi
     }
 
     /* Track links: the rate follows the speed. */
-    Tread->ClackPhase += (Config->ClackMinimumHz + ((Config->ClackMaximumHz - Config->ClackMinimumHz) * Tread->Activity)) * TA_SAMPLE_PERIOD;
+    Tread->ClackPhase += (Config->ClackMinimumHz + ((Config->ClackMaximumHz - Config->ClackMinimumHz) * Tread->Activity)) * SYNTH_SAMPLE_PERIOD;
 
     if(Tread->ClackPhase >= 1.0f)
     {
-        const float Strength = TanksAudio_RandomRange(Random, 0.6f, 1.0f) * (((Tread->ClackCount & 1U) != 0U) ? 0.75f : 1.0f);
-        const float ClankHz = Config->ClankHz * TanksAudio_RandomRange(Random, 0.97f, 1.03f);
+        const float Strength = Synth_RandomRange(Random, 0.6f, 1.0f) * (((Tread->ClackCount & 1U) != 0U) ? 0.75f : 1.0f);
+        const float ClankHz = Config->ClankHz * Synth_RandomRange(Random, 0.97f, 1.03f);
 
-        Tread->ClackPhase -= 1.0f + TanksAudio_RandomRange(Random, 0.0f, 0.12f);
+        Tread->ClackPhase -= 1.0f + Synth_RandomRange(Random, 0.0f, 0.12f);
         Tread->ClackCount++;
         Tread->BodyEnvelope = Strength;
         Tread->ClickEnvelope = Strength;
@@ -680,9 +593,9 @@ static float TanksAudio_RunTread(TanksAudio_TreadTypeDef *Tread, const TanksAudi
     Tread->ClickEnvelope *= Coefficients->ClickDecay;
 
     /* Rattle: tiny random ticks of the chain, denser with speed. */
-    if((0.5f + (0.5f * TanksAudio_Noise(Random))) < (TA_TREAD_RATTLE_MAXIMUM_HZ * Tread->Activity * TA_SAMPLE_PERIOD))
+    if((0.5f + (0.5f * Synth_Noise(Random))) < (TA_TREAD_RATTLE_MAXIMUM_HZ * Tread->Activity * SYNTH_SAMPLE_PERIOD))
     {
-        Tread->RattleEnvelope = TanksAudio_RandomRange(Random, 0.3f, 1.0f);
+        Tread->RattleEnvelope = Synth_RandomRange(Random, 0.3f, 1.0f);
     }
 
     Tread->RattleLow[0] += Coefficients->RattleHigh * ((Noise * Tread->RattleEnvelope) - Tread->RattleLow[0]);
@@ -692,7 +605,7 @@ static float TanksAudio_RunTread(TanksAudio_TreadTypeDef *Tread, const TanksAudi
     Tread->RattleEnvelope *= Coefficients->RattleDecay;
 
     /* Engine: a low saw whose upper harmonics give the buzz. */
-    Tread->EnginePhase += (Config->EngineMinimumHz + ((Config->EngineMaximumHz - Config->EngineMinimumHz) * Tread->Activity)) * TA_SAMPLE_PERIOD;
+    Tread->EnginePhase += (Config->EngineMinimumHz + ((Config->EngineMaximumHz - Config->EngineMinimumHz) * Tread->Activity)) * SYNTH_SAMPLE_PERIOD;
     Tread->EnginePhase -= (Tread->EnginePhase >= 1.0f) ? 1.0f : 0.0f;
     Tread->EngineLow[0] += Coefficients->Engine * (((2.0f * Tread->EnginePhase) - 1.0f) - Tread->EngineLow[0]);
     Tread->EngineLow[1] += Coefficients->Engine * (Tread->EngineLow[0] - Tread->EngineLow[1]);
@@ -709,43 +622,36 @@ static float TanksAudio_RunTread(TanksAudio_TreadTypeDef *Tread, const TanksAudi
             TanksAudio_HighPass(Tread->HighPass, Engine + Gravel, Coefficients->HighPass));
 }
 
-static void TanksAudio_GenerateAmbience(Audio_SampleTypeDef *Samples, uint32_t SampleCount, void *Context)
+static void TanksAudio_RenderAmbience(float *Samples, uint32_t SampleCount, void *Context)
 {
     TanksAudio_AmbienceStateTypeDef *State = &TanksAudio_Ambience;
-    const float Smoothing = 1.0f - TanksAudio_DecayCoefficient(TA_TREAD_SMOOTHING_SECONDS);
-    const float RocketMotorCoefficient = TanksAudio_LowPassCoefficient(TA_ROCKET_MOTOR_CUTOFF_HZ);
-    const float RocketJetFrequency = TA_TWO_PI * TA_ROCKET_JET_HZ * TA_SAMPLE_PERIOD;
-    const float FlutterCoefficient = TanksAudio_LowPassCoefficient(TA_ROCKET_FLUTTER_HZ);
-    const float HighPassCoefficient = TanksAudio_LowPassCoefficient(TA_OUTPUT_HIGH_PASS_HZ);
-    const float PlayerActivity = TanksAudio_AmbienceControl.PlayerActivity;
-    const float EnemyActivity = TanksAudio_AmbienceControl.EnemyActivity;
-    const float EnemyLevel = TanksAudio_AmbienceControl.EnemyLevel;
-    const float RocketLevel = TanksAudio_AmbienceControl.RocketLevel;
+    const float Smoothing = 1.0f - Synth_DecayCoefficient(TA_TREAD_SMOOTHING_SECONDS);
+    const float RocketMotorCoefficient = Synth_LowPassCoefficient(TA_ROCKET_MOTOR_CUTOFF_HZ);
+    const float RocketJetFrequency = Synth_BandPassCoefficient(TA_ROCKET_JET_HZ);
+    const float FlutterCoefficient = Synth_LowPassCoefficient(TA_ROCKET_FLUTTER_HZ);
+    const float HighPassCoefficient = Synth_LowPassCoefficient(TA_OUTPUT_HIGH_PASS_HZ);
+    const float PlayerActivity = State->Control.PlayerActivity;
+    const float EnemyActivity = State->Control.EnemyActivity;
+    const float EnemyLevel = State->Control.EnemyLevel;
+    const float RocketLevel = State->Control.RocketLevel;
     const float PlayerLevel = (PlayerActivity * 3.0f > 1.0f) ? 1.0f : (PlayerActivity * 3.0f);
     const TanksAudio_TreadCoefficientsTypeDef Coefficients =
     {
         .Smoothing = Smoothing,
-        .BodyDecay = TanksAudio_DecayCoefficient(TA_TREAD_BODY_DECAY_SECONDS),
-        .ClickDecay = TanksAudio_DecayCoefficient(TA_TREAD_CLICK_DECAY_SECONDS),
-        .RattleDecay = TanksAudio_DecayCoefficient(TA_TREAD_RATTLE_DECAY_SECONDS),
-        .BodyLow = TanksAudio_LowPassCoefficient(TA_TREAD_BODY_LOW_HZ),
-        .BodyHigh = TanksAudio_LowPassCoefficient(TA_TREAD_BODY_HIGH_HZ),
-        .RattleLow = TanksAudio_LowPassCoefficient(TA_TREAD_RATTLE_LOW_HZ),
-        .RattleHigh = TanksAudio_LowPassCoefficient(TA_TREAD_RATTLE_HIGH_HZ),
-        .ClickHighPass = TanksAudio_LowPassCoefficient(TA_TREAD_CLICK_HIGH_PASS_HZ),
-        .Engine = TanksAudio_LowPassCoefficient(TA_TREAD_ENGINE_CUTOFF_HZ),
-        .Gravel = TanksAudio_LowPassCoefficient(TA_TREAD_GRAVEL_CUTOFF_HZ),
-        .HighPass = TanksAudio_LowPassCoefficient(TA_TREAD_HIGH_PASS_HZ)
+        .BodyDecay = Synth_DecayCoefficient(TA_TREAD_BODY_DECAY_SECONDS),
+        .ClickDecay = Synth_DecayCoefficient(TA_TREAD_CLICK_DECAY_SECONDS),
+        .RattleDecay = Synth_DecayCoefficient(TA_TREAD_RATTLE_DECAY_SECONDS),
+        .BodyLow = Synth_LowPassCoefficient(TA_TREAD_BODY_LOW_HZ),
+        .BodyHigh = Synth_LowPassCoefficient(TA_TREAD_BODY_HIGH_HZ),
+        .RattleLow = Synth_LowPassCoefficient(TA_TREAD_RATTLE_LOW_HZ),
+        .RattleHigh = Synth_LowPassCoefficient(TA_TREAD_RATTLE_HIGH_HZ),
+        .ClickHighPass = Synth_LowPassCoefficient(TA_TREAD_CLICK_HIGH_PASS_HZ),
+        .Engine = Synth_LowPassCoefficient(TA_TREAD_ENGINE_CUTOFF_HZ),
+        .Gravel = Synth_LowPassCoefficient(TA_TREAD_GRAVEL_CUTOFF_HZ),
+        .HighPass = Synth_LowPassCoefficient(TA_TREAD_HIGH_PASS_HZ)
     };
 
     (void)Context;
-
-    if(State->RestartCount != TanksAudio_AmbienceControl.RestartCount)
-    {
-        *State = (TanksAudio_AmbienceStateTypeDef){ 0 };
-        State->RestartCount = TanksAudio_AmbienceControl.RestartCount;
-        State->Random = 0x6D2B79F5U ^ (State->RestartCount * 0x9E3779B9U);
-    }
 
     for(uint32_t Index = 0U; Index < SampleCount; Index++)
     {
@@ -759,20 +665,49 @@ static void TanksAudio_GenerateAmbience(Audio_SampleTypeDef *Samples, uint32_t S
 
         if(State->Rocket > TA_SILENT)
         {
-            const float Noise = TanksAudio_Noise(&State->Random);
+            const float Noise = Synth_Noise(&State->Random);
             float Jet;
 
-            State->Flutter += FlutterCoefficient * (TanksAudio_Noise(&State->Random) - State->Flutter);
-            State->RocketPhase += TA_ROCKET_MOTOR_HZ * (1.0f + (0.3f * State->Flutter)) * TA_SAMPLE_PERIOD;
+            State->Flutter += FlutterCoefficient * (Synth_Noise(&State->Random) - State->Flutter);
+            State->RocketPhase += TA_ROCKET_MOTOR_HZ * (1.0f + (0.3f * State->Flutter)) * SYNTH_SAMPLE_PERIOD;
             State->RocketPhase -= (State->RocketPhase >= 1.0f) ? 1.0f : 0.0f;
             State->RocketLow += RocketMotorCoefficient * (((2.0f * State->RocketPhase) - 1.0f) - State->RocketLow);
-            Jet = TanksAudio_BandPass(State->RocketBand, Noise, RocketJetFrequency, TA_ROCKET_JET_DAMPING);
+            Jet = Synth_BandPass(&State->RocketBand, Noise, RocketJetFrequency, TA_ROCKET_JET_DAMPING);
             Output += ((0.5f * State->RocketLow) + (0.8f * Jet)) * State->Rocket * TA_ROCKET_LEVEL * (1.0f + (3.0f * State->Flutter));
         }
 
-        Samples[Index] = TanksAudio_ToSample(TanksAudio_HighPass(State->HighPass, Output, HighPassCoefficient));
+        Samples[Index] = TanksAudio_HighPass(State->HighPass, Output, HighPassCoefficient) * TA_MASTER_LEVEL;
     }
 }
+
+static void TanksAudio_StartAmbience(void *Context)
+{
+    TanksAudio_AmbienceStateTypeDef *State = &TanksAudio_Ambience;
+    const uint32_t RestartCount = State->RestartCount + 1U;
+
+    (void)Context;
+
+    *State = (TanksAudio_AmbienceStateTypeDef){ 0 };
+    State->RestartCount = RestartCount;
+    State->Random = 0x6D2B79F5U ^ (State->RestartCount * 0x9E3779B9U);
+}
+
+static void TanksAudio_ReceiveAmbience(const void *Message, uint32_t Size, void *Context)
+{
+    (void)Context;
+
+    if(Size == sizeof(TanksAudio_AmbienceMessageTypeDef))
+    {
+        (void)memcpy(&TanksAudio_Ambience.Control, Message, sizeof(TanksAudio_AmbienceMessageTypeDef));
+    }
+}
+
+static const Mixer_SynthTypeDef TanksAudio_AmbienceSynth =
+{
+    .Start = TanksAudio_StartAmbience,
+    .Receive = TanksAudio_ReceiveAmbience,
+    .Render = TanksAudio_RenderAmbience
+};
 
 /* -------------------------------------------------------------------------- */
 /* Effects: starting sounds                                                   */
@@ -785,16 +720,16 @@ static void TanksAudio_GenerateAmbience(Audio_SampleTypeDef *Samples, uint32_t S
  */
 static void TanksAudio_StartShot(TanksAudio_VoiceTypeDef *Voice, uint32_t *Random, float Pitch)
 {
-    const float Variation = Pitch * TanksAudio_RandomRange(Random, 0.95f, 1.05f);
+    const float Variation = Pitch * Synth_RandomRange(Random, 0.95f, 1.05f);
 
-    Voice->LengthSamples = TanksAudio_Seconds(0.35f);
+    Voice->LengthSamples = Synth_Seconds(0.35f);
     Voice->Envelope[0] = 1.0f;
-    Voice->Decay[0] = TanksAudio_DecayCoefficient(0.004f);
+    Voice->Decay[0] = Synth_DecayCoefficient(0.004f);
     Voice->Envelope[1] = 1.0f;
-    Voice->Decay[1] = TanksAudio_DecayCoefficient(0.06f);
+    Voice->Decay[1] = Synth_DecayCoefficient(0.06f);
     Voice->CutoffHz = 5000.0f * Variation;
     Voice->CutoffTargetHz = 500.0f;
-    Voice->CutoffGlide = 1.0f - TanksAudio_DecayCoefficient(0.04f);
+    Voice->CutoffGlide = 1.0f - Synth_DecayCoefficient(0.04f);
     TanksAudio_StartTone(&Voice->Tones[0], 900.0f * Variation, 260.0f * Variation, 0.025f, 1.0f, 0.07f);
 }
 
@@ -807,16 +742,16 @@ static void TanksAudio_StartShot(TanksAudio_VoiceTypeDef *Voice, uint32_t *Rando
  */
 static void TanksAudio_StartRocketLaunch(TanksAudio_VoiceTypeDef *Voice, uint32_t *Random)
 {
-    const float Variation = TanksAudio_RandomRange(Random, 0.93f, 1.07f);
+    const float Variation = Synth_RandomRange(Random, 0.93f, 1.07f);
 
-    Voice->LengthSamples = TanksAudio_Seconds(0.6f);
+    Voice->LengthSamples = Synth_Seconds(0.6f);
     Voice->Envelope[0] = 1.0f;
-    Voice->Decay[0] = TanksAudio_DecayCoefficient(0.012f);
+    Voice->Decay[0] = Synth_DecayCoefficient(0.012f);
     Voice->Envelope[1] = 1.0f;
-    Voice->Decay[1] = TanksAudio_DecayCoefficient(0.25f);
+    Voice->Decay[1] = Synth_DecayCoefficient(0.25f);
     Voice->CutoffHz = 2200.0f * Variation;
     Voice->CutoffTargetHz = 700.0f;
-    Voice->CutoffGlide = 1.0f - TanksAudio_DecayCoefficient(0.15f);
+    Voice->CutoffGlide = 1.0f - Synth_DecayCoefficient(0.15f);
     TanksAudio_StartTone(&Voice->Tones[0], 700.0f * Variation, 250.0f * Variation, 0.02f, 1.0f, 0.05f);
     TanksAudio_StartTone(&Voice->Tones[1], 520.0f * Variation, 260.0f * Variation, 0.18f, 0.0f, 0.0f);
 }
@@ -828,11 +763,11 @@ static void TanksAudio_StartRocketLaunch(TanksAudio_VoiceTypeDef *Voice, uint32_
  */
 static void TanksAudio_StartRicochet(TanksAudio_VoiceTypeDef *Voice, uint32_t *Random)
 {
-    const float BaseHz = 2200.0f * TanksAudio_RandomRange(Random, 0.85f, 1.2f);
+    const float BaseHz = 2200.0f * Synth_RandomRange(Random, 0.85f, 1.2f);
 
-    Voice->LengthSamples = TanksAudio_Seconds(0.3f);
+    Voice->LengthSamples = Synth_Seconds(0.3f);
     Voice->Envelope[0] = 1.0f;
-    Voice->Decay[0] = TanksAudio_DecayCoefficient(0.003f);
+    Voice->Decay[0] = Synth_DecayCoefficient(0.003f);
     TanksAudio_StartTone(&Voice->Tones[0], BaseHz, BaseHz * 0.8f, 0.05f, 1.0f, 0.12f);
     TanksAudio_StartTone(&Voice->Tones[1], BaseHz * 1.51f, BaseHz * 1.21f, 0.05f, 0.5f, 0.08f);
     TanksAudio_StartTone(&Voice->Tones[2], BaseHz * 2.37f, BaseHz * 1.9f, 0.05f, 0.3f, 0.05f);
@@ -844,9 +779,9 @@ static void TanksAudio_StartRicochet(TanksAudio_VoiceTypeDef *Voice, uint32_t *R
  */
 static void TanksAudio_StartSpent(TanksAudio_VoiceTypeDef *Voice)
 {
-    Voice->LengthSamples = TanksAudio_Seconds(0.15f);
+    Voice->LengthSamples = Synth_Seconds(0.15f);
     Voice->Envelope[0] = 1.0f;
-    Voice->Decay[0] = TanksAudio_DecayCoefficient(0.035f);
+    Voice->Decay[0] = Synth_DecayCoefficient(0.035f);
     TanksAudio_StartTone(&Voice->Tones[0], 900.0f, 450.0f, 0.02f, 0.3f, 0.03f);
 }
 
@@ -860,24 +795,24 @@ static void TanksAudio_StartSpent(TanksAudio_VoiceTypeDef *Voice)
 static void TanksAudio_StartExplosion(TanksAudio_VoiceTypeDef *Voice, uint32_t *Random, uint8_t Strength)
 {
     const float Size = (Strength >= TA_PLAYER_EXPLOSION_STRENGTH) ? 1.0f : ((float)Strength / (float)TA_PLAYER_EXPLOSION_STRENGTH);
-    const float Variation = TanksAudio_RandomRange(Random, 0.9f, 1.1f);
+    const float Variation = Synth_RandomRange(Random, 0.9f, 1.1f);
 
     Voice->Size = (Size < 0.3f) ? 0.3f : Size;
-    Voice->LengthSamples = TanksAudio_Seconds(0.7f + (1.5f * Voice->Size));
+    Voice->LengthSamples = Synth_Seconds(0.7f + (1.5f * Voice->Size));
     Voice->Envelope[0] = 1.0f;
-    Voice->Decay[0] = TanksAudio_DecayCoefficient(0.004f);
+    Voice->Decay[0] = Synth_DecayCoefficient(0.004f);
     Voice->Envelope[1] = 1.0f;
-    Voice->Decay[1] = TanksAudio_DecayCoefficient(0.2f + (0.6f * Voice->Size));
+    Voice->Decay[1] = Synth_DecayCoefficient(0.2f + (0.6f * Voice->Size));
     Voice->Envelope[2] = 1.0f;
-    Voice->Decay[2] = TanksAudio_DecayCoefficient(0.004f);
+    Voice->Decay[2] = Synth_DecayCoefficient(0.004f);
     Voice->CutoffHz = (1500.0f + (2000.0f * Voice->Size)) * Variation;
     Voice->CutoffTargetHz = 300.0f + (100.0f * Voice->Size);
-    Voice->CutoffGlide = 1.0f - TanksAudio_DecayCoefficient(0.08f + (0.2f * Voice->Size));
+    Voice->CutoffGlide = 1.0f - Synth_DecayCoefficient(0.08f + (0.2f * Voice->Size));
     TanksAudio_StartTone(&Voice->Tones[0], 420.0f * Variation, 220.0f * Variation, 0.05f + (0.05f * Voice->Size), 1.0f, 0.08f + (0.15f * Voice->Size));
 
     if(Voice->Size >= 0.5f)
     {
-        Voice->StrikeSample = TanksAudio_Seconds(TanksAudio_RandomRange(Random, 0.06f, 0.21f));
+        Voice->StrikeSample = Synth_Seconds(Synth_RandomRange(Random, 0.06f, 0.21f));
         Voice->Tones[1].Hz = 700.0f * Variation;
         Voice->Tones[2].Hz = 1730.0f * Variation;
     }
@@ -889,9 +824,9 @@ static void TanksAudio_StartExplosion(TanksAudio_VoiceTypeDef *Voice, uint32_t *
  */
 static void TanksAudio_StartMineDrop(TanksAudio_VoiceTypeDef *Voice)
 {
-    Voice->LengthSamples = TanksAudio_Seconds(0.3f);
+    Voice->LengthSamples = Synth_Seconds(0.3f);
     Voice->Envelope[0] = 1.0f;
-    Voice->Decay[0] = TanksAudio_DecayCoefficient(0.004f);
+    Voice->Decay[0] = Synth_DecayCoefficient(0.004f);
     TanksAudio_StartTone(&Voice->Tones[0], 620.0f, 300.0f, 0.03f, 1.0f, 0.06f);
     TanksAudio_StartTone(&Voice->Tones[1], 3100.0f, 3100.0f, 0.0f, 0.25f, 0.02f);
     TanksAudio_StartTone(&Voice->Tones[2], 4700.0f, 4700.0f, 0.0f, 0.12f, 0.012f);
@@ -903,8 +838,8 @@ static void TanksAudio_StartMineDrop(TanksAudio_VoiceTypeDef *Voice)
  */
 static void TanksAudio_StartMineArmed(TanksAudio_VoiceTypeDef *Voice)
 {
-    Voice->LengthSamples = TanksAudio_Seconds(0.2f);
-    Voice->StrikeSample = TanksAudio_Seconds(0.06f);
+    Voice->LengthSamples = Synth_Seconds(0.2f);
+    Voice->StrikeSample = Synth_Seconds(0.06f);
     TanksAudio_StartTone(&Voice->Tones[0], 1750.0f, 1750.0f, 0.0f, 1.0f, 0.025f);
     TanksAudio_StartTone(&Voice->Tones[1], 2340.0f, 2340.0f, 0.0f, 0.0f, 0.03f);
 }
@@ -915,7 +850,7 @@ static void TanksAudio_StartMineArmed(TanksAudio_VoiceTypeDef *Voice)
  */
 static void TanksAudio_StartMineBeep(TanksAudio_VoiceTypeDef *Voice, float Pitch)
 {
-    Voice->LengthSamples = TanksAudio_Seconds(0.08f);
+    Voice->LengthSamples = Synth_Seconds(0.08f);
     TanksAudio_StartTone(&Voice->Tones[0], 2100.0f * Pitch, 2100.0f * Pitch, 0.0f, 1.0f, 0.02f);
 }
 
@@ -925,9 +860,9 @@ static void TanksAudio_StartMineBeep(TanksAudio_VoiceTypeDef *Voice, float Pitch
  */
 static void TanksAudio_StartMineFizzle(TanksAudio_VoiceTypeDef *Voice)
 {
-    Voice->LengthSamples = TanksAudio_Seconds(0.4f);
+    Voice->LengthSamples = Synth_Seconds(0.4f);
     Voice->Envelope[0] = 1.0f;
-    Voice->Decay[0] = TanksAudio_DecayCoefficient(0.12f);
+    Voice->Decay[0] = Synth_DecayCoefficient(0.12f);
     TanksAudio_StartTone(&Voice->Tones[0], 1200.0f, 350.0f, 0.1f, 0.25f, 0.12f);
 }
 
@@ -1037,19 +972,19 @@ static float TanksAudio_RunRocketLaunch(TanksAudio_VoiceTypeDef *Voice, uint32_t
 
     /* Motor roar: a buzzing saw, roughened by the burn, falling in pitch. */
     Pitch->Hz += Pitch->Glide * (Pitch->TargetHz - Pitch->Hz);
-    Pitch->Phase += Pitch->Hz * TA_SAMPLE_PERIOD;
+    Pitch->Phase += Pitch->Hz * SYNTH_SAMPLE_PERIOD;
     Pitch->Phase -= (Pitch->Phase >= 1.0f) ? 1.0f : 0.0f;
     Voice->Filter[2] += 0.3f * (((2.0f * Pitch->Phase) - 1.0f) - Voice->Filter[2]);
     Roar = Voice->Filter[2] * Motor * (1.0f + (0.5f * Noise));
 
     /* Jet: a resonant band of noise sweeping down as the rocket leaves. */
     Voice->CutoffHz += Voice->CutoffGlide * (Voice->CutoffTargetHz - Voice->CutoffHz);
-    Jet = TanksAudio_BandPass(Voice->Filter, Noise, TA_TWO_PI * Voice->CutoffHz * TA_SAMPLE_PERIOD, 0.25f) * Motor * 0.6f;
+    Jet = Synth_BandPass(&Voice->Band, Noise, Synth_BandPassCoefficient(Voice->CutoffHz), 0.25f) * Motor * 0.6f;
 
     /* Ignition crackle: sparse pops while it lights. */
-    if((0.5f + (0.5f * TanksAudio_Noise(Random))) < ((150.0f * TA_SAMPLE_PERIOD) * Voice->Envelope[0] * 4.0f))
+    if((0.5f + (0.5f * Synth_Noise(Random))) < ((150.0f * SYNTH_SAMPLE_PERIOD) * Voice->Envelope[0] * 4.0f))
     {
-        Voice->Pop = TanksAudio_RandomRange(Random, 0.4f, 1.0f);
+        Voice->Pop = Synth_RandomRange(Random, 0.4f, 1.0f);
     }
 
     Crackle = Voice->Pop * Noise;
@@ -1098,9 +1033,9 @@ static float TanksAudio_RunExplosion(TanksAudio_VoiceTypeDef *Voice, uint32_t *R
     Voice->Envelope[2] *= Voice->Decay[2];
 
     /* Debris crackle, thinning out as the blast fades. */
-    if((0.5f + (0.5f * TanksAudio_Noise(Random))) < (((40.0f + (250.0f * Voice->Size)) * TA_SAMPLE_PERIOD) * Voice->Envelope[1]))
+    if((0.5f + (0.5f * Synth_Noise(Random))) < (((40.0f + (250.0f * Voice->Size)) * SYNTH_SAMPLE_PERIOD) * Voice->Envelope[1]))
     {
-        Voice->Pop = TanksAudio_RandomRange(Random, 0.4f, 1.0f);
+        Voice->Pop = Synth_RandomRange(Random, 0.4f, 1.0f);
     }
 
     Voice->Filter[2] += 0.3f * ((Voice->Pop * Noise) - Voice->Filter[2]);
@@ -1152,7 +1087,7 @@ static float TanksAudio_RunMineFizzle(TanksAudio_VoiceTypeDef *Voice, float Nois
 
 static float TanksAudio_RunVoice(TanksAudio_VoiceTypeDef *Voice, uint32_t *Random)
 {
-    const float Noise = TanksAudio_Noise(Random);
+    const float Noise = Synth_Noise(Random);
     float Output = 0.0f;
 
     switch(Voice->Sound)
@@ -1207,32 +1142,13 @@ static float TanksAudio_RunVoice(TanksAudio_VoiceTypeDef *Voice, uint32_t *Rando
     return Output * Voice->Level;
 }
 
-static void TanksAudio_GenerateEffects(Audio_SampleTypeDef *Samples, uint32_t SampleCount, void *Context)
+static void TanksAudio_RenderEffects(float *Samples, uint32_t SampleCount, void *Context)
 {
     TanksAudio_EffectsStateTypeDef *State = &TanksAudio_Effects;
-    const float HighPassCoefficient = TanksAudio_LowPassCoefficient(TA_OUTPUT_HIGH_PASS_HZ);
-    uint32_t Head = __atomic_load_n(&TanksAudio_EventHead, __ATOMIC_ACQUIRE);
-    uint32_t Tail = __atomic_load_n(&TanksAudio_EventTail, __ATOMIC_RELAXED);
+    const float HighPassCoefficient = Synth_LowPassCoefficient(TA_OUTPUT_HIGH_PASS_HZ);
     bool AnyActive = false;
 
     (void)Context;
-
-    /* A restart drops every sound, and any events posted before it. */
-    if(State->RestartCount != TanksAudio_EffectsControl.RestartCount)
-    {
-        *State = (TanksAudio_EffectsStateTypeDef){ 0 };
-        State->RestartCount = TanksAudio_EffectsControl.RestartCount;
-        State->Random = 0x1B873593U ^ (State->RestartCount * 0x85EBCA6BU);
-        Tail = TanksAudio_EffectsControl.FirstEvent;
-    }
-
-    while(Tail != Head)
-    {
-        TanksAudio_StartVoice(State, &TanksAudio_Events[Tail % TA_EVENT_QUEUE_SIZE]);
-        Tail++;
-    }
-
-    __atomic_store_n(&TanksAudio_EventTail, Tail, __ATOMIC_RELEASE);
 
     for(uint32_t Voice = 0U; Voice < TA_EFFECT_VOICES; Voice++)
     {
@@ -1254,9 +1170,43 @@ static void TanksAudio_GenerateEffects(Audio_SampleTypeDef *Samples, uint32_t Sa
             }
         }
 
-        Samples[Index] = TanksAudio_ToSample(TanksAudio_HighPass(State->HighPass, Output, HighPassCoefficient));
+        Samples[Index] = TanksAudio_HighPass(State->HighPass, Output, HighPassCoefficient) * TA_MASTER_LEVEL;
     }
 }
+
+/* A restart drops every sound. */
+static void TanksAudio_StartEffects(void *Context)
+{
+    TanksAudio_EffectsStateTypeDef *State = &TanksAudio_Effects;
+    const uint32_t RestartCount = State->RestartCount + 1U;
+
+    (void)Context;
+
+    *State = (TanksAudio_EffectsStateTypeDef){ 0 };
+    State->RestartCount = RestartCount;
+    State->Random = 0x1B873593U ^ (State->RestartCount * 0x85EBCA6BU);
+}
+
+/* Each message is one sound to start. */
+static void TanksAudio_ReceiveEffect(const void *Message, uint32_t Size, void *Context)
+{
+    TanksAudio_EventTypeDef Event;
+
+    (void)Context;
+
+    if(Size == sizeof(Event))
+    {
+        (void)memcpy(&Event, Message, sizeof(Event));
+        TanksAudio_StartVoice(&TanksAudio_Effects, &Event);
+    }
+}
+
+static const Mixer_SynthTypeDef TanksAudio_EffectsSynth =
+{
+    .Start = TanksAudio_StartEffects,
+    .Receive = TanksAudio_ReceiveEffect,
+    .Render = TanksAudio_RenderEffects
+};
 
 /* -------------------------------------------------------------------------- */
 /* Jingles                                                                    */
@@ -1283,19 +1233,19 @@ static void TanksAudio_StartJingleNote(TanksAudio_JingleStateTypeDef *State, con
     *Voice = (TanksAudio_JingleVoiceTypeDef){ 0 };
     Voice->Active = true;
     Voice->Note = Note;
-    Voice->HoldSamples = TanksAudio_Seconds(Note->Seconds);
+    Voice->HoldSamples = Synth_Seconds(Note->Seconds);
     Voice->FilterEnvelope = 1.0f;
     Voice->Amplitude = (Note->Instrument == TA_INSTRUMENT_BRASS) ? 0.0f : 1.0f;
     Voice->ModulationIndex = 2.0f;
     Voice->ToneHz = 420.0f;
     Voice->ToneAmplitude = (Note->Instrument == TA_INSTRUMENT_SNARE) ? 1.0f : 0.0f;
-    Voice->Phase[1] = TanksAudio_RandomRange(&State->Random, 0.0f, 1.0f);
+    Voice->Phase[1] = Synth_RandomRange(&State->Random, 0.0f, 1.0f);
 }
 
 /* Brass: two slightly detuned saws through a filter that opens on each note. */
 static float TanksAudio_RunBrass(TanksAudio_JingleVoiceTypeDef *Voice, float ReleaseDecay, float FilterDecay, float VibratoStep)
 {
-    const float Seconds = (float)Voice->Sample * TA_SAMPLE_PERIOD;
+    const float Seconds = (float)Voice->Sample * SYNTH_SAMPLE_PERIOD;
     float Hz = Voice->Note->Hz;
     float Step;
     float Coefficient;
@@ -1308,7 +1258,7 @@ static float TanksAudio_RunBrass(TanksAudio_JingleVoiceTypeDef *Voice, float Rel
         Hz *= 1.0f + (TA_BRASS_VIBRATO_DEPTH * TanksAudio_Sine(Voice->VibratoPhase));
     }
 
-    Step = Hz * TA_SAMPLE_PERIOD;
+    Step = Hz * SYNTH_SAMPLE_PERIOD;
     Voice->Phase[0] += Step;
     Voice->Phase[0] -= (Voice->Phase[0] >= 1.0f) ? 1.0f : 0.0f;
     Voice->Phase[1] += Step * TA_BRASS_DETUNE;
@@ -1337,14 +1287,14 @@ static float TanksAudio_RunBrass(TanksAudio_JingleVoiceTypeDef *Voice, float Rel
 /* Snare: a burst of bright noise over a short drum tone. */
 static float TanksAudio_RunSnare(TanksAudio_JingleVoiceTypeDef *Voice, uint32_t *Random, float NoiseDecay, float ToneDecay)
 {
-    const float Noise = TanksAudio_Noise(Random);
+    const float Noise = Synth_Noise(Random);
     float Tone;
 
     Voice->Low[0] += 0.35f * (Noise - Voice->Low[0]);
     Voice->Amplitude *= NoiseDecay;
 
     Voice->ToneHz += 0.002f * (300.0f - Voice->ToneHz);
-    Voice->Phase[0] += Voice->ToneHz * TA_SAMPLE_PERIOD;
+    Voice->Phase[0] += Voice->ToneHz * SYNTH_SAMPLE_PERIOD;
     Voice->Phase[0] -= (Voice->Phase[0] >= 1.0f) ? 1.0f : 0.0f;
     Tone = TanksAudio_Sine(Voice->Phase[0]) * Voice->ToneAmplitude;
     Voice->ToneAmplitude *= ToneDecay;
@@ -1355,7 +1305,7 @@ static float TanksAudio_RunSnare(TanksAudio_JingleVoiceTypeDef *Voice, uint32_t 
 /* Bell: a bright FM chime. */
 static float TanksAudio_RunBell(TanksAudio_JingleVoiceTypeDef *Voice, float BellDecay, float IndexDecay)
 {
-    const float Step = Voice->Note->Hz * TA_SAMPLE_PERIOD;
+    const float Step = Voice->Note->Hz * SYNTH_SAMPLE_PERIOD;
     float Output;
 
     Voice->Phase[0] += Step;
@@ -1363,36 +1313,26 @@ static float TanksAudio_RunBell(TanksAudio_JingleVoiceTypeDef *Voice, float Bell
     Voice->Phase[1] += Step * 3.5f;
     Voice->Phase[1] -= floorf(Voice->Phase[1]);
 
-    Output = TanksAudio_Sine(Voice->Phase[0] + ((Voice->ModulationIndex / TA_TWO_PI) * TanksAudio_Sine(Voice->Phase[1]))) * Voice->Amplitude;
+    Output = TanksAudio_Sine(Voice->Phase[0] + ((Voice->ModulationIndex / SYNTH_TWO_PI) * TanksAudio_Sine(Voice->Phase[1]))) * Voice->Amplitude;
     Voice->Amplitude *= BellDecay;
     Voice->ModulationIndex *= IndexDecay;
 
     return Output;
 }
 
-static void TanksAudio_GenerateJingle(Audio_SampleTypeDef *Samples, uint32_t SampleCount, void *Context)
+static void TanksAudio_RenderJingle(float *Samples, uint32_t SampleCount, void *Context)
 {
     TanksAudio_JingleStateTypeDef *State = &TanksAudio_JinglePlayer;
-    const float HighPassCoefficient = TanksAudio_LowPassCoefficient(TA_OUTPUT_HIGH_PASS_HZ);
-    const float ReleaseDecay = TanksAudio_DecayCoefficient(TA_BRASS_RELEASE_SECONDS);
-    const float FilterDecay = TanksAudio_DecayCoefficient(TA_BRASS_FILTER_SECONDS);
-    const float VibratoStep = TA_BRASS_VIBRATO_HZ * TA_SAMPLE_PERIOD;
-    const float SnareNoiseDecay = TanksAudio_DecayCoefficient(0.07f);
-    const float SnareToneDecay = TanksAudio_DecayCoefficient(0.04f);
-    const float BellDecay = TanksAudio_DecayCoefficient(0.5f);
-    const float BellIndexDecay = TanksAudio_DecayCoefficient(0.15f);
+    const float HighPassCoefficient = Synth_LowPassCoefficient(TA_OUTPUT_HIGH_PASS_HZ);
+    const float ReleaseDecay = Synth_DecayCoefficient(TA_BRASS_RELEASE_SECONDS);
+    const float FilterDecay = Synth_DecayCoefficient(TA_BRASS_FILTER_SECONDS);
+    const float VibratoStep = TA_BRASS_VIBRATO_HZ * SYNTH_SAMPLE_PERIOD;
+    const float SnareNoiseDecay = Synth_DecayCoefficient(0.07f);
+    const float SnareToneDecay = Synth_DecayCoefficient(0.04f);
+    const float BellDecay = Synth_DecayCoefficient(0.5f);
+    const float BellIndexDecay = Synth_DecayCoefficient(0.15f);
 
     (void)Context;
-
-    if(State->RestartCount != TanksAudio_JingleControl.RestartCount)
-    {
-        const uint32_t Jingle = TanksAudio_JingleControl.Jingle;
-
-        *State = (TanksAudio_JingleStateTypeDef){ 0 };
-        State->RestartCount = TanksAudio_JingleControl.RestartCount;
-        State->Random = 0x27D4EB2FU ^ (State->RestartCount * 0x165667B1U);
-        State->Jingle = (Jingle < (uint32_t)TANKS_AUDIO_JINGLE_NONE) ? &TanksAudio_Jingles[Jingle] : NULL;
-    }
 
     for(uint32_t Index = 0U; Index < SampleCount; Index++)
     {
@@ -1400,7 +1340,7 @@ static void TanksAudio_GenerateJingle(Audio_SampleTypeDef *Samples, uint32_t Sam
 
         /* Start every note that is due. */
         while((State->Jingle != NULL) && (State->NextNote < State->Jingle->NoteCount) &&
-              (State->Sample >= TanksAudio_Seconds(State->Jingle->Notes[State->NextNote].StartSeconds)))
+              (State->Sample >= Synth_Seconds(State->Jingle->Notes[State->NextNote].StartSeconds)))
         {
             TanksAudio_StartJingleNote(State, &State->Jingle->Notes[State->NextNote]);
             State->NextNote++;
@@ -1437,9 +1377,49 @@ static void TanksAudio_GenerateJingle(Audio_SampleTypeDef *Samples, uint32_t Sam
         }
 
         State->Sample++;
-        Samples[Index] = TanksAudio_ToSample(TanksAudio_HighPass(State->HighPass, Output * TA_JINGLE_LEVEL, HighPassCoefficient));
+        Samples[Index] = TanksAudio_HighPass(State->HighPass, Output * TA_JINGLE_LEVEL, HighPassCoefficient) * TA_MASTER_LEVEL;
     }
 }
+
+/* Start a jingle from the beginning; TANKS_AUDIO_JINGLE_NONE silences it. */
+static void TanksAudio_RestartJingle(uint32_t Jingle)
+{
+    TanksAudio_JingleStateTypeDef *State = &TanksAudio_JinglePlayer;
+    const uint32_t RestartCount = State->RestartCount + 1U;
+
+    *State = (TanksAudio_JingleStateTypeDef){ 0 };
+    State->RestartCount = RestartCount;
+    State->Random = 0x27D4EB2FU ^ (State->RestartCount * 0x165667B1U);
+    State->Jingle = (Jingle < (uint32_t)TANKS_AUDIO_JINGLE_NONE) ? &TanksAudio_Jingles[Jingle] : NULL;
+}
+
+static void TanksAudio_StartJingle(void *Context)
+{
+    (void)Context;
+
+    TanksAudio_RestartJingle((uint32_t)TANKS_AUDIO_JINGLE_NONE);
+}
+
+/* Each message is the jingle to play. */
+static void TanksAudio_ReceiveJingle(const void *Message, uint32_t Size, void *Context)
+{
+    uint32_t Jingle;
+
+    (void)Context;
+
+    if(Size == sizeof(Jingle))
+    {
+        (void)memcpy(&Jingle, Message, sizeof(Jingle));
+        TanksAudio_RestartJingle(Jingle);
+    }
+}
+
+static const Mixer_SynthTypeDef TanksAudio_JingleSynth =
+{
+    .Start = TanksAudio_StartJingle,
+    .Receive = TanksAudio_ReceiveJingle,
+    .Render = TanksAudio_RenderJingle
+};
 
 /* -------------------------------------------------------------------------- */
 /* Game-loop helpers                                                          */
@@ -1488,21 +1468,13 @@ static float TanksAudio_TankActivity(const Tanks_TankTypeDef *Tank, uint32_t Slo
 
 static void TanksAudio_Post(TanksAudio_SoundTypeDef Sound, float Level, float Pitch, uint8_t Strength)
 {
-    const uint32_t Head = __atomic_load_n(&TanksAudio_EventHead, __ATOMIC_RELAXED);
-    const uint32_t Tail = __atomic_load_n(&TanksAudio_EventTail, __ATOMIC_ACQUIRE);
-    TanksAudio_EventTypeDef *Event;
+    TanksAudio_EventTypeDef Event = { 0 };
 
-    if((Head - Tail) >= TA_EVENT_QUEUE_SIZE)
-    {
-        return;
-    }
-
-    Event = &TanksAudio_Events[Head % TA_EVENT_QUEUE_SIZE];
-    Event->Sound = Sound;
-    Event->Level = Level;
-    Event->Pitch = Pitch;
-    Event->Strength = Strength;
-    __atomic_store_n(&TanksAudio_EventHead, Head + 1U, __ATOMIC_RELEASE);
+    Event.Sound = Sound;
+    Event.Level = Level;
+    Event.Pitch = Pitch;
+    Event.Strength = Strength;
+    (void)Mixer_Send(TA_EFFECTS_CHANNEL, &Event, sizeof(Event));
 }
 
 /* Armed mines beep now and then, quickly when the player is close. */
@@ -1561,19 +1533,9 @@ static void TanksAudio_UpdateMines(uint32_t DeltaMilliseconds, bool Playing)
 
 void TanksAudio_Start(void)
 {
-    TanksAudio_AmbienceControl.PlayerActivity = 0.0f;
-    TanksAudio_AmbienceControl.EnemyActivity = 0.0f;
-    TanksAudio_AmbienceControl.EnemyLevel = 0.0f;
-    TanksAudio_AmbienceControl.RocketLevel = 0.0f;
-    TanksAudio_AmbienceControl.RestartCount++;
-    TanksAudio_EffectsControl.FirstEvent = __atomic_load_n(&TanksAudio_EventHead, __ATOMIC_RELAXED);
-    TanksAudio_EffectsControl.RestartCount++;
-    TanksAudio_JingleControl.Jingle = (uint32_t)TANKS_AUDIO_JINGLE_NONE;
-    TanksAudio_JingleControl.RestartCount++;
-
-    (void)Mixer_PlayGenerator(TA_AMBIENCE_CHANNEL, TanksAudio_GenerateAmbience, NULL);
-    (void)Mixer_PlayGenerator(TA_EFFECTS_CHANNEL, TanksAudio_GenerateEffects, NULL);
-    (void)Mixer_PlayGenerator(TA_JINGLE_CHANNEL, TanksAudio_GenerateJingle, NULL);
+    (void)Mixer_PlaySynth(TA_AMBIENCE_CHANNEL, &TanksAudio_AmbienceSynth, NULL);
+    (void)Mixer_PlaySynth(TA_EFFECTS_CHANNEL, &TanksAudio_EffectsSynth, NULL);
+    (void)Mixer_PlaySynth(TA_JINGLE_CHANNEL, &TanksAudio_JingleSynth, NULL);
 }
 
 void TanksAudio_Stop(void)
@@ -1590,6 +1552,7 @@ void TanksAudio_Update(uint32_t DeltaMilliseconds)
     float EnemySum = 0.0f;
     float EnemyWeight = 0.0f;
     float RocketLevel = 0.0f;
+    TanksAudio_AmbienceMessageTypeDef Message;
 
     /* Without elapsed time there is no speed to measure; keep the last values. */
     if(DeltaMilliseconds == 0U)
@@ -1635,10 +1598,11 @@ void TanksAudio_Update(uint32_t DeltaMilliseconds)
         }
     }
 
-    TanksAudio_AmbienceControl.PlayerActivity = PlayerActivity;
-    TanksAudio_AmbienceControl.EnemyActivity = (EnemyWeight > 0.0f) ? (EnemySum / EnemyWeight) : 0.0f;
-    TanksAudio_AmbienceControl.EnemyLevel = (EnemySum > 1.0f) ? 1.0f : EnemySum;
-    TanksAudio_AmbienceControl.RocketLevel = (RocketLevel > 1.0f) ? 1.0f : RocketLevel;
+    Message.PlayerActivity = PlayerActivity;
+    Message.EnemyActivity = (EnemyWeight > 0.0f) ? (EnemySum / EnemyWeight) : 0.0f;
+    Message.EnemyLevel = (EnemySum > 1.0f) ? 1.0f : EnemySum;
+    Message.RocketLevel = (RocketLevel > 1.0f) ? 1.0f : RocketLevel;
+    (void)Mixer_Send(TA_AMBIENCE_CHANNEL, &Message, sizeof(Message));
 
     TanksAudio_UpdateMines(DeltaMilliseconds, Playing);
 }
@@ -1691,6 +1655,7 @@ void TanksAudio_PlayMineFizzle(Tanks_VectorTypeDef Position)
 
 void TanksAudio_PlayJingle(TanksAudio_JingleTypeDef Jingle)
 {
-    TanksAudio_JingleControl.Jingle = (uint32_t)Jingle;
-    TanksAudio_JingleControl.RestartCount++;
+    const uint32_t Message = (uint32_t)Jingle;
+
+    (void)Mixer_Send(TA_JINGLE_CHANNEL, &Message, sizeof(Message));
 }

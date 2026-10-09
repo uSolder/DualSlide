@@ -6,7 +6,8 @@
  * context (an interrupt on embedded targets, an audio thread on Windows). The
  * two never share channel state: the main loop posts requests through a
  * single-producer, single-consumer queue, and the audio context applies them
- * before mixing each buffer.
+ * before mixing each buffer. Synth messages travel through the same queue, so
+ * they arrive in order with the requests around them.
  */
 
 #include "mixer.h"
@@ -14,13 +15,14 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 /* -------------------------------------------------------------------------- */
 /* Private configuration                                                      */
 /* -------------------------------------------------------------------------- */
 
-/* Request queue capacity; must be a power of two. */
-#define MIXER_QUEUE_SIZE                    (32U)
+/* Request queue capacity; must be a power of two. Synth messages share it. */
+#define MIXER_QUEUE_SIZE                    (64U)
 #define MIXER_QUEUE_MASK                    (MIXER_QUEUE_SIZE - 1U)
 
 /* Samples mixed per pass; longer audio buffers are mixed in several passes. */
@@ -28,6 +30,9 @@
 
 #define MIXER_SAMPLE_MINIMUM                (-32768)
 #define MIXER_SAMPLE_MAXIMUM                (32767)
+
+/* Synth output of 1.0 maps to this sample value. */
+#define MIXER_SYNTH_FULL_SCALE              (32767.0f)
 
 /* -------------------------------------------------------------------------- */
 /* Private types                                                              */
@@ -37,6 +42,8 @@ typedef enum
 {
     MIXER_REQUEST_PLAY_SOUND = 0,
     MIXER_REQUEST_PLAY_GENERATOR,
+    MIXER_REQUEST_PLAY_SYNTH,
+    MIXER_REQUEST_SEND,
     MIXER_REQUEST_STOP,
     MIXER_REQUEST_STOP_APPLICATION_CHANNELS,
     MIXER_REQUEST_SET_VOLUME
@@ -44,13 +51,25 @@ typedef enum
 
 typedef struct
 {
-    Mixer_RequestKindTypeDef Kind;
+    uint8_t Kind;
     Mixer_ChannelTypeDef Channel;
-    Mixer_SoundTypeDef Sound;
-    bool Loop;
-    Mixer_GeneratorTypeDef Generator;
-    void *Context;
-    uint16_t Volume;
+    uint8_t MessageSize;
+    union
+    {
+        struct
+        {
+            Mixer_SoundTypeDef Sound;
+            bool Loop;
+        } Clip;
+        struct
+        {
+            Mixer_GeneratorTypeDef Generator;
+            const Mixer_SynthTypeDef *Synth;
+            void *Context;
+        } Source;
+        uint16_t Volume;
+        uint8_t Message[MIXER_MESSAGE_SIZE];
+    } Data;
 } Mixer_RequestTypeDef;
 
 /**
@@ -62,6 +81,7 @@ typedef struct
     uint32_t Position;
     bool Loop;
     Mixer_GeneratorTypeDef Generator;
+    const Mixer_SynthTypeDef *Synth;
     void *Context;
     uint16_t Volume;
     bool Active;
@@ -83,6 +103,7 @@ static bool Mixer_ChannelPlaying[MIXER_CHANNEL_COUNT];
 
 static int32_t Mixer_MixBuffer[MIXER_BLOCK_SAMPLES];
 static Audio_SampleTypeDef Mixer_GeneratorBuffer[MIXER_BLOCK_SAMPLES];
+static float Mixer_SynthBuffer[MIXER_BLOCK_SAMPLES];
 
 /* -------------------------------------------------------------------------- */
 /* Private functions                                                          */
@@ -114,6 +135,7 @@ static void Mixer_StopChannel(Mixer_ChannelStateTypeDef *State)
 {
     State->Active = false;
     State->Generator = NULL;
+    State->Synth = NULL;
     State->Sound.Samples = NULL;
     State->Sound.SampleCount = 0U;
     State->Position = 0U;
@@ -134,16 +156,35 @@ static void Mixer_ApplyRequests(void)
         {
             case MIXER_REQUEST_PLAY_SOUND:
                 Mixer_StopChannel(State);
-                State->Sound = Request->Sound;
-                State->Loop = Request->Loop;
+                State->Sound = Request->Data.Clip.Sound;
+                State->Loop = Request->Data.Clip.Loop;
                 State->Active = true;
                 break;
 
             case MIXER_REQUEST_PLAY_GENERATOR:
                 Mixer_StopChannel(State);
-                State->Generator = Request->Generator;
-                State->Context = Request->Context;
+                State->Generator = Request->Data.Source.Generator;
+                State->Context = Request->Data.Source.Context;
                 State->Active = true;
+                break;
+
+            case MIXER_REQUEST_PLAY_SYNTH:
+                Mixer_StopChannel(State);
+                State->Synth = Request->Data.Source.Synth;
+                State->Context = Request->Data.Source.Context;
+                State->Active = true;
+
+                if(State->Synth->Start != NULL)
+                {
+                    State->Synth->Start(State->Context);
+                }
+                break;
+
+            case MIXER_REQUEST_SEND:
+                if((State->Synth != NULL) && (State->Synth->Receive != NULL))
+                {
+                    State->Synth->Receive(Request->Data.Message, Request->MessageSize, State->Context);
+                }
                 break;
 
             case MIXER_REQUEST_STOP:
@@ -158,7 +199,7 @@ static void Mixer_ApplyRequests(void)
                 break;
 
             case MIXER_REQUEST_SET_VOLUME:
-                State->Volume = Request->Volume;
+                State->Volume = Request->Data.Volume;
                 break;
 
             default:
@@ -206,6 +247,30 @@ static void Mixer_MixGenerator(Mixer_ChannelStateTypeDef *State, uint32_t Sample
     }
 }
 
+/* Add SampleCount synth samples to the mix, clipped to full scale. */
+static void Mixer_MixSynth(Mixer_ChannelStateTypeDef *State, uint32_t SampleCount)
+{
+    State->Synth->Render(Mixer_SynthBuffer, SampleCount, State->Context);
+
+    for(uint32_t Index = 0U; Index < SampleCount; Index++)
+    {
+        float Value = Mixer_SynthBuffer[Index];
+        int32_t Sample;
+
+        if(Value > 1.0f)
+        {
+            Value = 1.0f;
+        }
+        else if(Value < -1.0f)
+        {
+            Value = -1.0f;
+        }
+
+        Sample = (int32_t)(Audio_SampleTypeDef)(Value * MIXER_SYNTH_FULL_SCALE);
+        Mixer_MixBuffer[Index] += (Sample * (int32_t)State->Volume) / (int32_t)MIXER_VOLUME_MAX;
+    }
+}
+
 /* -------------------------------------------------------------------------- */
 /* Public functions                                                           */
 /* -------------------------------------------------------------------------- */
@@ -246,8 +311,8 @@ bool Mixer_PlaySound(Mixer_ChannelTypeDef Channel, const Mixer_SoundTypeDef *Sou
 
     Request.Kind = MIXER_REQUEST_PLAY_SOUND;
     Request.Channel = Channel;
-    Request.Sound = *Sound;
-    Request.Loop = Loop;
+    Request.Data.Clip.Sound = *Sound;
+    Request.Data.Clip.Loop = Loop;
 
     return Mixer_PostRequest(&Request);
 }
@@ -263,8 +328,42 @@ bool Mixer_PlayGenerator(Mixer_ChannelTypeDef Channel, Mixer_GeneratorTypeDef Ge
 
     Request.Kind = MIXER_REQUEST_PLAY_GENERATOR;
     Request.Channel = Channel;
-    Request.Generator = Generator;
-    Request.Context = Context;
+    Request.Data.Source.Generator = Generator;
+    Request.Data.Source.Context = Context;
+
+    return Mixer_PostRequest(&Request);
+}
+
+bool Mixer_PlaySynth(Mixer_ChannelTypeDef Channel, const Mixer_SynthTypeDef *Synth, void *Context)
+{
+    Mixer_RequestTypeDef Request = { 0 };
+
+    if(!Mixer_IsChannelValid(Channel) || (Synth == NULL) || (Synth->Render == NULL))
+    {
+        return false;
+    }
+
+    Request.Kind = MIXER_REQUEST_PLAY_SYNTH;
+    Request.Channel = Channel;
+    Request.Data.Source.Synth = Synth;
+    Request.Data.Source.Context = Context;
+
+    return Mixer_PostRequest(&Request);
+}
+
+bool Mixer_Send(Mixer_ChannelTypeDef Channel, const void *Message, uint32_t Size)
+{
+    Mixer_RequestTypeDef Request = { 0 };
+
+    if(!Mixer_IsChannelValid(Channel) || (Message == NULL) || (Size == 0U) || (Size > MIXER_MESSAGE_SIZE))
+    {
+        return false;
+    }
+
+    Request.Kind = MIXER_REQUEST_SEND;
+    Request.Channel = Channel;
+    Request.MessageSize = (uint8_t)Size;
+    (void)memcpy(Request.Data.Message, Message, Size);
 
     return Mixer_PostRequest(&Request);
 }
@@ -304,7 +403,7 @@ bool Mixer_SetVolume(Mixer_ChannelTypeDef Channel, uint16_t Volume)
 
     Request.Kind = MIXER_REQUEST_SET_VOLUME;
     Request.Channel = Channel;
-    Request.Volume = (Volume > MIXER_VOLUME_MAX) ? (uint16_t)MIXER_VOLUME_MAX : Volume;
+    Request.Data.Volume = (Volume > MIXER_VOLUME_MAX) ? (uint16_t)MIXER_VOLUME_MAX : Volume;
 
     return Mixer_PostRequest(&Request);
 }
@@ -357,7 +456,11 @@ void Mixer_FillAudioBuffer(Audio_SampleTypeDef *Samples, uint32_t FrameCount, vo
                 continue;
             }
 
-            if(State->Generator != NULL)
+            if(State->Synth != NULL)
+            {
+                Mixer_MixSynth(State, BlockSamples);
+            }
+            else if(State->Generator != NULL)
             {
                 Mixer_MixGenerator(State, BlockSamples);
             }

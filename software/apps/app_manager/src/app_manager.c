@@ -10,6 +10,7 @@
 #include "music.h"
 #include "pong.h"
 #include "settings_app.h"
+#include "sound.h"
 #include "tanks.h"
 #include "template_game.h"
 #include "window_washer.h"
@@ -168,6 +169,7 @@ bool AppManager_StartApplication(uint16_t ApplicationIndex)
 
     /* Each application starts with silent mixer channels. */
     Music_Stop();
+    Sound_StopAll();
     (void)Mixer_StopApplicationChannels();
 
     if(!Application->Init())
@@ -374,6 +376,7 @@ void AppManager_OpenLauncher(void)
     }
 
     Music_Stop();
+    Sound_StopAll();
     (void)Mixer_StopApplicationChannels();
 
     AppManager_State = APP_MANAGER_STATE_LAUNCHER;
@@ -417,6 +420,7 @@ void AppManager_Shutdown(void)
     }
 
     Music_Stop();
+    Sound_StopAll();
     (void)Mixer_StopApplicationChannels();
 
     AppManager_State = APP_MANAGER_STATE_LAUNCHER;

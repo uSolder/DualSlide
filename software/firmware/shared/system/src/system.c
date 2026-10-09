@@ -7,6 +7,10 @@
  *
  * Holding both buttons is the system gesture: after a moment it returns to
  * the menu, and held on in the menu it powers the device off.
+ *
+ * The system also owns the brightness and volume settings. Volume follows a
+ * square law, so equal steps on a slider sound like equal changes in
+ * loudness; the display backend applies its own brightness curve.
  */
 
 #include "system.h"
@@ -16,7 +20,7 @@
 #include "display.h"
 #include "input.h"
 #include "mixer.h"
-#include "settings.h"
+#include "sound.h"
 #include "storage.h"
 #include "system_tasks.h"
 #include "system_time.h"
@@ -47,6 +51,11 @@ _Static_assert(USB_AUDIO_OUTPUT_CHANNEL_COUNT == 1U, "USB audio output must be m
 #define SYSTEM_INPUT_BATTERY_DEPLETED        ((Input_NumberTypeDef)7U)
 #define SYSTEM_BUTTON_HOLD_TIME_MILLISECONDS (1500ULL)
 
+#define SYSTEM_SETTINGS_STORAGE_KEY                (0x53455453UL) /* "SETS" */
+#define SYSTEM_SETTINGS_SAVE_DATA_VERSION          (1U)
+#define SYSTEM_SETTINGS_DEFAULT_BRIGHTNESS_PERCENT (100U)
+#define SYSTEM_SETTINGS_DEFAULT_VOLUME_PERCENT     (100U)
+
 /* -------------------------------------------------------------------------- */
 /* Private types                                                              */
 /* -------------------------------------------------------------------------- */
@@ -57,11 +66,25 @@ typedef struct
     uint64_t NextActionTimeMilliseconds;
 } System_ButtonChordStateTypeDef;
 
+typedef struct
+{
+    uint32_t Version;
+    uint8_t BrightnessPercent;
+    uint8_t VolumePercent;
+    uint8_t Reserved[2];
+} System_SettingsSaveDataTypeDef;
+
 /* -------------------------------------------------------------------------- */
 /* Private data                                                               */
 /* -------------------------------------------------------------------------- */
 
 static System_ButtonChordStateTypeDef System_ButtonChordState;
+
+static uint8_t System_BrightnessPercent = SYSTEM_SETTINGS_DEFAULT_BRIGHTNESS_PERCENT;
+static uint8_t System_VolumePercent = SYSTEM_SETTINGS_DEFAULT_VOLUME_PERCENT;
+static uint8_t System_SavedBrightnessPercent;
+static uint8_t System_SavedVolumePercent;
+static bool System_SettingsStored;
 
 /* -------------------------------------------------------------------------- */
 /* Private functions                                                          */
@@ -136,6 +159,50 @@ static bool System_IsBatteryDepleted(void)
     return BatteryDepleted != 0;
 }
 
+static uint8_t System_ClampBrightness(uint8_t Percent)
+{
+    if(Percent < SYSTEM_BRIGHTNESS_MINIMUM_PERCENT)
+    {
+        return SYSTEM_BRIGHTNESS_MINIMUM_PERCENT;
+    }
+
+    return (Percent > SYSTEM_PERCENT_MAXIMUM) ? SYSTEM_PERCENT_MAXIMUM : Percent;
+}
+
+static void System_ApplyVolume(void)
+{
+    const uint32_t Percent = System_VolumePercent;
+
+    (void)Mixer_SetMasterVolume((uint16_t)(((Percent * Percent * MIXER_VOLUME_MAX) + 5000U) / 10000U));
+}
+
+/**
+ * @brief Load the saved settings, or the defaults, and apply them.
+ *
+ * Called once storage, the display, and the mixer are initialised.
+ */
+static void System_InitSettings(void)
+{
+    System_SettingsSaveDataTypeDef SaveData;
+
+    System_BrightnessPercent = SYSTEM_SETTINGS_DEFAULT_BRIGHTNESS_PERCENT;
+    System_VolumePercent = SYSTEM_SETTINGS_DEFAULT_VOLUME_PERCENT;
+    System_SettingsStored = false;
+
+    if((Storage_Read(SYSTEM_SETTINGS_STORAGE_KEY, &SaveData, sizeof(SaveData), NULL) == STORAGE_RESULT_OK) &&
+       (SaveData.Version == SYSTEM_SETTINGS_SAVE_DATA_VERSION))
+    {
+        System_BrightnessPercent = System_ClampBrightness(SaveData.BrightnessPercent);
+        System_VolumePercent = (SaveData.VolumePercent > SYSTEM_PERCENT_MAXIMUM) ? SYSTEM_PERCENT_MAXIMUM : SaveData.VolumePercent;
+        System_SavedBrightnessPercent = System_BrightnessPercent;
+        System_SavedVolumePercent = System_VolumePercent;
+        System_SettingsStored = true;
+    }
+
+    (void)Display_SetBrightness(System_BrightnessPercent);
+    System_ApplyVolume();
+}
+
 /* -------------------------------------------------------------------------- */
 /* Public functions                                                           */
 /* -------------------------------------------------------------------------- */
@@ -174,9 +241,10 @@ int System_Run(void)
 
     /* Before the application manager, so applications can play sounds from Init. */
     Mixer_Init();
+    Sound_Init();
 
     /* Saved brightness and volume, once the display and mixer are ready. */
-    Settings_Init();
+    System_InitSettings();
 
     if(!AppManager_Init())
     {
@@ -255,4 +323,68 @@ int System_Run(void)
     AppManager_Shutdown();
 
     return 0;
+}
+
+uint8_t System_GetBrightness(void)
+{
+    return System_BrightnessPercent;
+}
+
+void System_SetBrightness(uint8_t Percent)
+{
+    System_BrightnessPercent = System_ClampBrightness(Percent);
+    (void)Display_SetBrightness(System_BrightnessPercent);
+}
+
+uint8_t System_GetVolume(void)
+{
+    return System_VolumePercent;
+}
+
+void System_SetVolume(uint8_t Percent)
+{
+    System_VolumePercent = (Percent > SYSTEM_PERCENT_MAXIMUM) ? SYSTEM_PERCENT_MAXIMUM : Percent;
+    System_ApplyVolume();
+}
+
+bool System_SaveSettings(void)
+{
+    const System_SettingsSaveDataTypeDef SaveData =
+    {
+        .Version = SYSTEM_SETTINGS_SAVE_DATA_VERSION,
+        .BrightnessPercent = System_BrightnessPercent,
+        .VolumePercent = System_VolumePercent,
+        .Reserved = { 0U, 0U }
+    };
+
+    /* Flash wears with every write, so unchanged settings are not rewritten. */
+    if(System_SettingsStored &&
+       (System_SavedBrightnessPercent == System_BrightnessPercent) &&
+       (System_SavedVolumePercent == System_VolumePercent))
+    {
+        return true;
+    }
+
+    if(Storage_Write(SYSTEM_SETTINGS_STORAGE_KEY, &SaveData, sizeof(SaveData)) != STORAGE_RESULT_OK)
+    {
+        return false;
+    }
+
+    System_SavedBrightnessPercent = System_BrightnessPercent;
+    System_SavedVolumePercent = System_VolumePercent;
+    System_SettingsStored = true;
+
+    return true;
+}
+
+bool System_EraseSavedData(void)
+{
+    if(Storage_EraseAll() != STORAGE_RESULT_OK)
+    {
+        return false;
+    }
+
+    System_SettingsStored = false;
+
+    return System_SaveSettings();
 }

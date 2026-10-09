@@ -13,10 +13,14 @@
  * 3. Add drawing helpers above TemplateGame_Render().
  * 4. Replace the two-colour palette as artwork is introduced.
  * 5. Keep splash-screen rendering inside the launcher-provided bounds.
- * 6. Play sound effects through mixer.h and music through music.h, using
- *    mixer channels 0 to MIXER_APPLICATION_CHANNEL_COUNT - 1. Both stop
- *    automatically when the game exits. Songs and instruments are generated
- *    with the scripts in tools/music_converter.
+ * 6. Make sound effects with sound.h: describe each sound as a small table
+ *    of layers and play it with Sound_Play(). pong_audio.c is a complete
+ *    example. A sound the engine can't make can use a patch (see sound.h),
+ *    or a synth of its own on mixer channels 0 to
+ *    MIXER_APPLICATION_CHANNEL_COUNT - 1 (mixer.h, synth.h). Music plays
+ *    through music.h; songs and instruments are generated with the scripts
+ *    in tools/music_converter. Everything stops automatically when the game
+ *    exits.
  */
 
 #include "template_game.h"
