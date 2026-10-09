@@ -634,7 +634,7 @@ static const char *Tanks_RoundName(uint16_t Wave)
 {
     static const char *const Names[10] = {
         "TRAINING ROOMS", "TWIN WINGS", "FOUR CHAMBERS", "NESTED HALLS", "SPLIT HOUSE",
-        "FIVE ROOMS", "CENTRAL COURT", "OFFSET SUITES", "ROCKET LAB", "FINAL COMPLEX"
+        "FIVE ROOMS", "CENTRAL COURT", "OFFSET SUITES", "ROCKET LAB", "COMMAND BUNKER"
     };
     return Names[(Wave - 1U) % 10U];
 }
@@ -663,7 +663,7 @@ static void Tanks_DrawRoundOverlay(Render_TargetTypeDef *Target)
     Tanks_FillRect(Target, 230, 140, 340U, 150U, TANKS_COLOUR_PANEL);
     Tanks_FillRect(Target, 230, 140, 340U, 5U, TANKS_COLOUR_PLAYER_LIGHT);
     Tanks_DrawCenteredText(Target, &OpenSans36, Round, 400, 160, TANKS_COLOUR_TEXT);
-    Tanks_DrawCenteredText(Target, &OpenSans20, Tanks_RoundName(Tanks_Game.Wave), 400, 212, TANKS_COLOUR_PLAYER_LIGHT);
+    Tanks_DrawCenteredText(Target, &OpenSans20, Tanks_RoundName(Tanks_Game.ArenaRound), 400, 212, TANKS_COLOUR_PLAYER_LIGHT);
     Tanks_DrawCenteredText(Target, &OpenSans20, Enemies, 400, 244, TANKS_COLOUR_MUTED);
 }
 
@@ -705,6 +705,59 @@ void Tanks_DrawGame(Render_TargetTypeDef *Target)
     }
 }
 
+/*
+ * Service medal: a red, white and blue ribbon above a medal stamped with the
+ * best round. Rounds 1-3 earn bronze, 4-6 silver and 7 onwards gold; with no
+ * record yet the medal is plain grey and blank.
+ */
+static void Tanks_DrawMedal(Render_TargetTypeDef *Target, int16_t CentreX, int16_t CentreY, int16_t Radius, uint16_t Wave, const Font *NumberFont, int16_t NumberRise)
+{
+    const int16_t RibbonWidth = (int16_t)((Radius * 9) / 8);
+    const int16_t RibbonHeight = Radius;
+    const int16_t RibbonX = (int16_t)(CentreX - (RibbonWidth / 2));
+    const int16_t RibbonY = (int16_t)(CentreY - Radius - RibbonHeight + 6);
+    const int16_t Stripe = (int16_t)(RibbonWidth / 3);
+    uint8_t Rim = TANKS_COLOUR_SMOKE_DARK;
+    uint8_t Face = TANKS_COLOUR_SMOKE;
+    uint8_t Shine = TANKS_COLOUR_SMOKE;
+    char Number[8];
+
+    if(Wave >= 7U)
+    {
+        Rim = TANKS_COLOUR_MINE;
+        Face = TANKS_COLOUR_FIRE_LIGHT;
+        Shine = TANKS_COLOUR_BULLET;
+    }
+    else if(Wave >= 4U)
+    {
+        Rim = TANKS_COLOUR_SMOKE;
+        Face = TANKS_COLOUR_MUTED;
+        Shine = TANKS_COLOUR_WHITE;
+    }
+    else if(Wave >= 1U)
+    {
+        Rim = TANKS_COLOUR_WALL_SHADOW;
+        Face = TANKS_COLOUR_WALL;
+        Shine = TANKS_COLOUR_WALL_LIGHT;
+    }
+
+    Tanks_FillRect(Target, (int16_t)(RibbonX + 2), (int16_t)(RibbonY + 3), (uint16_t)RibbonWidth, (uint16_t)RibbonHeight, TANKS_COLOUR_SHADOW);
+    Tanks_FillRect(Target, RibbonX, RibbonY, (uint16_t)Stripe, (uint16_t)RibbonHeight, TANKS_COLOUR_PLAYER);
+    Tanks_FillRect(Target, (int16_t)(RibbonX + Stripe), RibbonY, (uint16_t)Stripe, (uint16_t)RibbonHeight, TANKS_COLOUR_WHITE);
+    Tanks_FillRect(Target, (int16_t)(RibbonX + (2 * Stripe)), RibbonY, (uint16_t)(RibbonWidth - (2 * Stripe)), (uint16_t)RibbonHeight, TANKS_COLOUR_HQ);
+
+    Tanks_DrawDisc(Target, (int16_t)(CentreX + 2), (int16_t)(CentreY + 3), Radius, TANKS_COLOUR_SHADOW);
+    Tanks_DrawDisc(Target, CentreX, CentreY, Radius, Rim);
+    Tanks_DrawDisc(Target, CentreX, CentreY, (int16_t)(Radius - 3), Face);
+    Tanks_DrawDisc(Target, (int16_t)(CentreX - (Radius / 3)), (int16_t)(CentreY - (Radius / 3)), (int16_t)(Radius / 5), Shine);
+
+    if(Wave > 0U)
+    {
+        Tanks_FormatUnsigned(Number, sizeof(Number), Wave);
+        Tanks_DrawCenteredText(Target, NumberFont, Number, CentreX, (int16_t)(CentreY - NumberRise), TANKS_COLOUR_PANEL);
+    }
+}
+
 void Tanks_DrawTitle(Render_TargetTypeDef *Target)
 {
     Tanks_TankTypeDef Preview = Tanks_Game.Player;
@@ -717,27 +770,74 @@ void Tanks_DrawTitle(Render_TargetTypeDef *Target)
     Preview.FlashMilliseconds = 0U;
     Preview.Heading = 900;
     Preview.TurretHeading = Preview.Heading;
-    Tanks_DrawTank(Target, &Preview, 400, 240, 900, 900, true);
+    Tanks_DrawTank(Target, &Preview, 320, 240, 900, 900, true);
+
+    /* The record: best round on the medal, the holder's callsign beneath. */
+    Tanks_DrawMedal(Target, 480, 240, 28, Tanks_Game.Record.BestWave, &OpenSans28, 20);
+    Tanks_DrawCenteredText(Target, &OpenSans20, Tanks_Game.Record.BestCallsign, 480, 276, TANKS_COLOUR_TEXT);
     if(((Tanks_Game.ScreenMilliseconds / 450U) & 1U) == 0U)
     {
         Tanks_DrawCenteredText(Target, &OpenSans20, "PRESS PRIMARY TO START", 400, 316, TANKS_COLOUR_TEXT);
     }
 }
 
-void Tanks_DrawEndScreen(Render_TargetTypeDef *Target, bool Victory)
+/*
+ * New record: the medal earned and three callsign boxes. Set letters are
+ * white, the letter being chosen is yellow in a blinking frame, and letters
+ * still to come show a dash.
+ */
+static void Tanks_DrawRecordEntry(Render_TargetTypeDef *Target)
+{
+    const Tanks_RecordTypeDef *Record = &Tanks_Game.Record;
+    const uint16_t Wave = (uint16_t)Tanks_Clamp32(Tanks_Game.Wave, 0, 99);
+    const bool FrameLit = ((Tanks_Game.ScreenMilliseconds / 400U) & 1U) == 0U;
+    Tanks_FillRect(Target, 220, 110, 360U, 230U, TANKS_COLOUR_PANEL);
+    Tanks_FillRect(Target, 220, 110, 360U, 6U, TANKS_COLOUR_WARNING);
+    Tanks_DrawCenteredText(Target, &OpenSans28, "NEW RECORD", 400, 120, TANKS_COLOUR_WARNING);
+    Tanks_DrawMedal(Target, 400, 196, 22, Wave, &OpenSans20, 15);
+    for(uint8_t Index = 0U; Index < TANKS_CALLSIGN_LENGTH; Index++)
+    {
+        const int16_t BoxX = (int16_t)(322 + ((int16_t)Index * 56));
+        const bool Current = Index == Record->Index;
+        char Letter[2];
+        uint8_t Colour;
+        if(Current && FrameLit)
+        {
+            Tanks_FillRect(Target, (int16_t)(BoxX - 3), 229, 50U, 56U, TANKS_COLOUR_WARNING);
+        }
+        Tanks_FillRect(Target, BoxX, 232, 44U, 50U, TANKS_COLOUR_SHADOW);
+        if(Current)
+        {
+            Letter[0] = (char)('A' + Record->Letter);
+            Colour = TANKS_COLOUR_WARNING;
+        }
+        else
+        {
+            Letter[0] = Record->Callsign[Index];
+            Colour = Index < Record->Index ? TANKS_COLOUR_TEXT : TANKS_COLOUR_MUTED;
+        }
+        Letter[1] = '\0';
+        Tanks_DrawCenteredText(Target, &OpenSans36, Letter, (int16_t)(BoxX + 22), 231, Colour);
+    }
+    Tanks_DrawCenteredText(Target, &OpenSans16, "SLIDE: LETTER   PRIMARY: OK", 400, 300, TANKS_COLOUR_MUTED);
+}
+
+void Tanks_DrawEndScreen(Render_TargetTypeDef *Target)
 {
     char Number[8];
     char Round[16];
     Tanks_DrawGame(Target);
-    Tanks_FillRect(Target, 220, 130, 360U, 210U, TANKS_COLOUR_PANEL);
-    Tanks_FillRect(Target, 220, 130, 360U, 6U, Victory ? TANKS_COLOUR_SUCCESS : TANKS_COLOUR_DANGER);
-    Tanks_DrawCenteredText(Target, &OpenSans36, Victory ? "VICTORY" : "GAME OVER", 400, 152, Victory ? TANKS_COLOUR_SUCCESS : TANKS_COLOUR_DANGER);
-    if(!Victory)
+    if(Tanks_Game.Record.Entering)
     {
-        Tanks_FormatUnsigned(Number, sizeof(Number), Tanks_Game.Wave);
-        Tanks_JoinText(Round, sizeof(Round), "ROUND ", Number);
-        Tanks_DrawCenteredText(Target, &OpenSans20, Round, 400, 210, TANKS_COLOUR_MUTED);
+        Tanks_DrawRecordEntry(Target);
+        return;
     }
+    Tanks_FillRect(Target, 220, 130, 360U, 210U, TANKS_COLOUR_PANEL);
+    Tanks_FillRect(Target, 220, 130, 360U, 6U, TANKS_COLOUR_DANGER);
+    Tanks_DrawCenteredText(Target, &OpenSans36, "GAME OVER", 400, 152, TANKS_COLOUR_DANGER);
+    Tanks_FormatUnsigned(Number, sizeof(Number), Tanks_Game.Wave);
+    Tanks_JoinText(Round, sizeof(Round), "ROUND ", Number);
+    Tanks_DrawCenteredText(Target, &OpenSans20, Round, 400, 210, TANKS_COLOUR_MUTED);
     Tanks_DrawCenteredText(Target, &OpenSans20, "PRIMARY: PLAY AGAIN", 400, 262, TANKS_COLOUR_WARNING);
     Tanks_DrawCenteredText(Target, &OpenSans20, "SECONDARY: MENU", 400, 294, TANKS_COLOUR_MUTED);
 }

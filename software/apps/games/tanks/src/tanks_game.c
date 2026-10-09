@@ -25,6 +25,7 @@
 #define RICOCHET_ENEMY_SPEED  (275)
 #define ROCKET_BLAST_RADIUS   (54U)
 #define CAMPAIGN_WAVES        (10U)
+#define ENDLESS_HARDEST_FROM  (7U)
 #define BASIC_FIRE_CONE       (80)
 #define HUNTER_SPEED_PERCENT  (120)
 #define HUNTER_CLOSE_RANGE    (170)
@@ -394,7 +395,7 @@ static void Tanks_BuildArena(uint16_t Wave)
 
 void Tanks_ResetBattlefield(void)
 {
-    const uint16_t Wave = Tanks_Game.Wave == 0U ? 1U : Tanks_Game.Wave;
+    const uint16_t Wave = Tanks_Game.ArenaRound == 0U ? 1U : Tanks_Game.ArenaRound;
     for(uint8_t Y = 0U; Y < TANKS_MAP_HEIGHT; Y++)
     {
         for(uint8_t X = 0U; X < TANKS_MAP_WIDTH; X++)
@@ -462,9 +463,29 @@ void Tanks_StartNewGame(void)
 
 void Tanks_StartWave(uint16_t Wave)
 {
-    static const uint8_t EnemyCounts[10] = { 1U, 2U, 2U, 3U, 3U, 4U, 4U, 5U, 5U, 5U };
-    const uint8_t EnemyCount = EnemyCounts[(Wave - 1U) % 10U];
+    static const uint8_t EnemyCounts[CAMPAIGN_WAVES] = { 1U, 2U, 2U, 3U, 3U, 4U, 4U, 5U, 5U, 5U };
+    uint8_t EnemyCount;
     Tanks_Game.Wave = Wave;
+    /*
+     * Rounds 1-10 are the campaign. Beyond it the game is endless: a random
+     * arena (never the same one twice running) holding the enemies of a
+     * random round from 7 to 10, so it never gets harder than those.
+     */
+    if(Wave <= CAMPAIGN_WAVES)
+    {
+        Tanks_Game.ArenaRound = (uint8_t)Wave;
+        Tanks_Game.EnemyRound = (uint8_t)Wave;
+    }
+    else
+    {
+        const uint8_t PreviousArena = Tanks_Game.ArenaRound;
+        do
+        {
+            Tanks_Game.ArenaRound = (uint8_t)(1U + (Tanks_Random() % CAMPAIGN_WAVES));
+        } while(Tanks_Game.ArenaRound == PreviousArena);
+        Tanks_Game.EnemyRound = (uint8_t)(ENDLESS_HARDEST_FROM + (Tanks_Random() % (CAMPAIGN_WAVES - ENDLESS_HARDEST_FROM + 1U)));
+    }
+    EnemyCount = EnemyCounts[Tanks_Game.EnemyRound - 1U];
     Tanks_Game.HqMaximumHull = 0U;
     Tanks_Game.HqHull = 0U;
     Tanks_Game.WaveSpawnRemaining = 0U;
@@ -524,7 +545,7 @@ static Tanks_VectorTypeDef Tanks_SpawnPosition(uint8_t Slot)
 static Tanks_EnemyTypeDef Tanks_ChooseEnemyType(uint8_t Ordinal, uint8_t Total)
 {
     (void)Total;
-    switch(Tanks_Game.Wave)
+    switch(Tanks_Game.EnemyRound)
     {
         case 1U:
             return TANKS_ENEMY_DUMB;
@@ -747,6 +768,7 @@ static void Tanks_DestroyPlayer(bool LeaveWreck, const char *Message)
         Tanks_Game.Screen = TANKS_SCREEN_GAME_OVER;
         Tanks_Game.ScreenMilliseconds = 0U;
         TanksAudio_PlayJingle(TANKS_AUDIO_JINGLE_GAME_OVER);
+        Tanks_CheckRecord();
     }
     else
     {
@@ -847,7 +869,7 @@ static bool Tanks_Fire(Tanks_TankTypeDef *Tank, uint8_t Owner)
     }
     else
     {
-        Tank->ReloadMilliseconds = Tanks_Game.Wave == 1U ? 3000U : 1650U;
+        Tank->ReloadMilliseconds = Tanks_Game.EnemyRound == 1U ? 3000U : 1650U;
     }
 
     for(uint8_t Index = 0U; Index < 3U; Index++)
@@ -1397,7 +1419,7 @@ static void Tanks_UpdateEnemy(Tanks_TankTypeDef *Enemy, uint8_t EnemyIndex, uint
         }
     }
 
-    if(Tanks_Game.Wave == 1U && Speed > 300)
+    if(Tanks_Game.EnemyRound == 1U && Speed > 300)
     {
         Speed = 300;
     }
@@ -1915,7 +1937,7 @@ void Tanks_Simulate(uint32_t DeltaMilliseconds)
     {
         Tanks_Game.RoundComplete = true;
         Tanks_Game.RoundClearMilliseconds = ROUND_CLEAR_MS;
-        TanksAudio_PlayJingle(TANKS_AUDIO_JINGLE_ARENA_CLEAR);
+        TanksAudio_PlayJingle(Tanks_Game.Wave == CAMPAIGN_WAVES ? TANKS_AUDIO_JINGLE_VICTORY : TANKS_AUDIO_JINGLE_ARENA_CLEAR);
     }
 
     if(Tanks_Game.RoundComplete)
@@ -1923,13 +1945,6 @@ void Tanks_Simulate(uint32_t DeltaMilliseconds)
         if(Tanks_Game.RoundClearMilliseconds > DeltaMilliseconds)
         {
             Tanks_Game.RoundClearMilliseconds -= (uint16_t)DeltaMilliseconds;
-        }
-        else if(Tanks_Game.Wave >= CAMPAIGN_WAVES)
-        {
-            Tanks_Game.RoundClearMilliseconds = 0U;
-            Tanks_Game.Screen = TANKS_SCREEN_VICTORY;
-            Tanks_Game.ScreenMilliseconds = 0U;
-            TanksAudio_PlayJingle(TANKS_AUDIO_JINGLE_VICTORY);
         }
         else
         {

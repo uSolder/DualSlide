@@ -156,8 +156,13 @@ static void Tanks_HandleScreenInput(void)
         }
         return;
     }
-    if((Tanks_Game.Screen == TANKS_SCREEN_GAME_OVER) || (Tanks_Game.Screen == TANKS_SCREEN_VICTORY))
+    if(Tanks_Game.Screen == TANKS_SCREEN_GAME_OVER)
     {
+        if(Tanks_Game.Record.Entering)
+        {
+            Tanks_UpdateRecordEntry();
+            return;
+        }
         if(Tanks_Game.Input.Primary.Released)
         {
             Tanks_StartNewGame();
@@ -197,6 +202,7 @@ bool Tanks_Init(void)
     Tanks_Game.Paused = false;
     Tanks_Game.Initialized = true;
     Tanks_SplashElapsedMilliseconds = 0U;
+    Tanks_LoadRecord();
     Tanks_ResetBattlefield();
     TanksAudio_Start();
     return true;
@@ -297,11 +303,7 @@ void Tanks_Render(void)
     }
     else if(Tanks_Game.Screen == TANKS_SCREEN_GAME_OVER)
     {
-        Tanks_DrawEndScreen(&Target, false);
-    }
-    else if(Tanks_Game.Screen == TANKS_SCREEN_VICTORY)
-    {
-        Tanks_DrawEndScreen(&Target, true);
+        Tanks_DrawEndScreen(&Target);
     }
     else
     {
@@ -328,6 +330,7 @@ void Tanks_Resume(void)
 void Tanks_Shutdown(void)
 {
     TanksAudio_Stop();
+    Tanks_SaveUnclaimedRecord();
     Tanks_Game.Initialized = false;
     Tanks_Game.Paused = false;
     Tanks_Game.PendingDeltaMilliseconds = 0U;

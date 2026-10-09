@@ -114,8 +114,7 @@ typedef enum
     TANKS_SCREEN_TITLE,
     TANKS_SCREEN_WAVE_INTRO,
     TANKS_SCREEN_PLAYING,
-    TANKS_SCREEN_GAME_OVER,
-    TANKS_SCREEN_VICTORY
+    TANKS_SCREEN_GAME_OVER
 } Tanks_ScreenTypeDef;
 
 typedef enum
@@ -264,6 +263,23 @@ typedef struct
     bool Active;
 } Tanks_FloatingTextTypeDef;
 
+#define TANKS_CALLSIGN_LENGTH (3U)
+
+/**
+ * @brief Best round reached, its callsign, and callsign entry for a new record.
+ */
+typedef struct
+{
+    uint16_t BestWave;
+    char BestCallsign[TANKS_CALLSIGN_LENGTH + 1U];
+    bool Entering;
+    uint8_t Index;
+    uint8_t Letter;
+    bool IgnorePrimary;
+    bool IgnoreSecondary;
+    char Callsign[TANKS_CALLSIGN_LENGTH + 1U];
+} Tanks_RecordTypeDef;
+
 typedef struct
 {
     Tanks_ScreenTypeDef Screen;
@@ -276,6 +292,7 @@ typedef struct
     Tanks_TrackMarkTypeDef TrackMarks[TANKS_MAX_TRACK_MARKS];
     Tanks_WreckTypeDef Wrecks[TANKS_MAX_WRECKS];
     Tanks_FloatingTextTypeDef FloatingText[TANKS_MAX_FLOATING_TEXT];
+    Tanks_RecordTypeDef Record;
     uint8_t Tiles[TANKS_MAP_HEIGHT][TANKS_MAP_WIDTH];
     uint8_t TileDamage[TANKS_MAP_HEIGHT][TANKS_MAP_WIDTH];
     uint32_t RandomState;
@@ -285,6 +302,8 @@ typedef struct
     uint32_t Score;
     uint32_t HighScore;
     uint16_t Wave;
+    uint8_t ArenaRound;
+    uint8_t EnemyRound;
     uint16_t WaveSpawnRemaining;
     uint16_t SpawnTimerMilliseconds;
     uint16_t HqHull;
@@ -333,9 +352,13 @@ void Tanks_DamageHq(uint8_t Damage);
 uint8_t Tanks_CountActiveEnemies(void);
 uint8_t Tanks_CountAwakeEnemies(void);
 
+void Tanks_LoadRecord(void);
+void Tanks_CheckRecord(void);
+void Tanks_UpdateRecordEntry(void);
+void Tanks_SaveUnclaimedRecord(void);
 void Tanks_DrawGame(Render_TargetTypeDef *Target);
 void Tanks_DrawTitle(Render_TargetTypeDef *Target);
-void Tanks_DrawEndScreen(Render_TargetTypeDef *Target, bool Victory);
+void Tanks_DrawEndScreen(Render_TargetTypeDef *Target);
 void Tanks_DrawSplashArtwork(Render_TargetTypeDef *Target, uint32_t ElapsedMilliseconds);
 void Tanks_WorldToScreen(Tanks_VectorTypeDef World, int16_t *ScreenX, int16_t *ScreenY);
 
