@@ -81,6 +81,8 @@
 #define HOTEL_ENTRANCE_TOP_Y                   ((int16_t)RENDER_HEIGHT - 218)
 #define HOTEL_ENTRANCE_WIDTH                   (276U)
 #define HOTEL_ENTRANCE_HEIGHT                  (184U)
+#define HOTEL_SIGN_RISE                        (20)
+#define HOTEL_TOP_Y                            ((int16_t)(HOTEL_ENTRANCE_TOP_Y - HOTEL_SIGN_RISE))
 #define HOTEL_CANOPY_WIDTH                     (340U)
 #define HOTEL_CANOPY_HEIGHT                    (18U)
 #define CLEAN_WINDOW_TRACKED_COUNT             (64U)
@@ -108,7 +110,22 @@
 #define SCORE_POINTS_PER_DIRT          (10U)
 
 #define WINDOW_WASHER_HIGH_SCORE_STORAGE_KEY (0x57574853UL) /* "WWHS" */
-#define WINDOW_WASHER_SAVE_DATA_VERSION       (1U)
+#define WINDOW_WASHER_SAVE_DATA_VERSION       (2U)
+
+/* High-score initials: the right slider picks a letter, primary sets it, secondary steps back. */
+#define INITIALS_LENGTH                       (3U)
+#define INITIALS_LETTER_COUNT                 (26U)
+#define INITIALS_EMPTY                        ('-')
+#define INITIALS_SLIDER_HYSTERESIS            (600)
+#define INITIALS_BLINK_MILLISECONDS           (400U)
+#define INITIALS_PANEL_WIDTH                  (360U)
+#define INITIALS_PANEL_HEIGHT                 (220U)
+#define INITIALS_PANEL_X                      ((int16_t)(((int16_t)RENDER_WIDTH - (int16_t)INITIALS_PANEL_WIDTH) / 2))
+#define INITIALS_PANEL_Y                      (110)
+#define INITIALS_BOX_WIDTH                    (52U)
+#define INITIALS_BOX_HEIGHT                   (60U)
+#define INITIALS_BOX_GAP                      (16)
+#define INITIALS_BOX_Y                        (210)
 
 /* -------------------------------------------------------------------------- */
 /* Private types                                                              */
@@ -215,7 +232,19 @@ typedef struct
 {
     uint32_t Version;
     uint32_t HighScore;
+    char Initials[INITIALS_LENGTH + 1U];
 } WindowWasher_SaveDataTypeDef;
+
+typedef struct
+{
+    bool Active;
+    uint8_t Index;
+    uint8_t Selected;
+    bool PrimaryDown;
+    bool SecondaryDown;
+    uint32_t BlinkMilliseconds;
+    char Letters[INITIALS_LENGTH + 1U];
+} WindowWasher_InitialsEntryTypeDef;
 
 /* -------------------------------------------------------------------------- */
 /* Private data                                                               */
@@ -302,38 +331,67 @@ static uint32_t WindowWasher_HighScore;
 static uint8_t WindowWasher_ScorePulseFrames;
 static bool WindowWasher_Initialized;
 static bool WindowWasher_Paused;
-static bool WindowWasher_HighScoreDirty;
+static char WindowWasher_HighScoreInitials[INITIALS_LENGTH + 1U];
+static WindowWasher_InitialsEntryTypeDef WindowWasher_InitialsEntry;
 
 /* -------------------------------------------------------------------------- */
 /* Private functions                                                          */
 /* -------------------------------------------------------------------------- */
 
+static void WindowWasher_CopyInitials(char *Destination, const char *Source)
+{
+    for(uint8_t Index = 0U; Index < INITIALS_LENGTH; Index++)
+    {
+        Destination[Index] = Source[Index];
+    }
+
+    Destination[INITIALS_LENGTH] = '\0';
+}
+
+static bool WindowWasher_InitialsAreValid(const char *Initials)
+{
+    for(uint8_t Index = 0U; Index < INITIALS_LENGTH; Index++)
+    {
+        if(((Initials[Index] < 'A') || (Initials[Index] > 'Z')) && (Initials[Index] != INITIALS_EMPTY))
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 static void WindowWasher_SaveHighScore(void)
 {
-    const WindowWasher_SaveDataTypeDef SaveData =
+    WindowWasher_SaveDataTypeDef SaveData =
     {
         .Version = WINDOW_WASHER_SAVE_DATA_VERSION,
         .HighScore = WindowWasher_HighScore
     };
 
-    if(Storage_Write(WINDOW_WASHER_HIGH_SCORE_STORAGE_KEY, &SaveData, sizeof(SaveData)) == STORAGE_RESULT_OK)
-    {
-        WindowWasher_HighScoreDirty = false;
-    }
+    WindowWasher_CopyInitials(SaveData.Initials, WindowWasher_HighScoreInitials);
+    (void)Storage_Write(WINDOW_WASHER_HIGH_SCORE_STORAGE_KEY, &SaveData, sizeof(SaveData));
 }
 
+/*
+ * Load the record holder. With no record (or one saved by an older version),
+ * the score is zero and the initials are "---".
+ */
 static void WindowWasher_LoadHighScore(void)
 {
+    static const char NoInitials[INITIALS_LENGTH + 1U] = "---";
     WindowWasher_SaveDataTypeDef SaveData;
     Storage_ResultTypeDef Result;
 
     WindowWasher_HighScore = 0U;
-    WindowWasher_HighScoreDirty = false;
+    WindowWasher_CopyInitials(WindowWasher_HighScoreInitials, NoInitials);
     Result = Storage_Read(WINDOW_WASHER_HIGH_SCORE_STORAGE_KEY, &SaveData, sizeof(SaveData), NULL);
 
-    if((Result == STORAGE_RESULT_OK) && (SaveData.Version == WINDOW_WASHER_SAVE_DATA_VERSION) && (SaveData.HighScore <= SCORE_MAXIMUM))
+    if((Result == STORAGE_RESULT_OK) && (SaveData.Version == WINDOW_WASHER_SAVE_DATA_VERSION) &&
+       (SaveData.HighScore <= SCORE_MAXIMUM) && WindowWasher_InitialsAreValid(SaveData.Initials))
     {
         WindowWasher_HighScore = SaveData.HighScore;
+        WindowWasher_CopyInitials(WindowWasher_HighScoreInitials, SaveData.Initials);
     }
 }
 
@@ -643,7 +701,7 @@ static int16_t WindowWasher_FigureY(const WindowWasher_PlatformTypeDef *Platform
 }
 
 /**
- * @brief Add points to the current score and update the session high score.
+ * @brief Add points to the current score.
  *
  * @param Game Game state to update.
  * @param Points Number of points to add.
@@ -663,12 +721,6 @@ static void WindowWasher_AddScore(WindowWasher_GameTypeDef *Game, uint32_t Point
     else
     {
         Game->Score += Points;
-    }
-
-    if(Game->Score > WindowWasher_HighScore)
-    {
-        WindowWasher_HighScore = Game->Score;
-        WindowWasher_HighScoreDirty = true;
     }
 
     if(FlashScore)
@@ -699,6 +751,110 @@ static void WindowWasher_ResetGame(WindowWasher_GameTypeDef *Game, WindowWasher_
     Figure->OffscreenMilliseconds = 0U;
 
     WindowWasherAudio_StartRound();
+}
+
+/*
+ * Slider position to a letter, A at the top of its travel and Z at the bottom.
+ * The current letter holds until the slider is clearly past its edges, so it
+ * never flickers between two letters.
+ */
+static uint8_t WindowWasher_SliderToLetter(int32_t Value, uint8_t Current)
+{
+    const int32_t Span = (INPUT_SLIDER_MAXIMUM + 1) / (int32_t)INITIALS_LETTER_COUNT;
+    const int32_t Clamped = (Value < INPUT_SLIDER_MINIMUM) ? INPUT_SLIDER_MINIMUM : ((Value > INPUT_SLIDER_MAXIMUM) ? INPUT_SLIDER_MAXIMUM : Value);
+    int32_t Letter = Clamped / Span;
+
+    if(Letter >= (int32_t)INITIALS_LETTER_COUNT)
+    {
+        Letter = (int32_t)INITIALS_LETTER_COUNT - 1;
+    }
+
+    if((Letter != (int32_t)Current) &&
+       (Clamped > (((int32_t)Current * Span) - INITIALS_SLIDER_HYSTERESIS)) &&
+       (Clamped < ((((int32_t)Current + 1) * Span) + INITIALS_SLIDER_HYSTERESIS)))
+    {
+        return Current;
+    }
+
+    return (uint8_t)Letter;
+}
+
+static bool WindowWasher_ReadButton(Input_NumberTypeDef Button)
+{
+    int32_t Value;
+
+    return Input_GetValue(Button, &Value) && (Value != 0);
+}
+
+/* A new high score: ask for initials before the next round starts. */
+static void WindowWasher_StartInitialsEntry(void)
+{
+    static const char NoInitials[INITIALS_LENGTH + 1U] = "---";
+    WindowWasher_InitialsEntryTypeDef *Entry = &WindowWasher_InitialsEntry;
+    int32_t Value;
+
+    Entry->Active = true;
+    Entry->Index = 0U;
+    Entry->Selected = 0U;
+    Entry->BlinkMilliseconds = 0U;
+    WindowWasher_CopyInitials(Entry->Letters, NoInitials);
+
+    if(Input_GetValue(INPUT_RIGHT_SLIDER_NUMBER, &Value))
+    {
+        Entry->Selected = WindowWasher_SliderToLetter(Value, 0U);
+    }
+
+    /* A button already held when the entry appears must be released first. */
+    Entry->PrimaryDown = WindowWasher_ReadButton(INPUT_PRIMARY_BUTTON_NUMBER);
+    Entry->SecondaryDown = WindowWasher_ReadButton(INPUT_SECONDARY_BUTTON_NUMBER);
+}
+
+/* Record the new high score under the entered initials, then start the next round. */
+static void WindowWasher_FinishInitialsEntry(void)
+{
+    WindowWasher_HighScore = WindowWasher_Game.Score;
+    WindowWasher_CopyInitials(WindowWasher_HighScoreInitials, WindowWasher_InitialsEntry.Letters);
+    WindowWasher_SaveHighScore();
+    WindowWasher_InitialsEntry.Active = false;
+    WindowWasher_PendingDeltaTimeMilliseconds = 0U;
+    WindowWasher_ResetGame(&WindowWasher_Game, &WindowWasher_Figure);
+}
+
+static void WindowWasher_UpdateInitialsEntry(uint32_t DeltaTimeMilliseconds)
+{
+    WindowWasher_InitialsEntryTypeDef *Entry = &WindowWasher_InitialsEntry;
+    const bool Primary = WindowWasher_ReadButton(INPUT_PRIMARY_BUTTON_NUMBER);
+    const bool Secondary = WindowWasher_ReadButton(INPUT_SECONDARY_BUTTON_NUMBER);
+    int32_t Value;
+
+    Entry->BlinkMilliseconds += DeltaTimeMilliseconds;
+
+    if(Input_GetValue(INPUT_RIGHT_SLIDER_NUMBER, &Value))
+    {
+        Entry->Selected = WindowWasher_SliderToLetter(Value, Entry->Selected);
+    }
+
+    if(Primary && !Entry->PrimaryDown)
+    {
+        Entry->Letters[Entry->Index] = (char)('A' + Entry->Selected);
+        Entry->Index++;
+        Entry->BlinkMilliseconds = 0U;
+
+        if(Entry->Index >= INITIALS_LENGTH)
+        {
+            WindowWasher_FinishInitialsEntry();
+            return;
+        }
+    }
+    else if(Secondary && !Entry->SecondaryDown && (Entry->Index > 0U))
+    {
+        Entry->Index--;
+        Entry->Letters[Entry->Index] = INITIALS_EMPTY;
+        Entry->BlinkMilliseconds = 0U;
+    }
+
+    Entry->PrimaryDown = Primary;
+    Entry->SecondaryDown = Secondary;
 }
 
 static bool WindowWasher_FigureHitsBalcony(const WindowWasher_GameTypeDef *Game, const WindowWasher_PlatformTypeDef *Platform, const WindowWasher_FigureTypeDef *Figure)
@@ -871,7 +1027,14 @@ static void WindowWasher_UpdateGame(WindowWasher_GameTypeDef *Game, WindowWasher
 
             if(Figure->OffscreenMilliseconds >= FALL_RESTART_DELAY_MILLISECONDS)
             {
-                WindowWasher_ResetGame(Game, Figure);
+                if(Game->Score > WindowWasher_HighScore)
+                {
+                    WindowWasher_StartInitialsEntry();
+                }
+                else
+                {
+                    WindowWasher_ResetGame(Game, Figure);
+                }
             }
         }
 
@@ -901,10 +1064,6 @@ static void WindowWasher_UpdateGame(WindowWasher_GameTypeDef *Game, WindowWasher
     {
         Game->Crashed = true;
         WindowWasherAudio_PlayCrash((float)abs(Figure->VelocityX) / (float)CART_SOUND_FULL_SPEED);
-        if(WindowWasher_HighScoreDirty)
-        {
-            WindowWasher_SaveHighScore();
-        }
         Figure->PositionY = (int32_t)WindowWasher_FigureY(Platform, Figure) * FIGURE_FIXED_SCALE;
         Figure->VelocityY = FALL_INITIAL_VELOCITY_FIXED_PER_SECOND;
         Figure->OffscreenMilliseconds = 0U;
@@ -1357,15 +1516,18 @@ static void WindowWasher_DrawBuilding(Render_TargetTypeDef *Target, const Window
     }
 }
 
+static uint16_t WindowWasher_MeasureTextWidth(const Font *FontAsset, const char *Text);
+
 static void WindowWasher_DrawHotelEntrance(Render_TargetTypeDef *Target, const WindowWasher_GameTypeDef *Game)
 {
     /*
      * Stop drawing the ground-floor facade once it has moved completely below
-     * the display. This check must happen before narrowing BuildingScroll to
-     * int16_t, otherwise a long play session can wrap the coordinates and make
-     * the hotel reappear with invalid rectangle dimensions.
+     * the display, including the sign that rises above the entrance. This
+     * check must happen before narrowing BuildingScroll to int16_t, otherwise
+     * a long play session can wrap the coordinates and make the hotel reappear
+     * with invalid rectangle dimensions.
      */
-    if(Game->BuildingScroll >= ((int32_t)RENDER_HEIGHT - HOTEL_ENTRANCE_TOP_Y))
+    if(Game->BuildingScroll >= ((int32_t)RENDER_HEIGHT - HOTEL_TOP_Y))
     {
         return;
     }
@@ -1476,17 +1638,17 @@ static void WindowWasher_DrawHotelEntrance(Render_TargetTypeDef *Target, const W
     };
     const Render_RectTypeDef Sign =
     {
-        (int16_t)(((int16_t)RENDER_WIDTH / 2) - 82),
-        (int16_t)(EntranceTopY - 12),
-        164U,
-        30U
+        (int16_t)(((int16_t)RENDER_WIDTH / 2) - 92),
+        (int16_t)(EntranceTopY - HOTEL_SIGN_RISE),
+        184U,
+        38U
     };
     const Render_RectTypeDef SignInset =
     {
-        (int16_t)(((int16_t)RENDER_WIDTH / 2) - 72),
-        (int16_t)(EntranceTopY - 6),
-        144U,
-        18U
+        (int16_t)(((int16_t)RENDER_WIDTH / 2) - 82),
+        (int16_t)(EntranceTopY - 14),
+        164U,
+        26U
     };
     const Render_RectTypeDef LeftLamp =
     {
@@ -1579,6 +1741,24 @@ static void WindowWasher_DrawHotelEntrance(Render_TargetTypeDef *Target, const W
 
     Render_FillRect(Target, &Sign, COLOUR_TRACK_STEEL);
     Render_FillRect(Target, &SignInset, COLOUR_WINDOW_WARM_LIGHT);
+
+    /* The hotel is named after the high-score holder: "ABC's Hotel", drawn twice a pixel apart for bold. */
+    {
+        static const char Suffix[] = "'s Hotel";
+        char Name[INITIALS_LENGTH + sizeof(Suffix)];
+        int16_t NameX;
+
+        WindowWasher_CopyInitials(Name, WindowWasher_HighScoreInitials);
+
+        for(uint8_t Index = 0U; Index < sizeof(Suffix); Index++)
+        {
+            Name[INITIALS_LENGTH + Index] = Suffix[Index];
+        }
+
+        NameX = (int16_t)(((int16_t)RENDER_WIDTH - (int16_t)WindowWasher_MeasureTextWidth(&OpenSans20, Name) - 1) / 2);
+        Render_DrawText(Target, &OpenSans20, Name, NameX, (int16_t)(SignInset.Y - 2), COLOUR_SCORE_SHADOW);
+        Render_DrawText(Target, &OpenSans20, Name, (int16_t)(NameX + 1), (int16_t)(SignInset.Y - 2), COLOUR_SCORE_SHADOW);
+    }
     Render_FillRect(Target, &LeftLamp, COLOUR_WINDOW_WARM_LIGHT);
     Render_FillRect(Target, &RightLamp, COLOUR_WINDOW_WARM_LIGHT);
 
@@ -2040,7 +2220,7 @@ static void WindowWasher_DrawScore(Render_TargetTypeDef *Target, const WindowWas
         HighScoreIndex++;
     }
 
-    WindowWasher_FormatScore(WindowWasher_HighScore, &HighScoreText[HighScoreIndex], sizeof(HighScoreText) - HighScoreIndex);
+    WindowWasher_FormatScore((Game->Score > WindowWasher_HighScore) ? Game->Score : WindowWasher_HighScore, &HighScoreText[HighScoreIndex], sizeof(HighScoreText) - HighScoreIndex);
 
     ScoreWidth = WindowWasher_MeasureTextWidth(&OpenSans20, ScoreText);
     HighScoreWidth = WindowWasher_MeasureTextWidth(&OpenSans20, HighScoreText);
@@ -2067,6 +2247,78 @@ static void WindowWasher_DrawScore(Render_TargetTypeDef *Target, const WindowWas
     Render_DrawText(Target, &OpenSans20, HighScoreText, HighScoreX, (int16_t)(SCORE_PANEL_Y + 7), COLOUR_BUCKET_HIGHLIGHT);
 }
 
+static void WindowWasher_DrawCentredText(Render_TargetTypeDef *Target, const Font *FontAsset, const char *Text, int16_t CentreX, int16_t Y, Render_ColourIndexTypeDef Colour, bool Shadow)
+{
+    const int16_t X = (int16_t)(CentreX - ((int16_t)WindowWasher_MeasureTextWidth(FontAsset, Text) / 2));
+
+    if(Shadow)
+    {
+        Render_DrawText(Target, FontAsset, Text, (int16_t)(X + 2), (int16_t)(Y + 2), COLOUR_SCORE_SHADOW);
+    }
+
+    Render_DrawText(Target, FontAsset, Text, X, Y, Colour);
+}
+
+/*
+ * New high score: the score and three letter boxes. Set letters are white,
+ * the letter being chosen is yellow in a blinking frame, and letters still
+ * to come show a dash.
+ */
+static void WindowWasher_DrawInitialsEntry(Render_TargetTypeDef *Target, const WindowWasher_GameTypeDef *Game)
+{
+    const WindowWasher_InitialsEntryTypeDef *Entry = &WindowWasher_InitialsEntry;
+    const int16_t CentreX = (int16_t)RENDER_WIDTH / 2;
+    const int16_t BoxesLeftX = (int16_t)(CentreX - ((((int16_t)INITIALS_LENGTH * (int16_t)INITIALS_BOX_WIDTH) + (((int16_t)INITIALS_LENGTH - 1) * INITIALS_BOX_GAP)) / 2));
+    const bool FrameLit = ((Entry->BlinkMilliseconds / INITIALS_BLINK_MILLISECONDS) & 1U) == 0U;
+    const Render_RectTypeDef Shadow = { (int16_t)(INITIALS_PANEL_X + 4), (int16_t)(INITIALS_PANEL_Y + 5), INITIALS_PANEL_WIDTH, INITIALS_PANEL_HEIGHT };
+    const Render_RectTypeDef OuterFrame = { INITIALS_PANEL_X, INITIALS_PANEL_Y, INITIALS_PANEL_WIDTH, INITIALS_PANEL_HEIGHT };
+    const Render_RectTypeDef InnerPanel = { (int16_t)(INITIALS_PANEL_X + 4), (int16_t)(INITIALS_PANEL_Y + 4), INITIALS_PANEL_WIDTH - 8U, INITIALS_PANEL_HEIGHT - 8U };
+    const Render_RectTypeDef TopHighlight = { (int16_t)(INITIALS_PANEL_X + 8), (int16_t)(INITIALS_PANEL_Y + 8), INITIALS_PANEL_WIDTH - 16U, 2U };
+    char ScoreText[11];
+
+    Render_FillRect(Target, &Shadow, COLOUR_SCORE_SHADOW);
+    Render_FillRect(Target, &OuterFrame, COLOUR_SCORE_SHADOW);
+    Render_FillRect(Target, &InnerPanel, COLOUR_TRACK_STEEL);
+    Render_FillRect(Target, &TopHighlight, COLOUR_BUCKET_HIGHLIGHT);
+
+    WindowWasher_FormatScore(Game->Score, ScoreText, sizeof(ScoreText));
+    WindowWasher_DrawCentredText(Target, &OpenSans28, "NEW HIGH SCORE", CentreX, (int16_t)(INITIALS_PANEL_Y + 14), COLOUR_SPARKLE, true);
+    WindowWasher_DrawCentredText(Target, &OpenSans36, ScoreText, CentreX, (int16_t)(INITIALS_PANEL_Y + 48), COLOUR_SCORE_TEXT, true);
+
+    for(uint8_t Index = 0U; Index < INITIALS_LENGTH; Index++)
+    {
+        const int16_t BoxX = (int16_t)(BoxesLeftX + ((int16_t)Index * ((int16_t)INITIALS_BOX_WIDTH + INITIALS_BOX_GAP)));
+        const bool Current = Index == Entry->Index;
+        const Render_RectTypeDef Frame = { (int16_t)(BoxX - 3), (int16_t)(INITIALS_BOX_Y - 3), INITIALS_BOX_WIDTH + 6U, INITIALS_BOX_HEIGHT + 6U };
+        const Render_RectTypeDef Box = { BoxX, INITIALS_BOX_Y, INITIALS_BOX_WIDTH, INITIALS_BOX_HEIGHT };
+        char Letter[2];
+        Render_ColourIndexTypeDef Colour;
+
+        if(Current && FrameLit)
+        {
+            Render_FillRect(Target, &Frame, COLOUR_SPARKLE);
+        }
+
+        Render_FillRect(Target, &Box, COLOUR_SCORE_SHADOW);
+
+        if(Current)
+        {
+            Letter[0] = (char)('A' + Entry->Selected);
+            Colour = COLOUR_SPARKLE;
+        }
+        else
+        {
+            Letter[0] = Entry->Letters[Index];
+            Colour = (Index < Entry->Index) ? COLOUR_SCORE_TEXT : COLOUR_TRACK_HIGHLIGHT;
+        }
+
+        Letter[1] = '\0';
+        WindowWasher_DrawCentredText(Target, &OpenSans36, Letter, (int16_t)(BoxX + ((int16_t)INITIALS_BOX_WIDTH / 2)), (int16_t)(INITIALS_BOX_Y + 4), Colour, false);
+    }
+
+    WindowWasher_DrawCentredText(Target, &OpenSans16, "SLIDE: LETTER   PRIMARY: OK", CentreX, (int16_t)(INITIALS_PANEL_Y + 186), COLOUR_BUCKET_HIGHLIGHT, false);
+}
+
 /* -------------------------------------------------------------------------- */
 /* Public functions                                                           */
 /* -------------------------------------------------------------------------- */
@@ -2079,6 +2331,7 @@ bool WindowWasher_Init(void)
     WindowWasher_PendingDeltaTimeMilliseconds = 0U;
     WindowWasher_ScorePulseFrames = 0U;
     WindowWasher_Paused = false;
+    WindowWasher_InitialsEntry.Active = false;
     WindowWasher_LoadHighScore();
 
     WindowWasher_ResetGame(&WindowWasher_Game, &WindowWasher_Figure);
@@ -2107,6 +2360,12 @@ void WindowWasher_Update(uint32_t DeltaTimeMilliseconds)
     if(Input_GetValue(INPUT_RIGHT_SLIDER_NUMBER, &RightSliderValue))
     {
         WindowWasher_Input.RightSlider = WindowWasher_ConvertSliderValue(RightSliderValue);
+    }
+
+    if(WindowWasher_InitialsEntry.Active)
+    {
+        WindowWasher_UpdateInitialsEntry(DeltaTimeMilliseconds);
+        return;
     }
 
     WindowWasher_PendingDeltaTimeMilliseconds += DeltaTimeMilliseconds;
@@ -2217,7 +2476,11 @@ void WindowWasher_Render(void)
 
         WindowWasher_PendingDeltaTimeMilliseconds = 0U;
 
-        WindowWasher_UpdateGame(&WindowWasher_Game, &WindowWasher_Figure, &Platform, DeltaTimeMilliseconds);
+        /* The game waits while initials are entered. */
+        if(!WindowWasher_InitialsEntry.Active)
+        {
+            WindowWasher_UpdateGame(&WindowWasher_Game, &WindowWasher_Figure, &Platform, DeltaTimeMilliseconds);
+        }
 
         /* The cart is silent while the washer falls. */
         CartSpeed = WindowWasher_Game.Crashed ? 0.0f : ((float)abs(WindowWasher_Figure.VelocityX) / (float)CART_SOUND_FULL_SPEED);
@@ -2234,6 +2497,11 @@ void WindowWasher_Render(void)
     WindowWasher_DrawPlatform(&Target, &Platform);
     WindowWasher_DrawWasher(&Target, &Platform, &WindowWasher_Figure, WindowWasher_Game.Crashed);
     WindowWasher_DrawScore(&Target, &WindowWasher_Game);
+
+    if(WindowWasher_InitialsEntry.Active)
+    {
+        WindowWasher_DrawInitialsEntry(&Target, &WindowWasher_Game);
+    }
 
     (void)Display_PresentFrame(Frame);
 }
@@ -2254,10 +2522,17 @@ void WindowWasher_Shutdown(void)
 {
     WindowWasherAudio_Stop();
 
-    if(WindowWasher_HighScoreDirty)
+    /* Leaving with an unclaimed high score keeps it, with any initials entered so far. */
+    if(WindowWasher_Game.Score > WindowWasher_HighScore)
     {
+        static const char NoInitials[INITIALS_LENGTH + 1U] = "---";
+
+        WindowWasher_HighScore = WindowWasher_Game.Score;
+        WindowWasher_CopyInitials(WindowWasher_HighScoreInitials, WindowWasher_InitialsEntry.Active ? WindowWasher_InitialsEntry.Letters : NoInitials);
         WindowWasher_SaveHighScore();
     }
+
+    WindowWasher_InitialsEntry.Active = false;
     WindowWasher_Initialized = false;
     WindowWasher_Paused = false;
     WindowWasher_PendingDeltaTimeMilliseconds = 0U;
