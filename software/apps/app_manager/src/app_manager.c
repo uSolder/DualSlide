@@ -6,6 +6,7 @@
 #include "app_manager.h"
 
 #include "controls.h"
+#include "canal_tug.h"
 #include "launcher.h"
 #include "mixer.h"
 #include "music.h"
@@ -60,6 +61,7 @@ static const AppManager_AppTypeDef *const AppManager_Applications[] =
     &TemplateGame_App,
     &Pong_App,
     &Tanks_App,
+    &CanalTug_App,
     &SettingsApp_App
 };
 

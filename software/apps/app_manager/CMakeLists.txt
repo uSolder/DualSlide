@@ -20,6 +20,7 @@ target_link_libraries(DualSlideAppManager
         DualSlideWindowWasher
         DualSlidePong
         DualSlideTanks
+        DualSlideCanalTug
         DualSlideTemplateGame
         $<TARGET_NAME_IF_EXISTS:DualSlideEmbeddedOptions>
 )

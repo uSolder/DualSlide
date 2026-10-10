@@ -51,6 +51,7 @@ target_link_libraries(DualSlideFirmware
         DualSlideWindowWasher
         DualSlidePong
         DualSlideTanks
+        DualSlideCanalTug
         DualSlideTemplateGame
         dspcbr1
 
