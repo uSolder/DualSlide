@@ -12,6 +12,7 @@
 #include "controls.h"
 
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* -------------------------------------------------------------------------- */
@@ -1133,18 +1134,21 @@ static bool Tug_OnScreen(float X, float Y, float Margin)
 /* -------------------------------------------------------------------------- */
 
 /* Rain falling across the screen, slanting with the wind, and rings where it lands on the water. */
+/* Rain falling across the screen, slanting with the wind, and rings where it lands on the water. Whole-number maths throughout, as it runs for every drop every frame. */
 static void Tug_DrawRain(Render_TargetTypeDef *Target, const Tug_WorldTypeDef *World, uint8_t Drops)
 {
-    const float Seconds = (float)(World->Milliseconds % 600000U) / 1000.0f;
-    const float Slant = World->WindX / 120.0f;
+    const uint32_t Clock = World->Milliseconds % 600000U;
+    const int32_t SlantPerMille = (int32_t)lrintf(World->WindX * 1000.0f / 120.0f);
+    const int32_t CameraX = (int32_t)lrintf(World->CameraX);
+    const int32_t CameraY = (int32_t)lrintf(World->CameraY);
 
     for(uint8_t Index = 0U; Index < Drops; Index++)
     {
         const uint32_t Hash = Tug_TileHash((int16_t)Index, 911);
-        const float Speed = 520.0f + (float)((Hash >> 8) % 260U);
-        const float Y = fmodf((float)((Hash >> 4) % 500U) + (Seconds * Speed), 500.0f) - 20.0f;
-        const float X = fmodf((float)(Hash % 840U) + (Y * Slant) + 840.0f, 840.0f) - 20.0f;
-        Render_DrawLine(Target, (int16_t)lrintf(X), (int16_t)lrintf(Y), (int16_t)lrintf(X + (12.0f * Slant)), (int16_t)lrintf(Y + 12.0f), 1U, TUG_COLOUR_FOAM_FADED);
+        const uint32_t Speed = 520U + ((Hash >> 8) % 260U);
+        const int32_t Y = (int32_t)((((Hash >> 4) % 500U) + ((Clock * Speed) / 1000U)) % 500U) - 20;
+        const int32_t X = (((((int32_t)(Hash % 840U) + ((Y * SlantPerMille) / 1000)) % 840) + 840) % 840) - 20;
+        Render_DrawLine(Target, (int16_t)X, (int16_t)Y, (int16_t)(X + ((12 * SlantPerMille) / 1000)), (int16_t)(Y + 12), 1U, TUG_COLOUR_FOAM_FADED);
     }
 
     /* Each ring grows for half a second, then starts again somewhere else. */
@@ -1152,12 +1156,12 @@ static void Tug_DrawRain(Render_TargetTypeDef *Target, const Tug_WorldTypeDef *W
     {
         const uint32_t Round = (World->Milliseconds + (uint32_t)Index * 137U) / 500U;
         const uint32_t Hash = Tug_TileHash((int16_t)Index, (int16_t)(Round & 0x7FFFU));
-        const float X = World->CameraX + (float)(Hash % RENDER_WIDTH);
-        const float Y = World->CameraY + (float)((Hash >> 12) % RENDER_HEIGHT);
+        const int32_t X = CameraX + (int32_t)(Hash % RENDER_WIDTH);
+        const int32_t Y = CameraY + (int32_t)((Hash >> 12) % RENDER_HEIGHT);
         const uint32_t Age = (World->Milliseconds + (uint32_t)Index * 137U) % 500U;
-        if(Tug_IsWaterAt((int16_t)floorf(X / (float)TUG_TILE_SIZE), (int16_t)floorf(Y / (float)TUG_TILE_SIZE)))
+        if((X >= 0) && (Y >= 0) && Tug_IsWaterAt((int16_t)(X / TUG_TILE_SIZE), (int16_t)(Y / TUG_TILE_SIZE)))
         {
-            Render_DrawCircle(Target, (int16_t)(lrintf(X) + Tug_OffsetX), (int16_t)(lrintf(Y) + Tug_OffsetY), (uint16_t)(2U + (Age / 100U)), 1U, TUG_COLOUR_WATER_GLINT);
+            Render_DrawCircle(Target, (int16_t)(X + Tug_OffsetX), (int16_t)(Y + Tug_OffsetY), (uint16_t)(2U + (Age / 100U)), 1U, TUG_COLOUR_WATER_GLINT);
         }
     }
 }
@@ -1169,12 +1173,21 @@ static void Tug_DrawRain(Render_TargetTypeDef *Target, const Tug_WorldTypeDef *W
 static void Tug_DrawWindStreaks(Render_TargetTypeDef *Target, const Tug_WorldTypeDef *World)
 {
     const float Strength = sqrtf((World->WindX * World->WindX) + (World->WindY * World->WindY));
-    const float DirectionX = World->WindX / Strength;
-    const float DirectionY = World->WindY / Strength;
+
+    /* The wind's direction in thousandths, so each streak needs only whole-number maths. */
+    const int32_t DirectionX = (int32_t)lrintf(World->WindX * 1000.0f / Strength);
+    const int32_t DirectionY = (int32_t)lrintf(World->WindY * 1000.0f / Strength);
+    const int32_t LengthX = (DirectionX * 26) / 1000;
+    const int32_t LengthY = (DirectionY * 26) / 1000;
+
+    /* Each streak is two thin lines side by side, which look like one 2 pixel line but draw much faster. */
+    const int32_t BesideX = (abs(DirectionX) >= abs(DirectionY)) ? 0 : 1;
+    const int32_t BesideY = 1 - BesideX;
     const int16_t FirstX = (int16_t)(floorf(World->CameraX / (float)WIND_PATCH) - 1.0f);
     const int16_t FirstY = (int16_t)(floorf(World->CameraY / (float)WIND_PATCH) - 1.0f);
     const int16_t LastX = (int16_t)(FirstX + ((int16_t)RENDER_WIDTH / WIND_PATCH) + 2);
     const int16_t LastY = (int16_t)(FirstY + ((int16_t)RENDER_HEIGHT / WIND_PATCH) + 2);
+    const uint32_t Drift = World->Milliseconds / 20U;
 
     for(int16_t PatchY = FirstY; PatchY <= LastY; PatchY++)
     {
@@ -1183,14 +1196,22 @@ static void Tug_DrawWindStreaks(Render_TargetTypeDef *Target, const Tug_WorldTyp
             for(int16_t Streak = 0; Streak < WIND_STREAKS_PER_PATCH; Streak++)
             {
                 const uint32_t Hash = Tug_TileHash(PatchX, (int16_t)(PatchY + 3000 + (Streak * 1000)));
-                const float Travel = fmodf(((float)World->Milliseconds * 0.05f) + (float)(Hash % (uint32_t)WIND_PATCH), (float)WIND_PATCH);
-                const float X = ((float)PatchX * (float)WIND_PATCH) + (float)((Hash >> 8) % (uint32_t)WIND_PATCH) + (DirectionX * Travel);
-                const float Y = ((float)PatchY * (float)WIND_PATCH) + (float)((Hash >> 16) % (uint32_t)WIND_PATCH) + (DirectionY * Travel);
+                const int32_t Travel = (int32_t)((Drift + (Hash % (uint32_t)WIND_PATCH)) % (uint32_t)WIND_PATCH);
+                const int32_t X = ((int32_t)PatchX * WIND_PATCH) + (int32_t)((Hash >> 8) % (uint32_t)WIND_PATCH) + ((DirectionX * Travel) / 1000);
+                const int32_t Y = ((int32_t)PatchY * WIND_PATCH) + (int32_t)((Hash >> 16) % (uint32_t)WIND_PATCH) + ((DirectionY * Travel) / 1000);
+                const int32_t ScreenX = X + Tug_OffsetX;
+                const int32_t ScreenY = Y + Tug_OffsetY;
 
-                /* Each streak shows only in the middle of its run, so it fades in and out rather than jumping. */
-                if((Travel > 10.0f) && (Travel < 90.0f) && Tug_IsWaterAt((int16_t)floorf(X / (float)TUG_TILE_SIZE), (int16_t)floorf(Y / (float)TUG_TILE_SIZE)))
+                /*
+                 * Each streak shows only in the middle of its run, so it fades in
+                 * and out rather than jumping; streaks off the screen are skipped
+                 * before the map is read.
+                 */
+                if((Travel > 10) && (Travel < 90) && (ScreenX > -30) && (ScreenX < ((int32_t)RENDER_WIDTH + 30)) && (ScreenY > -30) && (ScreenY < ((int32_t)RENDER_HEIGHT + 30)) &&
+                   (X >= 0) && (Y >= 0) && Tug_IsWaterAt((int16_t)(X / TUG_TILE_SIZE), (int16_t)(Y / TUG_TILE_SIZE)))
                 {
-                    Tug_Line(Target, X, Y, X + (DirectionX * 26.0f), Y + (DirectionY * 26.0f), 2U, TUG_COLOUR_WATER_GLINT);
+                    Render_DrawLine(Target, (int16_t)ScreenX, (int16_t)ScreenY, (int16_t)(ScreenX + LengthX), (int16_t)(ScreenY + LengthY), 1U, TUG_COLOUR_WATER_GLINT);
+                    Render_DrawLine(Target, (int16_t)(ScreenX + BesideX), (int16_t)(ScreenY + BesideY), (int16_t)(ScreenX + LengthX + BesideX), (int16_t)(ScreenY + LengthY + BesideY), 1U, TUG_COLOUR_WATER_GLINT);
                 }
             }
         }

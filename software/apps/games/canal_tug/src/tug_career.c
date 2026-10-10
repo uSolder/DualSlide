@@ -72,8 +72,8 @@
  * up by BONUS_SHARE. Missing it costs nothing.
  */
 #define BONUS_SHARE             (0.2f)
-#define BONUS_SPEED             (38.0f)
-#define BONUS_SPARE_SECONDS     (30.0f)
+#define BONUS_SPEED             (63.0f)
+#define BONUS_SPARE_SECONDS     (18.0f)
 
 /*
  * Reputation, kept quietly for each site: careful deliveries raise it at

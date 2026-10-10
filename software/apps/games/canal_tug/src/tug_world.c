@@ -21,6 +21,15 @@
 /* Turning from the two engines pulling differently (raised with TUG_DRAG_SPIN, so the turning speed stays the same). */
 #define ENGINE_TURN             (0.107f)
 
+/*
+ * Steering follows a curve: STEER_LINEAR_SHARE of it is straight in
+ * proportion to how differently the engines pull, and the rest grows with
+ * the square of it. Small differences steer gently, so holding a course is
+ * easy, while a full difference (one engine full ahead, the other full
+ * astern) still turns as hard as ever.
+ */
+#define STEER_LINEAR_SHARE      (0.5f)
+
 /* Cargo thrusters swing the cargo round this hard (radians per second per second, divided by the square root of its mass). */
 #define CARGO_THRUSTER_TURN     (4.0f)
 
@@ -772,6 +781,7 @@ void Tug_StepBoats(Tug_WorldTypeDef *World, float DeltaSeconds, float LeftThrott
     const float TugAground = 1.0f + (SHALLOWS_DRAG * Tug_ShallowShare(&Tug->Body));
     float LeftPush;
     float RightPush;
+    float Difference;
     float WindAhead;
     float WindSideways;
 
@@ -783,8 +793,11 @@ void Tug_StepBoats(Tug_WorldTypeDef *World, float DeltaSeconds, float LeftThrott
 
     /* The left engine pushing harder turns the tug right (clockwise), and the other way about. */
     Tug_WindPush(World, &Tug->Body, Model->Mass, WIND_TUG_SHARE, &WindAhead, &WindSideways);
+    /* How differently the engines pull, as a share of the most they can (both full, opposite ways), then curved. */
+    Difference = (LeftPush - RightPush) / (2.0f * Thrust);
+    Difference *= STEER_LINEAR_SHARE + ((1.0f - STEER_LINEAR_SHARE) * fabsf(Difference));
     Tug_DriveBody(&Tug->Body, LeftPush + RightPush + WindAhead, WindSideways,
-                  (LeftPush - RightPush) * ENGINE_TURN,
+                  Difference * 2.0f * Thrust * ENGINE_TURN,
                   TUG_DRAG_AHEAD * TugAground, TUG_DRAG_SIDEWAYS * TugAground, TUG_DRAG_SPIN * TugAground, DeltaSeconds);
     Result->TugKnock = Tug_MoveBody(&Tug->Body, DeltaSeconds);
 
