@@ -29,7 +29,8 @@
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug",
                 "DS_PLATFORM": "embedded",
-                "DS_USB_AUDIO_TEST": "OFF"
+                "DS_USB_AUDIO_TEST": "OFF",
+                "DS_USB_MSC_TEST": "OFF"
             }
         },
         {
@@ -38,6 +39,14 @@
             "inherits": "embedded-debug",
             "cacheVariables": {
                 "DS_USB_AUDIO_TEST": "ON"
+            }
+        },
+        {
+            "name": "embedded-usb-msc-test",
+            "displayName": "STM32H7A3 USB Mass Storage Test",
+            "inherits": "embedded-debug",
+            "cacheVariables": {
+                "DS_USB_MSC_TEST": "ON"
             }
         }
     ],
@@ -53,6 +62,10 @@
         {
             "name": "embedded-usb-audio-test",
             "configurePreset": "embedded-usb-audio-test"
+        },
+        {
+            "name": "embedded-usb-msc-test",
+            "configurePreset": "embedded-usb-msc-test"
         }
     ]
 }

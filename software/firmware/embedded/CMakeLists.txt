@@ -39,6 +39,12 @@ if(DS_USB_AUDIO_TEST)
     target_compile_definitions(DualSlideSystem PRIVATE DS_USB_AUDIO_TEST)
 endif()
 
+option(DS_USB_MSC_TEST "Also enumerate as a USB drive backed by a FAT12 RAM disk" OFF)
+
+if(DS_USB_MSC_TEST)
+    target_compile_definitions(DualSlideSystem PRIVATE DS_USB_MSC_TEST)
+endif()
+
 add_subdirectory(board/dspcbr1)
 
 target_link_libraries(DualSlideFirmware

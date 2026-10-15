@@ -31,6 +31,11 @@
 #include "usb_audio.h"
 #endif
 
+#ifdef DS_USB_MSC_TEST
+#include "ram_disk.h"
+#include "usb_msc.h"
+#endif
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -46,6 +51,14 @@
  */
 _Static_assert(USB_AUDIO_OUTPUT_SAMPLE_RATE_HZ == MIXER_SAMPLE_RATE_HZ, "USB audio output rate must match the mixer rate");
 _Static_assert(USB_AUDIO_OUTPUT_CHANNEL_COUNT == 1U, "USB audio output must be mono to feed a mixer channel");
+#endif
+
+/*
+ * USB mass storage test: the board also enumerates as a USB drive backed by a
+ * FAT12 RAM disk. Everything else runs normally.
+ */
+#if defined(DS_USB_AUDIO_TEST) && defined(DS_USB_MSC_TEST)
+#error "The USB device presents one function: enable DS_USB_AUDIO_TEST or DS_USB_MSC_TEST, not both"
 #endif
 
 #define SYSTEM_INPUT_PRIMARY_BUTTON          ((Input_NumberTypeDef)3U)
@@ -272,6 +285,18 @@ int System_Run(void)
     }
 #endif
 
+#ifdef DS_USB_MSC_TEST
+    RamDisk_Format();
+
+    if(!USBMSC_Init(&RamDisk_Media))
+    {
+        Audio_Stop();
+        AppManager_Shutdown();
+
+        return 1;
+    }
+#endif
+
     PreviousFrameTimeMilliseconds = SystemTime_GetMilliseconds();
 
     while(Running)
@@ -315,6 +340,10 @@ int System_Run(void)
 
 #ifdef DS_USB_AUDIO_TEST
     USBAudio_Deinit();
+#endif
+
+#ifdef DS_USB_MSC_TEST
+    USBMSC_Deinit();
 #endif
 
     Audio_Stop();
