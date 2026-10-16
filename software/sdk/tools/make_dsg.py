@@ -1,6 +1,6 @@
 """Package a linked DualSlide game (ELF) as a .dsg game file.
 
-The layout is defined in firmware/system/inc/game_file.h; this script writes
+The layout is defined in firmware/games/game_file.h; this script writes
 format 1.0. Only the Python standard library is needed.
 
     python make_dsg.py --elf pong.elf --out pong.dsg --api-header game_api.h ^

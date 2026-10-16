@@ -65,10 +65,10 @@ of the firmware is out of reach.
 
 | Part | Job |
 | --- | --- |
-| `src/dualslide_sdk.c` | The firmware functions a game calls, forwarding to the firmware through the game API (`firmware/system/inc/game_api.h`), plus the entry point |
+| `src/dualslide_sdk.c` | The firmware functions a game calls, forwarding to the firmware through the game API (`firmware/games/game_api.h`), plus the entry point |
 | `include/` | Font headers that point at the firmware's fonts |
 | `game.ld` | Links the game at address zero as one block, keeping its relocations |
-| `tools/make_dsg.py` | Packs the linked game into a `.dsg` (`firmware/system/inc/game_file.h`) |
+| `tools/make_dsg.py` | Packs the linked game into a `.dsg` (`firmware/games/game_file.h`) |
 | `cmake/` | `dualslide_add_game()` and the toolchain |
 
 Games are compiled with `-mword-relocations`, so every absolute address is a

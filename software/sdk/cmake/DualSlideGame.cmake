@@ -23,19 +23,19 @@ find_package(Python3 REQUIRED COMPONENTS Interpreter)
 # The headers a game may use, copied from the firmware so games see nothing
 # else of it. game_api.h is here because the SDK's own sources need it.
 set(DUALSLIDE_SDK_HEADERS
-    firmware/api/audio.h
-    firmware/api/display.h
-    firmware/api/render.h
-    firmware/api/system_time.h
-    firmware/system/inc/controls.h
-    firmware/system/inc/game_api.h
-    firmware/system/inc/mixer.h
-    firmware/system/inc/music.h
-    firmware/system/inc/random.h
-    firmware/system/inc/save.h
-    firmware/system/inc/sound.h
-    firmware/system/inc/system.h
-    firmware/apps/app_manager/inc/app_manager.h
+    firmware/system/audio.h
+    firmware/system/display.h
+    firmware/system/render.h
+    firmware/chip/system_time.h
+    firmware/system/controls.h
+    firmware/games/game_api.h
+    firmware/system/mixer.h
+    firmware/system/music.h
+    firmware/system/random.h
+    firmware/system/save.h
+    firmware/system/sound.h
+    firmware/system/system.h
+    firmware/apps/app_manager.h
     assets/fonts/font.h
 )
 
@@ -114,7 +114,7 @@ function(dualslide_add_game TARGET)
         COMMAND "${Python3_EXECUTABLE}" "${DUALSLIDE_SDK_DIR}/tools/make_dsg.py"
             --elf "$<TARGET_FILE:${TARGET}>"
             --out "$<TARGET_FILE_DIR:${TARGET}>/${TARGET}.dsg"
-            --api-header "${DUALSLIDE_SOFTWARE_DIR}/firmware/system/inc/game_api.h"
+            --api-header "${DUALSLIDE_SOFTWARE_DIR}/firmware/games/game_api.h"
             --id "${GAME_ID}"
             --name "${GAME_NAME}"
             --version "${GAME_VERSION}"
