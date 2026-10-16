@@ -29,6 +29,8 @@
 
 #include "usb_msc.h"
 
+#include "chip.h"
+
 #include "usb_device.h"
 
 #include <stdbool.h>
@@ -265,6 +267,7 @@ static bool USBMSC_HandleRequest(void *Context, const USBDevice_SetupPacketTypeD
 static void USBMSC_HandleOutComplete(void *Context, uint8_t EndpointAddress, uint8_t *Data, uint16_t Length);
 static void USBMSC_HandleInComplete(void *Context, uint8_t EndpointAddress);
 static uint16_t USBMSC_BuildString(const char *Text);
+static const char *USBMSC_SerialNumber(void);
 
 static bool USBMSC_OpenEndpoints(void);
 static void USBMSC_CloseEndpoints(void);
@@ -381,8 +384,7 @@ static bool USBMSC_GetDescriptor(void *Context, uint8_t DescriptorType, uint8_t 
                     break;
 
                 case USB_MSC_STRING_SERIAL:
-                    /* Bulk-Only Transport asks for at least 12 hexadecimal digits. */
-                    *Length = USBMSC_BuildString("000000000001");
+                    *Length = USBMSC_BuildString(USBMSC_SerialNumber());
                     break;
 
                 default:
@@ -539,6 +541,31 @@ static void USBMSC_HandleInComplete(void *Context, uint8_t EndpointAddress)
         default:
             break;
     }
+}
+
+/*
+ * The chip's unique ID in 24 hexadecimal digits, so computers tell one
+ * DualSlide from another. Bulk-Only Transport asks for at least 12.
+ */
+static const char *USBMSC_SerialNumber(void)
+{
+    static const char Digits[] = "0123456789ABCDEF";
+    static char Text[(CHIP_UNIQUE_ID_WORDS * 8U) + 1U];
+    uint32_t Id[CHIP_UNIQUE_ID_WORDS];
+    uint32_t Position = 0U;
+
+    Chip_GetUniqueId(Id);
+
+    for(uint32_t Word = 0U; Word < CHIP_UNIQUE_ID_WORDS; Word++)
+    {
+        for(int32_t Shift = 28; Shift >= 0; Shift -= 4)
+        {
+            Text[Position++] = Digits[(Id[Word] >> (uint32_t)Shift) & 0xFU];
+        }
+    }
+
+    Text[Position] = '\0';
+    return Text;
 }
 
 static uint16_t USBMSC_BuildString(const char *Text)

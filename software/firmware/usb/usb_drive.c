@@ -5,6 +5,7 @@
 
 #include "usb_drive.h"
 
+#include "chip.h"
 #include "disk.h"
 #include "fat_format.h"
 #include "system_time.h"
@@ -80,7 +81,8 @@ bool USBDrive_Init(void)
         return false;
     }
 
-    if(!FATFormat_IsFormatted() && !FATFormat_Format(USB_DRIVE_VOLUME_LABEL))
+    /* Each DualSlide's drive has its own serial number, from its chip. */
+    if(!FATFormat_IsFormatted() && !FATFormat_Format(USB_DRIVE_VOLUME_LABEL, Chip_GetSerialNumber()))
     {
         return false;
     }

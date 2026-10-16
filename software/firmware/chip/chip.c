@@ -75,3 +75,39 @@ void Chip_PowerOff(void)
 {
     NVIC_SystemReset();
 }
+
+void Chip_GetUniqueId(uint32_t Id[CHIP_UNIQUE_ID_WORDS])
+{
+    const volatile uint32_t *UniqueId = (const volatile uint32_t *)UID_BASE;
+
+    for(uint32_t Word = 0U; Word < CHIP_UNIQUE_ID_WORDS; Word++)
+    {
+        Id[Word] = UniqueId[Word];
+    }
+}
+
+/*
+ * The unique ID records where the chip sat on its wafer and which wafer and
+ * lot it came from, so neighbouring chips differ in only a few bits. A hash
+ * (32-bit FNV-1a over its twelve bytes) spreads those differences over the
+ * whole number.
+ */
+uint32_t Chip_GetSerialNumber(void)
+{
+    uint32_t Id[CHIP_UNIQUE_ID_WORDS];
+    uint32_t Hash = 2166136261UL;
+
+    Chip_GetUniqueId(Id);
+
+    for(uint32_t Word = 0U; Word < CHIP_UNIQUE_ID_WORDS; Word++)
+    {
+        for(uint32_t Byte = 0U; Byte < 4U; Byte++)
+        {
+            Hash ^= (Id[Word] >> (Byte * 8U)) & 0xFFU;
+            Hash *= 16777619UL;
+        }
+    }
+
+    /* A volume serial number of 0 stops iPhones and iPads finding the drive again after it is reconnected. */
+    return (Hash != 0U) ? Hash : 1U;
+}

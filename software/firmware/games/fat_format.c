@@ -35,6 +35,11 @@
 #define FAT_FORMAT_LABEL_LENGTH             (11U)
 #define FAT_FORMAT_ATTRIBUTE_VOLUME_ID      (0x08U)
 
+/* The extended boot record, which holds the volume serial number. */
+#define FAT_FORMAT_EXTENDED_SIGNATURE_OFFSET (38U)
+#define FAT_FORMAT_EXTENDED_SIGNATURE       (0x29U)
+#define FAT_FORMAT_SERIAL_NUMBER_OFFSET     (39U)
+
 /* 2026-10-15 12:00:00 in FAT date and time format. */
 #define FAT_FORMAT_DATE                     ((uint16_t)(((2026U - 1980U) << 9U) | (10U << 5U) | 15U))
 #define FAT_FORMAT_TIME                     ((uint16_t)(12U << 11U))
@@ -115,7 +120,7 @@ bool FATFormat_IsFormatted(void)
            (Sector[11] == (uint8_t)DISK_BLOCK_SIZE) && (Sector[12] == (uint8_t)(DISK_BLOCK_SIZE >> 8U));
 }
 
-bool FATFormat_Format(const char *VolumeLabel)
+bool FATFormat_Format(const char *VolumeLabel, uint32_t SerialNumber)
 {
     uint8_t Sector[DISK_BLOCK_SIZE];
     uint32_t SectorCount = Disk_GetBlockCount();
@@ -147,8 +152,8 @@ bool FATFormat_Format(const char *VolumeLabel)
     FATFormat_WriteLittleEndian16(&Sector[24], 1U);                 /* Sectors per track */
     FATFormat_WriteLittleEndian16(&Sector[26], 1U);                 /* Heads */
     Sector[36] = 0x80U;                                             /* Drive number */
-    Sector[38] = 0x29U;                                             /* Extended boot signature */
-    FATFormat_WriteLittleEndian32(&Sector[39], 0x44534C44UL);       /* Volume serial number */
+    Sector[FAT_FORMAT_EXTENDED_SIGNATURE_OFFSET] = FAT_FORMAT_EXTENDED_SIGNATURE;
+    FATFormat_WriteLittleEndian32(&Sector[FAT_FORMAT_SERIAL_NUMBER_OFFSET], SerialNumber);
     FATFormat_CopyLabel(&Sector[43], VolumeLabel);
     memcpy(&Sector[54], "FAT12   ", 8U);
     Sector[510] = 0x55U;

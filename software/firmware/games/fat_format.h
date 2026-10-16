@@ -7,6 +7,7 @@
 #define FAT_FORMAT_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -23,10 +24,12 @@ bool FATFormat_IsFormatted(void);
  * @brief Write an empty FAT12 filesystem over the whole disk.
  *
  * @param VolumeLabel Volume label of at most 11 characters, in capitals.
+ * @param SerialNumber Volume serial number, by which computers and phones
+ *        tell one disk from another; not 0.
  *
  * @return true on success; otherwise false.
  */
-bool FATFormat_Format(const char *VolumeLabel);
+bool FATFormat_Format(const char *VolumeLabel, uint32_t SerialNumber);
 
 #ifdef __cplusplus
 }
