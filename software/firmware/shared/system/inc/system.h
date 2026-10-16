@@ -65,6 +65,18 @@ bool System_SaveSettings(void);
 bool System_EraseSavedData(void);
 
 /**
+ * @brief Return the battery voltage in millivolts, or 0 before it is known.
+ *
+ * The voltage is filtered but still varies with load and while charging.
+ */
+uint16_t System_GetBatteryMillivolts(void);
+
+/**
+ * @brief Return whether external (USB) power is connected.
+ */
+bool System_IsExternalPowerPresent(void);
+
+/**
  * @brief CPU blocking delay.
  */
 void SystemTime_DelayMilliseconds(uint32_t DelayMilliseconds);

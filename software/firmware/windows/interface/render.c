@@ -1005,6 +1005,11 @@ char *Render_FormatText(char *Buffer, uint32_t Size, const char *Format, ...)
     return Buffer;
 }
 
+char *Render_FormatTextList(char *Buffer, uint32_t Size, const char *Format, va_list Arguments)
+{
+    return Render_FormatList(Buffer, Size, Format, Arguments);
+}
+
 void Render_DrawTextf(Render_TargetTypeDef *Target, const Font *FontAsset, int16_t X, int16_t Y, Render_ColourIndexTypeDef Colour, const char *Format, ...)
 {
     char Text[RENDER_TEXT_BUFFER_SIZE];

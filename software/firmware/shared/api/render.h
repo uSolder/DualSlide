@@ -32,6 +32,7 @@
 
 #include "font.h"
 
+#include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -318,6 +319,13 @@ void Render_DrawTextAligned(Render_TargetTypeDef *Target, const Font *FontAsset,
  * @return Buffer, so the result can be passed straight to a draw call.
  */
 char *Render_FormatText(char *Buffer, uint32_t Size, const char *Format, ...);
+
+/**
+ * @brief Render_FormatText() taking its arguments as a va_list.
+ *
+ * @return Buffer.
+ */
+char *Render_FormatTextList(char *Buffer, uint32_t Size, const char *Format, va_list Arguments);
 
 /**
  * @brief Draw formatted text with its top-left corner at X, Y.

@@ -21,6 +21,7 @@
 #include "display.h"
 #include "input.h"
 #include "mixer.h"
+#include "random.h"
 #include "save.h"
 #include "sound.h"
 #include "storage.h"
@@ -62,6 +63,8 @@ _Static_assert(USB_AUDIO_OUTPUT_CHANNEL_COUNT == 1U, "USB audio output must be m
 
 #define SYSTEM_INPUT_PRIMARY_BUTTON          ((Input_NumberTypeDef)3U)
 #define SYSTEM_INPUT_SECONDARY_BUTTON        ((Input_NumberTypeDef)4U)
+#define SYSTEM_INPUT_BATTERY                 ((Input_NumberTypeDef)5U)
+#define SYSTEM_INPUT_EXTERNAL_POWER          ((Input_NumberTypeDef)6U)
 #define SYSTEM_INPUT_BATTERY_DEPLETED        ((Input_NumberTypeDef)7U)
 #define SYSTEM_BUTTON_HOLD_TIME_MILLISECONDS (1500ULL)
 
@@ -230,6 +233,8 @@ int System_Run(void)
 
     System_ButtonChordState = (System_ButtonChordStateTypeDef){ 0 };
 
+    Random_Init();
+
     if(Storage_Init() != STORAGE_RESULT_OK)
     {
         return 1;
@@ -397,4 +402,23 @@ bool System_EraseSavedData(void)
     }
 
     return System_SaveSettings();
+}
+
+uint16_t System_GetBatteryMillivolts(void)
+{
+    int32_t Millivolts;
+
+    if(!Input_GetValue(SYSTEM_INPUT_BATTERY, &Millivolts) || (Millivolts < 0) || (Millivolts > UINT16_MAX))
+    {
+        return 0U;
+    }
+
+    return (uint16_t)Millivolts;
+}
+
+bool System_IsExternalPowerPresent(void)
+{
+    int32_t Present;
+
+    return Input_GetValue(SYSTEM_INPUT_EXTERNAL_POWER, &Present) && (Present != 0);
 }
