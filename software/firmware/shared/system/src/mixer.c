@@ -3,7 +3,7 @@
  * @brief Eight-channel audio mixer for applications and the system UI.
  *
  * Control functions run in the main loop and the mix runs in the audio output
- * context (an interrupt on embedded targets, an audio thread on Windows). The
+ * context (the audio output interrupt). The
  * two never share channel state: the main loop posts requests through a
  * single-producer, single-consumer queue, and the audio context applies them
  * before mixing each buffer. Synth messages travel through the same queue, so
