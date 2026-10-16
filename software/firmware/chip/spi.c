@@ -705,26 +705,44 @@ static void SPI_StoreFrame(void *Data, size_t Index, SPI_FrameSizeTypeDef FrameS
     }
 }
 
+/*
+ * The data registers are accessed at the frame's width: the SPI FIFO packs
+ * one frame per access, so a 32-bit access would send or take four.
+ */
 static void SPI_WriteTXDR(SPI_TypeDef *Instance, SPI_FrameSizeTypeDef FrameSize, uint16_t Frame)
 {
+    const uintptr_t Address = (uintptr_t)&Instance->TXDR;
+
     if(FrameSize == SPI_FRAME_SIZE_9_BIT)
     {
-        * (volatile uint16_t *)&Instance->TXDR = Frame;
+        volatile uint16_t *const Register = (volatile uint16_t *)Address;
+
+        *Register = Frame;
     }
     else
     {
-        * (volatile uint8_t *)&Instance->TXDR = (uint8_t)Frame;
+        volatile uint8_t *const Register = (volatile uint8_t *)Address;
+
+        *Register = (uint8_t)Frame;
     }
 }
 
 static uint16_t SPI_ReadRXDR(SPI_TypeDef *Instance, SPI_FrameSizeTypeDef FrameSize)
 {
+    const uintptr_t Address = (uintptr_t)&Instance->RXDR;
+
     if(FrameSize == SPI_FRAME_SIZE_9_BIT)
     {
-        return *(volatile uint16_t *)&Instance->RXDR;
+        const volatile uint16_t *const Register = (const volatile uint16_t *)Address;
+
+        return *Register;
     }
 
-    return *(volatile uint8_t *)&Instance->RXDR;
+    {
+        const volatile uint8_t *const Register = (const volatile uint8_t *)Address;
+
+        return *Register;
+    }
 }
 
 /* -------------------------------------------------------------------------- */

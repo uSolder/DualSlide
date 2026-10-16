@@ -71,14 +71,6 @@ target_compile_options(DualSlideFirmware PRIVATE
     -Wpedantic
 )
 
-# The chip drivers have only ever run unoptimised, and -O2 warns about type
-# punning in spi.c and an array bound in timer.c. Keep them at -O0 until those
-# are fixed and the drivers are tested optimised. The interrupt vectors in
-# interrupts.c have always been optimised.
-file(GLOB DS_CHIP_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_LIST_DIR}/chip/*.c")
-list(REMOVE_ITEM DS_CHIP_SOURCES "${CMAKE_CURRENT_LIST_DIR}/chip/interrupts.c")
-set_source_files_properties(${DS_CHIP_SOURCES} PROPERTIES COMPILE_OPTIONS "-O0")
-
 set(DS_LINKER_SCRIPT "${CMAKE_CURRENT_LIST_DIR}/chip/STM32H7A3RGT6_FLASH.ld")
 
 target_link_options(DualSlideFirmware PRIVATE

@@ -341,6 +341,11 @@ Timer_ResultTypeDef Timer_Init(Timer_HandleTypeDef *Timer)
 
     HandleIndex = Timer_GetHandleIndex(Timer->Timer);
 
+    if(HandleIndex >= TIMER_HANDLE_COUNT)
+    {
+        return TIMER_RESULT_INVALID_ARGUMENT;
+    }
+
     if(Timer->Initialized || (Timer_Handles[HandleIndex] != NULL))
     {
         return TIMER_RESULT_BUSY;
