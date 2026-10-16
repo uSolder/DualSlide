@@ -1,6 +1,6 @@
 /**
  * @file usb_drive.h
- * @brief Shares the game disk (disk.h) with a USB host as a mass-storage drive.
+ * @brief Prepares the game disk (disk.h) and shares it with a USB host as a drive.
  *
  * A disk without a filesystem is formatted as FAT12, labelled DUALSLIDE,
  * before it is shared.
@@ -16,16 +16,30 @@ extern "C" {
 #endif
 
 /**
- * @brief Prepare the game disk and attach to the bus as a USB drive.
+ * @brief Prepare the game disk and, if asked, attach to the bus as a USB drive.
  *
- * @return true on success; otherwise false.
+ * @param ShareOverUSB false prepares the disk only, leaving USB to another
+ *                     function (such as the USB audio test).
+ *
+ * @return true on success.
  */
-bool USBDrive_Init(void);
+bool USBDrive_Init(bool ShareOverUSB);
 
 /**
  * @brief Serve the host and write cached data to the disk. Call every frame.
  */
 void USBDrive_Process(void);
+
+/**
+ * @brief Report, once, that the host has finished changing the disk.
+ *
+ * The host counts as finished when it has written nothing for a second, or
+ * has ejected the drive.
+ *
+ * @return true when the disk changed since the last true; the caller should
+ *         read it afresh.
+ */
+bool USBDrive_TakeChanges(void);
 
 /**
  * @brief Detach from the bus and make everything written permanent.

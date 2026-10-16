@@ -1,15 +1,28 @@
 /**
  * @file app_manager.c
  * @brief Controls the DualSlide launcher and active application lifecycle.
+ *
+ * The apps are the games installed on the game disk (game_library.h). One is
+ * loaded into game memory at a time: the launcher's preview loads the game
+ * it shows, and starting a game uses the one already loaded. Loading another
+ * game first stops everything the loaded one started.
+ *
+ * While the launcher is showing, a change the USB host made to the disk
+ * makes the app manager list the games afresh.
  */
 
 #include "app_manager.h"
 
 #include "controls.h"
+#include "game_api.h"
+#include "game_library.h"
+#include "game_loader.h"
 #include "launcher.h"
 #include "mixer.h"
 #include "music.h"
+#include "open_sans.h"
 #include "sound.h"
+#include "usb_drive.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -48,12 +61,6 @@ static const AppManager_RuntimeInterfaceTypeDef AppManager_LauncherInterface =
     .Shutdown = Launcher_Shutdown
 };
 
-/*
- * Every app the launcher offers, in channel order. The firmware contains no
- * games or apps of its own: they will come from game files on the game disk.
- */
-static const AppManager_AppTypeDef *const *const AppManager_Applications = NULL;
-static const uint16_t AppManager_ApplicationCount = 0U;
 
 /* The standard palette, for apps without colours of their own; see the RENDER_ colour names. */
 static const Display_ColourTypeDef AppManager_StandardPalette[RENDER_STANDARD_COLOUR_COUNT] =
@@ -83,30 +90,90 @@ static uint16_t AppManager_ActiveApplicationIndex;
 static bool AppManager_Initialized;
 static bool AppManager_Paused;
 
+/* The game in game memory: its library index (-1 for none) and application. */
+static int32_t AppManager_LoadedIndex = -1;
+static const AppManager_AppTypeDef *AppManager_LoadedApplication;
+
 /* -------------------------------------------------------------------------- */
 /* Private functions                                                          */
 /* -------------------------------------------------------------------------- */
 
-static bool AppManager_IsApplicationIndexValid(uint16_t ApplicationIndex)
+/* Nothing the loaded game started may keep running, as its code may be replaced. */
+static void AppManager_StopGameAudio(void)
 {
-    return ApplicationIndex < AppManager_GetAppCount();
+    Music_Stop();
+    Sound_StopAll();
+    (void)Mixer_StopApplicationChannels();
 }
 
+static void AppManager_UnloadGame(void)
+{
+    AppManager_StopGameAudio();
+    AppManager_LoadedIndex = -1;
+    AppManager_LoadedApplication = NULL;
+    GameAPI_SetGame(NULL);
+}
+
+/*
+ * The application of a listed game, loading it if another is loaded. NULL
+ * when the game cannot run; its library entry then says why.
+ */
 static const AppManager_AppTypeDef *AppManager_GetApplication(uint16_t ApplicationIndex)
 {
-    if(!AppManager_IsApplicationIndexValid(ApplicationIndex))
+    GameLibrary_GameTypeDef *Game = GameLibrary_GetGame(ApplicationIndex);
+    const AppManager_AppTypeDef *Application;
+    GameFile_ResultTypeDef Result;
+
+    if((Game == NULL) || (Game->Result != GAME_FILE_OK))
     {
         return NULL;
     }
 
-    return AppManager_Applications[ApplicationIndex];
+    if(AppManager_LoadedIndex == (int32_t)ApplicationIndex)
+    {
+        return AppManager_LoadedApplication;
+    }
+
+    AppManager_UnloadGame();
+    Result = GameLoader_Load(&Game->File, &Application);
+
+    if(Result != GAME_FILE_OK)
+    {
+        Game->Result = Result;
+        return NULL;
+    }
+
+    AppManager_LoadedIndex = (int32_t)ApplicationIndex;
+    AppManager_LoadedApplication = Application;
+
+    return Application;
+}
+
+/* List the games afresh after the disk changed, and tell the launcher. */
+static void AppManager_RefreshGames(void)
+{
+    AppManager_UnloadGame();
+    (void)GameLibrary_Scan();
+    Launcher_GamesChanged();
+}
+
+/* A game without a preview of its own shows its name. */
+static void AppManager_DrawName(const GameLibrary_GameTypeDef *Game, Render_TargetTypeDef *Target)
+{
+    Render_Box(Target, (int16_t)APP_MANAGER_SPLASH_SCREEN_X, (int16_t)APP_MANAGER_SPLASH_SCREEN_Y,
+               APP_MANAGER_SPLASH_SCREEN_WIDTH, APP_MANAGER_SPLASH_SCREEN_HEIGHT, RENDER_DARK_GREY);
+    Render_DrawTextAligned(Target, &OpenSans36, Game->Summary.Info.Name,
+                           (int16_t)(APP_MANAGER_SPLASH_SCREEN_X + (APP_MANAGER_SPLASH_SCREEN_WIDTH / 2U)),
+                           (int16_t)(APP_MANAGER_SPLASH_SCREEN_Y + (APP_MANAGER_SPLASH_SCREEN_HEIGHT / 2U) - 18U),
+                           RENDER_ALIGN_CENTRE, RENDER_WHITE);
 }
 
 /* An app's colours, or the standard palette, filling the whole application range. */
 static void AppManager_FillPalette(const AppManager_AppTypeDef *Application, Display_ColourTypeDef *Palette)
 {
-    const Display_ColourTypeDef *Colours = (Application->Palette != NULL) ? Application->Palette : AppManager_StandardPalette;
-    uint16_t Count = (Application->Palette != NULL) ? Application->PaletteCount : (uint16_t)RENDER_STANDARD_COLOUR_COUNT;
+    const bool OwnColours = (Application != NULL) && (Application->Palette != NULL);
+    const Display_ColourTypeDef *Colours = OwnColours ? Application->Palette : AppManager_StandardPalette;
+    uint16_t Count = OwnColours ? Application->PaletteCount : (uint16_t)RENDER_STANDARD_COLOUR_COUNT;
 
     Count = (Count > APP_MANAGER_SPLASH_PALETTE_ENTRY_COUNT) ? (uint16_t)APP_MANAGER_SPLASH_PALETTE_ENTRY_COUNT : Count;
 
@@ -179,9 +246,7 @@ bool AppManager_StartApplication(uint16_t ApplicationIndex)
     }
 
     /* Each application starts with silent mixer channels and its own colours. */
-    Music_Stop();
-    Sound_StopAll();
-    (void)Mixer_StopApplicationChannels();
+    AppManager_StopGameAudio();
 
     {
         Display_ColourTypeDef Palette[APP_MANAGER_SPLASH_PALETTE_ENTRY_COUNT];
@@ -218,6 +283,8 @@ bool AppManager_Init(void)
     AppManager_State = APP_MANAGER_STATE_LAUNCHER;
     AppManager_ActiveApplicationIndex = 0U;
     AppManager_Paused = false;
+    AppManager_UnloadGame();
+    (void)GameLibrary_Scan();
 
     if(!AppManager_StartLauncher())
     {
@@ -240,6 +307,11 @@ void AppManager_Update(uint32_t DeltaTimeMilliseconds)
 
     if(AppManager_State == APP_MANAGER_STATE_LAUNCHER)
     {
+        if(USBDrive_TakeChanges())
+        {
+            AppManager_RefreshGames();
+        }
+
         if(AppManager_LauncherInterface.Update != NULL)
         {
             AppManager_LauncherInterface.Update(DeltaTimeMilliseconds);
@@ -281,9 +353,23 @@ void AppManager_Render(void)
 
 bool AppManager_GetAppSplashScreenPalette(uint16_t ApplicationIndex, Display_ColourTypeDef *Palette)
 {
+    if((Palette == NULL) || (GameLibrary_GetGame(ApplicationIndex) == NULL))
+    {
+        return false;
+    }
+
+    /* A game that cannot run explains why in the standard colours. */
+    AppManager_FillPalette(AppManager_GetApplication(ApplicationIndex), Palette);
+
+    return true;
+}
+
+bool AppManager_DrawAppSplashScreen(uint16_t ApplicationIndex, Render_TargetTypeDef *Target)
+{
+    const GameLibrary_GameTypeDef *Game = GameLibrary_GetGame(ApplicationIndex);
     const AppManager_AppTypeDef *Application;
 
-    if(Palette == NULL)
+    if((Target == NULL) || (Target->Pixels == NULL) || (Game == NULL))
     {
         return false;
     }
@@ -292,28 +378,14 @@ bool AppManager_GetAppSplashScreenPalette(uint16_t ApplicationIndex, Display_Col
 
     if(Application == NULL)
     {
-        return false;
+        GameLibrary_DrawProblem(Game, Target);
+        return true;
     }
 
-    AppManager_FillPalette(Application, Palette);
-
-    return true;
-}
-
-bool AppManager_DrawAppSplashScreen(uint16_t ApplicationIndex, Render_TargetTypeDef *Target)
-{
-    const AppManager_AppTypeDef *Application;
-
-    if((Target == NULL) || (Target->Pixels == NULL))
+    if(Application->DrawSplashScreen == NULL)
     {
-        return false;
-    }
-
-    Application = AppManager_GetApplication(ApplicationIndex);
-
-    if((Application == NULL) || (Application->DrawSplashScreen == NULL))
-    {
-        return false;
+        AppManager_DrawName(Game, Target);
+        return true;
     }
 
     return Application->DrawSplashScreen(Target);
@@ -395,9 +467,7 @@ void AppManager_OpenLauncher(void)
         Application->Shutdown();
     }
 
-    Music_Stop();
-    Sound_StopAll();
-    (void)Mixer_StopApplicationChannels();
+    AppManager_StopGameAudio();
 
     AppManager_State = APP_MANAGER_STATE_LAUNCHER;
     AppManager_ActiveApplicationIndex = 0U;
@@ -411,7 +481,7 @@ void AppManager_OpenLauncher(void)
 
 uint16_t AppManager_GetAppCount(void)
 {
-    return AppManager_ApplicationCount;
+    return GameLibrary_GetCount();
 }
 
 bool AppManager_IsLauncherActive(void)
@@ -445,9 +515,7 @@ void AppManager_Shutdown(void)
         }
     }
 
-    Music_Stop();
-    Sound_StopAll();
-    (void)Mixer_StopApplicationChannels();
+    AppManager_UnloadGame();
 
     AppManager_State = APP_MANAGER_STATE_LAUNCHER;
     AppManager_ActiveApplicationIndex = 0U;

@@ -21,7 +21,8 @@
 ENTRY(Reset_Handler)
 
 _Min_Heap_Size = 0x200;
-_Min_Stack_Size = 0x400;
+_Min_Stack_Size = 0x8000;    /* Reserved for the stack, which loaded games share */
+_Game_Memory_Size = 168K;    /* RAM for one loaded game's code and data */
 
 MEMORY
 {
@@ -135,6 +136,15 @@ SECTIONS
     . = ALIGN(4);
     _ebss = .;
     __bss_end__ = _ebss;
+  } >AXI_SRAM1
+
+  /* Loaded games run here: code and data together (game_memory.h). */
+  .game_memory (NOLOAD) :
+  {
+    . = ALIGN(32);
+    __game_memory_start__ = .;
+    . = . + _Game_Memory_Size;
+    __game_memory_end__ = .;
   } >AXI_SRAM1
 
   .ltdc_framebuffer0 (NOLOAD) :

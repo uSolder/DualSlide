@@ -64,6 +64,17 @@ bool Save_Store(const char *Name, const void *Data, uint32_t Size);
  */
 bool Save_Erase(const char *Name);
 
+/**
+ * @brief Save_Load(), Save_Store() and Save_Erase() within a namespace.
+ *
+ * For the system: each loaded game's saves live in a namespace named by its
+ * identifier, so two games choosing the same name keep separate saves. A
+ * NULL namespace means the plain names above.
+ */
+bool Save_LoadIn(const char *Namespace, const char *Name, void *Data, uint32_t Size);
+bool Save_StoreIn(const char *Namespace, const char *Name, const void *Data, uint32_t Size);
+bool Save_EraseIn(const char *Namespace, const char *Name);
+
 #ifdef __cplusplus
 }
 #endif

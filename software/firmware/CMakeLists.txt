@@ -38,16 +38,10 @@ add_subdirectory(system)
 add_subdirectory(apps)
 add_subdirectory(board/dspcbr1)
 
-option(DS_USB_AUDIO_TEST "Also enumerate as a USB speaker whose PCM replaces application audio" OFF)
+option(DS_USB_AUDIO_TEST "Enumerate as a USB speaker whose PCM replaces application audio, instead of the DUALSLIDE drive" OFF)
 
 if(DS_USB_AUDIO_TEST)
     target_compile_definitions(DualSlideSystem PRIVATE DS_USB_AUDIO_TEST)
-endif()
-
-option(DS_USB_MSC_TEST "Also enumerate as a USB drive holding the game disk in Flash" OFF)
-
-if(DS_USB_MSC_TEST)
-    target_compile_definitions(DualSlideSystem PRIVATE DS_USB_MSC_TEST)
 endif()
 
 add_executable(DualSlideFirmware

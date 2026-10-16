@@ -357,6 +357,21 @@ static void Launcher_Reset(void)
     Launcher_State.StartupChannelChangeCompleted = false;
 }
 
+void Launcher_GamesChanged(void)
+{
+    Launcher_State.SelectedApplication = 0;
+    Launcher_State.TunedApplication = 0;
+    Launcher_State.SplashPaletteApplication = -1;
+
+    /* In the menu, change channel to the new first game as if tuned to it. */
+    if((Launcher_State.Phase == LAUNCHER_PHASE_MENU) && (NUM_APPS != 0U))
+    {
+        Launcher_State.PreviewTransition = LAUNCHER_PREVIEW_TRANSITION_CLOSE;
+        Launcher_State.PreviewTransitionElapsedMilliseconds = 0U;
+        Launcher_State.ChannelOsdMilliseconds = LAUNCHER_OSD_MS;
+    }
+}
+
 static void Launcher_UpdatePhase(void)
 {
     const uint32_t Elapsed = Launcher_State.ElapsedMilliseconds;

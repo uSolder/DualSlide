@@ -254,6 +254,13 @@ typedef const AppManager_AppTypeDef *(*GameAPI_EntryTypeDef)(const GameAPI_TypeD
 /** The firmware's API, handed to every loaded game. */
 extern const GameAPI_TypeDef GameAPI_Firmware;
 
+/**
+ * @brief Tell the API which game is loaded, so its saves stay its own.
+ *
+ * @param Identifier The game's identifier (game_file.h), or NULL when none.
+ */
+void GameAPI_SetGame(const char *Identifier);
+
 #ifdef __cplusplus
 }
 #endif

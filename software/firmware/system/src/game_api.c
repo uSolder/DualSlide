@@ -6,12 +6,18 @@
 #include "game_api.h"
 
 #include "firmware_version.h"
+#include "game_file.h"
 #include "open_sans.h"
 #include "open_sans_bold.h"
 #include "random.h"
 #include "save.h"
 #include "system.h"
 #include "system_time.h"
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <string.h>
 
 static const GameAPI_RenderTypeDef GameAPI_Render =
 {
@@ -79,11 +85,41 @@ static const GameAPI_MusicTypeDef GameAPI_Music =
     .IsPlaying = Music_IsPlaying
 };
 
+/*
+ * Official games that saved under plain names while they were built into the
+ * firmware. They keep those names, so players keep their scores and progress.
+ */
+static const char *const GameAPI_PlainSaveGames[] =
+{
+    "dualslide.canal-tug",                  /* TUGC, TUGR */
+    "dualslide.dualtrack",                  /* TKRW */
+    "dualslide.window-washer"               /* WWHS */
+};
+
+/* The loaded game's save namespace, or NULL for plain names. */
+static char GameAPI_SaveNamespaceText[GAME_FILE_IDENTIFIER_SIZE];
+static const char *GameAPI_SaveNamespace;
+
+static bool GameAPI_SaveLoad(const char *Name, void *Data, uint32_t Size)
+{
+    return Save_LoadIn(GameAPI_SaveNamespace, Name, Data, Size);
+}
+
+static bool GameAPI_SaveStore(const char *Name, const void *Data, uint32_t Size)
+{
+    return Save_StoreIn(GameAPI_SaveNamespace, Name, Data, Size);
+}
+
+static bool GameAPI_SaveErase(const char *Name)
+{
+    return Save_EraseIn(GameAPI_SaveNamespace, Name);
+}
+
 static const GameAPI_SaveTypeDef GameAPI_Save =
 {
-    .Load = Save_Load,
-    .Store = Save_Store,
-    .Erase = Save_Erase
+    .Load = GameAPI_SaveLoad,
+    .Store = GameAPI_SaveStore,
+    .Erase = GameAPI_SaveErase
 };
 
 static const GameAPI_DisplayTypeDef GameAPI_Display =
@@ -144,3 +180,27 @@ const GameAPI_TypeDef GameAPI_Firmware =
     .System = &GameAPI_System,
     .Settings = &GameAPI_Settings
 };
+
+void GameAPI_SetGame(const char *Identifier)
+{
+    uint32_t Index;
+
+    GameAPI_SaveNamespace = NULL;
+
+    if(Identifier == NULL)
+    {
+        return;
+    }
+
+    for(Index = 0U; Index < (sizeof(GameAPI_PlainSaveGames) / sizeof(GameAPI_PlainSaveGames[0])); Index++)
+    {
+        if(strcmp(Identifier, GameAPI_PlainSaveGames[Index]) == 0)
+        {
+            return;
+        }
+    }
+
+    (void)strncpy(GameAPI_SaveNamespaceText, Identifier, sizeof(GameAPI_SaveNamespaceText) - 1U);
+    GameAPI_SaveNamespaceText[sizeof(GameAPI_SaveNamespaceText) - 1U] = '\0';
+    GameAPI_SaveNamespace = GameAPI_SaveNamespaceText;
+}

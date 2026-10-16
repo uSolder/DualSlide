@@ -35,21 +35,7 @@ static const uint8_t GameFile_Signature[GAME_FILE_SIGNATURE_SIZE] = GAME_FILE_SI
 
 static uint32_t GameFile_CalculateCrc(const uint8_t *Data, uint32_t Size)
 {
-    uint32_t CRC = 0xFFFFFFFFUL;
-    uint32_t Index;
-    uint8_t Bit;
-
-    for(Index = 0U; Index < Size; Index++)
-    {
-        CRC ^= Data[Index];
-
-        for(Bit = 0U; Bit < 8U; Bit++)
-        {
-            CRC = (CRC >> 1U) ^ ((CRC & 1U) != 0U ? 0xEDB88320UL : 0U);
-        }
-    }
-
-    return ~CRC;
+    return ~GameFile_UpdateCrc(GAME_FILE_CRC_START, Data, Size);
 }
 
 /* True when Offset + Size bytes fit within Limit, without overflowing. */
@@ -227,6 +213,49 @@ GameFile_ResultTypeDef GameFile_Verify(const void *Data, uint32_t Size)
     return GAME_FILE_OK;
 }
 
+uint32_t GameFile_UpdateCrc(uint32_t State, const void *Data, uint32_t Size)
+{
+    const uint8_t *Bytes = Data;
+    uint32_t Index;
+    uint8_t Bit;
+
+    for(Index = 0U; Index < Size; Index++)
+    {
+        State ^= Bytes[Index];
+
+        for(Bit = 0U; Bit < 8U; Bit++)
+        {
+            State = (State >> 1U) ^ ((State & 1U) != 0U ? 0xEDB88320UL : 0U);
+        }
+    }
+
+    return State;
+}
+
+bool GameFile_FindChunk(const void *Data, uint32_t Size, const GameFile_HeaderTypeDef *Header, uint32_t Identifier, GameFile_ChunkTypeDef *Chunk)
+{
+    const uint8_t *Bytes = Data;
+    uint32_t Index;
+
+    if((Header->ChunkTableOffset > Size) ||
+       (Header->ChunkCount > ((Size - Header->ChunkTableOffset) / sizeof(GameFile_ChunkTypeDef))))
+    {
+        return false;
+    }
+
+    for(Index = 0U; Index < Header->ChunkCount; Index++)
+    {
+        memcpy(Chunk, &Bytes[Header->ChunkTableOffset + (Index * sizeof(*Chunk))], sizeof(*Chunk));
+
+        if(Chunk->Identifier == Identifier)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 void GameFile_DescribeProblem(GameFile_ResultTypeDef Result, const GameFile_SummaryTypeDef *Summary, uint32_t AvailableMemory,
                               char Title[GAME_FILE_MESSAGE_SIZE], char Detail[GAME_FILE_MESSAGE_SIZE])
 {
@@ -286,6 +315,11 @@ void GameFile_DescribeProblem(GameFile_ResultTypeDef Result, const GameFile_Summ
                                     Name,
                                     (unsigned int)(((Summary != NULL) ? Summary->Header.MemorySize : 0U) + GAME_FILE_BYTES_PER_KILOBYTE - 1U) / GAME_FILE_BYTES_PER_KILOBYTE,
                                     (unsigned int)(AvailableMemory / GAME_FILE_BYTES_PER_KILOBYTE));
+            break;
+
+        case GAME_FILE_REFUSED:
+            (void)Render_FormatText(Title, GAME_FILE_MESSAGE_SIZE, "Can't start game");
+            (void)Render_FormatText(Detail, GAME_FILE_MESSAGE_SIZE, "%s didn't start on this DualSlide. Get its latest version.", Name);
             break;
 
         default:

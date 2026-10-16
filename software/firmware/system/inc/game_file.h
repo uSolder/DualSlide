@@ -182,8 +182,12 @@ typedef enum
     GAME_FILE_NEEDS_NEWER_FIRMWARE,         /* Newer file format, API or required chunk */
     GAME_FILE_NEEDS_NEWER_GAME,             /* Built for an older API major version */
     GAME_FILE_WRONG_HARDWARE,               /* Code for a different CPU */
-    GAME_FILE_TOO_LARGE                     /* Needs more memory than this DualSlide has */
+    GAME_FILE_TOO_LARGE,                    /* Needs more memory than this DualSlide has */
+    GAME_FILE_REFUSED                       /* Loaded, but the game declined to run */
 } GameFile_ResultTypeDef;
+
+/** Starting value for GameFile_UpdateCrc(). */
+#define GAME_FILE_CRC_START                 (0xFFFFFFFFUL)
 
 /**
  * @brief What the launcher needs to list a game and decide whether it can run.
@@ -240,6 +244,29 @@ GameFile_ResultTypeDef GameFile_CheckCompatibility(const GameFile_SummaryTypeDef
  * @return GAME_FILE_OK or GAME_FILE_DAMAGED.
  */
 GameFile_ResultTypeDef GameFile_Verify(const void *Data, uint32_t Size);
+
+/**
+ * @brief Add bytes to a CRC-32 being calculated a piece at a time.
+ *
+ * Start from GAME_FILE_CRC_START; the CRC of everything added is the
+ * bitwise inverse of the final value, as in FileCRC.
+ *
+ * @return The updated value.
+ */
+uint32_t GameFile_UpdateCrc(uint32_t State, const void *Data, uint32_t Size);
+
+/**
+ * @brief Find a chunk in a game file's chunk table.
+ *
+ * @param Data       The start of the file, as given to GameFile_ReadSummary().
+ * @param Size       Number of bytes in Data.
+ * @param Header     From a summary that read successfully.
+ * @param Identifier GAME_FILE_CHUNK_*.
+ * @param Chunk      Receives the chunk's table entry.
+ *
+ * @return true when the chunk is present.
+ */
+bool GameFile_FindChunk(const void *Data, uint32_t Size, const GameFile_HeaderTypeDef *Header, uint32_t Identifier, GameFile_ChunkTypeDef *Chunk);
 
 /**
  * @brief Explain a problem to the player.

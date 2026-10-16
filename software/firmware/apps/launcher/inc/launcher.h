@@ -49,6 +49,11 @@ void Launcher_Resume(void);
  */
 void Launcher_Shutdown(void);
 
+/**
+ * @brief The list of games changed: tune to the first and show it afresh.
+ */
+void Launcher_GamesChanged(void);
+
 #ifdef __cplusplus
 }
 #endif

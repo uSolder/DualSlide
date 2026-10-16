@@ -28,12 +28,10 @@
 #include "system_tasks.h"
 #include "system_time.h"
 
+#include "usb_drive.h"
+
 #ifdef DS_USB_AUDIO_TEST
 #include "usb_audio.h"
-#endif
-
-#ifdef DS_USB_MSC_TEST
-#include "usb_drive.h"
 #endif
 
 #include <stdbool.h>
@@ -51,14 +49,11 @@
  */
 _Static_assert(USB_AUDIO_OUTPUT_SAMPLE_RATE_HZ == MIXER_SAMPLE_RATE_HZ, "USB audio output rate must match the mixer rate");
 _Static_assert(USB_AUDIO_OUTPUT_CHANNEL_COUNT == 1U, "USB audio output must be mono to feed a mixer channel");
-#endif
 
-/*
- * USB mass storage test: the board also enumerates as a USB drive holding the
- * game disk in Flash. Everything else runs normally.
- */
-#if defined(DS_USB_AUDIO_TEST) && defined(DS_USB_MSC_TEST)
-#error "The USB device presents one function: enable DS_USB_AUDIO_TEST or DS_USB_MSC_TEST, not both"
+/* USB presents one function, so the speaker replaces the DUALSLIDE drive. */
+#define SYSTEM_SHARE_GAME_DISK               (false)
+#else
+#define SYSTEM_SHARE_GAME_DISK               (true)
 #endif
 
 #define SYSTEM_INPUT_PRIMARY_BUTTON          ((Input_NumberTypeDef)3U)
@@ -259,6 +254,13 @@ int System_Run(void)
     /* Saved brightness and volume, once the display and mixer are ready. */
     System_InitSettings();
 
+    /*
+     * The game disk, shared over USB as the DUALSLIDE drive, before the app
+     * manager lists the games on it. Without it the device still runs, with
+     * no games, so a disk fault never stops the system starting.
+     */
+    (void)USBDrive_Init(SYSTEM_SHARE_GAME_DISK);
+
     if(!AppManager_Init())
     {
         return 1;
@@ -281,16 +283,6 @@ int System_Run(void)
 
 #ifdef DS_USB_AUDIO_TEST
     if(!USBAudio_Init() || !Mixer_PlayGenerator(MIXER_SYSTEM_CHANNEL, USBAudio_FillAudioBuffer, NULL))
-    {
-        Audio_Stop();
-        AppManager_Shutdown();
-
-        return 1;
-    }
-#endif
-
-#ifdef DS_USB_MSC_TEST
-    if(!USBDrive_Init())
     {
         Audio_Stop();
         AppManager_Shutdown();
@@ -334,9 +326,7 @@ int System_Run(void)
         AppManager_Update(DeltaTimeMilliseconds);
         AppManager_Render();
 
-#ifdef DS_USB_MSC_TEST
         USBDrive_Process();
-#endif
 
         if(!SystemTasks_Process())
         {
@@ -348,9 +338,8 @@ int System_Run(void)
     USBAudio_Deinit();
 #endif
 
-#ifdef DS_USB_MSC_TEST
+    /* Whatever the host wrote is made permanent before the power goes. */
     USBDrive_Deinit();
-#endif
 
     Audio_Stop();
     AppManager_Shutdown();
