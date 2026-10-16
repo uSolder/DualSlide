@@ -12,8 +12,8 @@
 **                  Flash Bank 1: 0x08000000-0x0807FFFF
 **                  Flash Bank 2: 0x08100000-0x0817FFFF
 **
-**                Firmware uses Bank 1. Persistent storage reserves the final
-**                two sectors of Bank 2.
+**                Firmware uses Bank 1. The game disk fills Bank 2 except for
+**                the final two sectors, which hold persistent storage.
 **
 ******************************************************************************
 */
@@ -27,6 +27,7 @@ MEMORY
 {
   ITCMRAM   (xrw) : ORIGIN = 0x00000000, LENGTH = 64K
   FLASH     (rx)  : ORIGIN = 0x08000000, LENGTH = 512K
+  DISK      (rw)  : ORIGIN = 0x08100000, LENGTH = 496K
   STORAGE   (rw)  : ORIGIN = 0x0817C000, LENGTH = 16K
   DTCMRAM1  (xrw) : ORIGIN = 0x20000000, LENGTH = 64K
   DTCMRAM2  (xrw) : ORIGIN = 0x20010000, LENGTH = 64K
@@ -37,6 +38,8 @@ MEMORY
   RAM_SRD   (xrw) : ORIGIN = 0x38000000, LENGTH = 32K
 }
 
+__disk_flash_start__ = ORIGIN(DISK);
+__disk_flash_end__ = ORIGIN(DISK) + LENGTH(DISK);
 __storage_flash_start__ = ORIGIN(STORAGE);
 __storage_flash_end__ = ORIGIN(STORAGE) + LENGTH(STORAGE);
 _estack = ORIGIN(AXI_SRAM1) + LENGTH(AXI_SRAM1);

@@ -39,7 +39,7 @@ if(DS_USB_AUDIO_TEST)
     target_compile_definitions(DualSlideSystem PRIVATE DS_USB_AUDIO_TEST)
 endif()
 
-option(DS_USB_MSC_TEST "Also enumerate as a USB drive backed by a FAT12 RAM disk" OFF)
+option(DS_USB_MSC_TEST "Also enumerate as a USB drive holding the game disk in Flash" OFF)
 
 if(DS_USB_MSC_TEST)
     target_compile_definitions(DualSlideSystem PRIVATE DS_USB_MSC_TEST)

@@ -32,8 +32,7 @@
 #endif
 
 #ifdef DS_USB_MSC_TEST
-#include "ram_disk.h"
-#include "usb_msc.h"
+#include "usb_drive.h"
 #endif
 
 #include <stdbool.h>
@@ -54,8 +53,8 @@ _Static_assert(USB_AUDIO_OUTPUT_CHANNEL_COUNT == 1U, "USB audio output must be m
 #endif
 
 /*
- * USB mass storage test: the board also enumerates as a USB drive backed by a
- * FAT12 RAM disk. Everything else runs normally.
+ * USB mass storage test: the board also enumerates as a USB drive holding the
+ * game disk in Flash. Everything else runs normally.
  */
 #if defined(DS_USB_AUDIO_TEST) && defined(DS_USB_MSC_TEST)
 #error "The USB device presents one function: enable DS_USB_AUDIO_TEST or DS_USB_MSC_TEST, not both"
@@ -286,9 +285,7 @@ int System_Run(void)
 #endif
 
 #ifdef DS_USB_MSC_TEST
-    RamDisk_Format();
-
-    if(!USBMSC_Init(&RamDisk_Media))
+    if(!USBDrive_Init())
     {
         Audio_Stop();
         AppManager_Shutdown();
@@ -332,6 +329,10 @@ int System_Run(void)
         AppManager_Update(DeltaTimeMilliseconds);
         AppManager_Render();
 
+#ifdef DS_USB_MSC_TEST
+        USBDrive_Process();
+#endif
+
         if(!SystemTasks_Process())
         {
             Running = false;
@@ -343,7 +344,7 @@ int System_Run(void)
 #endif
 
 #ifdef DS_USB_MSC_TEST
-    USBMSC_Deinit();
+    USBDrive_Deinit();
 #endif
 
     Audio_Stop();

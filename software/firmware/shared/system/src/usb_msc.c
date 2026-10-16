@@ -18,7 +18,13 @@
  * discarded. Only a malformed CBW stalls both endpoints, after which the host
  * must perform reset recovery.
  *
- * Everything runs in USB interrupt context.
+ * The transport runs in USB interrupt context, but the medium may be slow
+ * (a Flash erase takes milliseconds), so it is only accessed from
+ * USBMSC_Process() in the main loop. When a command needs the medium, the
+ * interrupt leaves a pending operation and starts no transfer; the controller
+ * NAKs the host until USBMSC_Process() completes the operation and starts the
+ * next transfer. The host sends no new command meanwhile; only a class reset
+ * can arrive, which abandons the pending operation.
  */
 
 #include "usb_msc.h"
@@ -83,8 +89,11 @@
 #define USB_MSC_CSW_STATUS_FAILED               (1U)
 #define USB_MSC_CSW_STATUS_PHASE_ERROR          (2U)
 
-/* Data-stage buffer: a whole number of blocks and of packets. */
-#define USB_MSC_BUFFER_BLOCKS                   (8U)
+/*
+ * Data-stage buffer: a whole number of blocks and of packets. Each pass of
+ * USBMSC_Process() moves at most one buffer, so it sets the throughput.
+ */
+#define USB_MSC_BUFFER_BLOCKS                   (16U)
 #define USB_MSC_BUFFER_SIZE                     (USB_MSC_BUFFER_BLOCKS * USB_MSC_BLOCK_SIZE)
 
 _Static_assert((USB_MSC_BUFFER_SIZE % USB_MSC_MAX_PACKET_SIZE) == 0U, "Buffer must hold whole packets");
@@ -146,6 +155,17 @@ typedef enum
     USB_MSC_STAGE_STATUS,
     USB_MSC_STAGE_STALLED
 } USBMSC_StageTypeDef;
+
+/**
+ * @brief Medium operation waiting for USBMSC_Process().
+ */
+typedef enum
+{
+    USB_MSC_PENDING_NONE = 0,
+    USB_MSC_PENDING_READ,
+    USB_MSC_PENDING_WRITE,
+    USB_MSC_PENDING_FLUSH
+} USBMSC_PendingTypeDef;
 
 /**
  * @brief Source or destination of the data stage.
@@ -257,8 +277,14 @@ static void USBMSC_Fail(uint8_t SenseKey, uint8_t AdditionalSense);
 static void USBMSC_PhaseError(void);
 static void USBMSC_FinishWithoutData(void);
 static void USBMSC_ContinueIn(void);
+static void USBMSC_SendData(uint32_t Length);
+static void USBMSC_EndDataIn(void);
 static void USBMSC_ContinueOut(void);
 static void USBMSC_HandleDataOut(uint16_t Length);
+static void USBMSC_FinishDataOut(uint32_t Length);
+static void USBMSC_ProcessRead(void);
+static void USBMSC_ProcessWrite(void);
+static void USBMSC_ProcessFlush(void);
 static void USBMSC_SendStatus(void);
 static void USBMSC_SetSense(uint8_t SenseKey, uint8_t AdditionalSense);
 static uint32_t USBMSC_ReadBigEndian32(const uint8_t *Data);
@@ -307,6 +333,10 @@ static uint32_t USBMSC_Transferred;
 static uint32_t USBMSC_Block;
 static uint32_t USBMSC_BlocksRemaining;
 static uint32_t USBMSC_ChunkLength;
+static uint32_t USBMSC_ReceivedLength;
+
+/* Set by the USB interrupt, cleared by USBMSC_Process() or a reset. */
+static volatile USBMSC_PendingTypeDef USBMSC_Pending;
 
 /* Sense data reported by the next REQUEST SENSE. */
 static uint8_t USBMSC_SenseKey;
@@ -555,6 +585,7 @@ static void USBMSC_CloseEndpoints(void)
         USBDevice_CloseEndpoint(USB_MSC_ENDPOINT_IN);
     }
 
+    USBMSC_Pending = USB_MSC_PENDING_NONE;
     USBMSC_Stage = USB_MSC_STAGE_COMMAND;
 }
 
@@ -668,38 +699,30 @@ static void USBMSC_FinishWithoutData(void)
 
 static void USBMSC_ContinueIn(void)
 {
-    uint32_t Length = 0U;
-
-    if(USBMSC_DataKind == USB_MSC_DATA_REPLY)
+    if((USBMSC_DataKind == USB_MSC_DATA_REPLY) && (USBMSC_ChunkLength != 0U))
     {
-        Length = USBMSC_ChunkLength;
         USBMSC_DataKind = USB_MSC_DATA_NONE;
-    }
-    else if((USBMSC_DataKind == USB_MSC_DATA_MEDIA) && (USBMSC_BlocksRemaining != 0U))
-    {
-        uint32_t Count = (USBMSC_BlocksRemaining < USB_MSC_BUFFER_BLOCKS) ? USBMSC_BlocksRemaining : USB_MSC_BUFFER_BLOCKS;
-
-        if(!USBMSC_Media->Read(USBMSC_Media->Context, USBMSC_Block, USBMSC_DataBuffer, Count))
-        {
-            USBMSC_SetSense(USB_MSC_SENSE_MEDIUM_ERROR, USB_MSC_ASC_UNRECOVERED_READ_ERROR);
-            USBMSC_Status = USB_MSC_CSW_STATUS_FAILED;
-            USBMSC_DataKind = USB_MSC_DATA_NONE;
-        }
-        else
-        {
-            USBMSC_Block += Count;
-            USBMSC_BlocksRemaining -= Count;
-            Length = Count * USB_MSC_BLOCK_SIZE;
-        }
-    }
-
-    if(Length != 0U)
-    {
-        USBMSC_Transferred += Length;
-        (void)USBDevice_Transmit(USB_MSC_ENDPOINT_IN, USBMSC_DataBuffer, (uint16_t)Length);
+        USBMSC_SendData(USBMSC_ChunkLength);
         return;
     }
 
+    if((USBMSC_DataKind == USB_MSC_DATA_MEDIA) && (USBMSC_BlocksRemaining != 0U))
+    {
+        USBMSC_Pending = USB_MSC_PENDING_READ;
+        return;
+    }
+
+    USBMSC_EndDataIn();
+}
+
+static void USBMSC_SendData(uint32_t Length)
+{
+    USBMSC_Transferred += Length;
+    (void)USBDevice_Transmit(USB_MSC_ENDPOINT_IN, USBMSC_DataBuffer, (uint16_t)Length);
+}
+
+static void USBMSC_EndDataIn(void)
+{
     /*
      * Data stage over. A shortfall that ends on a packet boundary needs a
      * zero-length packet so the host knows no more data is coming.
@@ -732,27 +755,16 @@ static void USBMSC_HandleDataOut(uint16_t Length)
 {
     if(USBMSC_DataKind == USB_MSC_DATA_MEDIA)
     {
-        uint32_t Count = Length / USB_MSC_BLOCK_SIZE;
-
-        if(Count > USBMSC_BlocksRemaining)
-        {
-            Count = USBMSC_BlocksRemaining;
-        }
-
-        if((Count != 0U) && !USBMSC_Media->Write(USBMSC_Media->Context, USBMSC_Block, USBMSC_DataBuffer, Count))
-        {
-            /* Keep reading the host's data, but write no more of it. */
-            USBMSC_SetSense(USB_MSC_SENSE_MEDIUM_ERROR, USB_MSC_ASC_WRITE_ERROR);
-            USBMSC_Status = USB_MSC_CSW_STATUS_FAILED;
-            USBMSC_DataKind = USB_MSC_DATA_DISCARD;
-        }
-        else
-        {
-            USBMSC_Block += Count;
-            USBMSC_BlocksRemaining -= Count;
-        }
+        USBMSC_ReceivedLength = Length;
+        USBMSC_Pending = USB_MSC_PENDING_WRITE;
+        return;
     }
 
+    USBMSC_FinishDataOut(Length);
+}
+
+static void USBMSC_FinishDataOut(uint32_t Length)
+{
     USBMSC_Transferred += Length;
 
     /* A short packet ends the data stage early. */
@@ -879,11 +891,15 @@ static void USBMSC_ExecuteCommand(const uint8_t *Command)
                 USBMSC_Ejected = (Command[4] & 0x01U) == 0U;
             }
 
-            USBMSC_FinishWithoutData();
+            /* Everything the host wrote must be permanent before the eject completes. */
+            USBMSC_Pending = USB_MSC_PENDING_FLUSH;
+            return;
+
+        case USB_MSC_SCSI_SYNCHRONIZE_CACHE_10:
+            USBMSC_Pending = USB_MSC_PENDING_FLUSH;
             return;
 
         case USB_MSC_SCSI_PREVENT_ALLOW_REMOVAL:
-        case USB_MSC_SCSI_SYNCHRONIZE_CACHE_10:
             USBMSC_FinishWithoutData();
             return;
 
@@ -949,6 +965,64 @@ static void USBMSC_CommandReadWrite(const uint8_t *Command, bool Write)
     USBMSC_FinishWithoutData();
 }
 
+/* -------------------------------------------------------------------------- */
+/* Medium operations                                                          */
+/* -------------------------------------------------------------------------- */
+
+static void USBMSC_ProcessRead(void)
+{
+    uint32_t Count = (USBMSC_BlocksRemaining < USB_MSC_BUFFER_BLOCKS) ? USBMSC_BlocksRemaining : USB_MSC_BUFFER_BLOCKS;
+
+    if(!USBMSC_Media->Read(USBMSC_Media->Context, USBMSC_Block, USBMSC_DataBuffer, Count))
+    {
+        USBMSC_SetSense(USB_MSC_SENSE_MEDIUM_ERROR, USB_MSC_ASC_UNRECOVERED_READ_ERROR);
+        USBMSC_Status = USB_MSC_CSW_STATUS_FAILED;
+        USBMSC_DataKind = USB_MSC_DATA_NONE;
+        USBMSC_EndDataIn();
+        return;
+    }
+
+    USBMSC_Block += Count;
+    USBMSC_BlocksRemaining -= Count;
+    USBMSC_SendData(Count * USB_MSC_BLOCK_SIZE);
+}
+
+static void USBMSC_ProcessWrite(void)
+{
+    uint32_t Count = USBMSC_ReceivedLength / USB_MSC_BLOCK_SIZE;
+
+    if(Count > USBMSC_BlocksRemaining)
+    {
+        Count = USBMSC_BlocksRemaining;
+    }
+
+    if((Count != 0U) && !USBMSC_Media->Write(USBMSC_Media->Context, USBMSC_Block, USBMSC_DataBuffer, Count))
+    {
+        /* Keep reading the host's data, but write no more of it. */
+        USBMSC_SetSense(USB_MSC_SENSE_MEDIUM_ERROR, USB_MSC_ASC_WRITE_ERROR);
+        USBMSC_Status = USB_MSC_CSW_STATUS_FAILED;
+        USBMSC_DataKind = USB_MSC_DATA_DISCARD;
+    }
+    else
+    {
+        USBMSC_Block += Count;
+        USBMSC_BlocksRemaining -= Count;
+    }
+
+    USBMSC_FinishDataOut(USBMSC_ReceivedLength);
+}
+
+static void USBMSC_ProcessFlush(void)
+{
+    if((USBMSC_Media->Flush != NULL) && !USBMSC_Media->Flush(USBMSC_Media->Context))
+    {
+        USBMSC_Fail(USB_MSC_SENSE_MEDIUM_ERROR, USB_MSC_ASC_WRITE_ERROR);
+        return;
+    }
+
+    USBMSC_FinishWithoutData();
+}
+
 static void USBMSC_SetSense(uint8_t SenseKey, uint8_t AdditionalSense)
 {
     USBMSC_SenseKey = SenseKey;
@@ -1005,9 +1079,40 @@ bool USBMSC_Init(const USBMSC_MediaTypeDef *Media)
     USBMSC_Configured = false;
     USBMSC_Ejected = false;
     USBMSC_Stage = USB_MSC_STAGE_COMMAND;
+    USBMSC_Pending = USB_MSC_PENDING_NONE;
     USBMSC_SetSense(USB_MSC_SENSE_NO_SENSE, USB_MSC_ASC_NONE);
 
     return USBDevice_Init(&USBMSC_Function);
+}
+
+void USBMSC_Process(void)
+{
+    USBMSC_PendingTypeDef Pending = USBMSC_Pending;
+
+    if(Pending == USB_MSC_PENDING_NONE)
+    {
+        return;
+    }
+
+    USBMSC_Pending = USB_MSC_PENDING_NONE;
+
+    switch(Pending)
+    {
+        case USB_MSC_PENDING_READ:
+            USBMSC_ProcessRead();
+            break;
+
+        case USB_MSC_PENDING_WRITE:
+            USBMSC_ProcessWrite();
+            break;
+
+        case USB_MSC_PENDING_FLUSH:
+            USBMSC_ProcessFlush();
+            break;
+
+        default:
+            break;
+    }
 }
 
 void USBMSC_Deinit(void)
