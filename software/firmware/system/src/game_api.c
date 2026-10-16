@@ -114,6 +114,16 @@ static const GameAPI_SystemTypeDef GameAPI_System =
     .IsExternalPowerPresent = System_IsExternalPowerPresent
 };
 
+static const GameAPI_SettingsTypeDef GameAPI_Settings =
+{
+    .GetBrightness = System_GetBrightness,
+    .SetBrightness = System_SetBrightness,
+    .GetVolume = System_GetVolume,
+    .SetVolume = System_SetVolume,
+    .SaveSettings = System_SaveSettings,
+    .EraseSavedData = System_EraseSavedData
+};
+
 const GameAPI_TypeDef GameAPI_Firmware =
 {
     .VersionMajor = GAME_API_VERSION_MAJOR,
@@ -131,5 +141,6 @@ const GameAPI_TypeDef GameAPI_Firmware =
     .Save = &GameAPI_Save,
     .Display = &GameAPI_Display,
     .Fonts = &GameAPI_Fonts,
-    .System = &GameAPI_System
+    .System = &GameAPI_System,
+    .Settings = &GameAPI_Settings
 };

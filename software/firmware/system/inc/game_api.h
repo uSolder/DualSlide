@@ -200,6 +200,21 @@ typedef struct
     bool (*IsExternalPowerPresent)(void);
 } GameAPI_SystemTypeDef;
 
+/** Device settings (system.h), for the settings app. */
+typedef struct
+{
+    uint8_t (*GetBrightness)(void);
+    void (*SetBrightness)(uint8_t Percent);
+    uint8_t (*GetVolume)(void);
+    void (*SetVolume)(uint8_t Percent);
+
+    /** Make the brightness and volume permanent. */
+    bool (*SaveSettings)(void);
+
+    /** Erase every game's saved data, keeping the settings. */
+    bool (*EraseSavedData)(void);
+} GameAPI_SettingsTypeDef;
+
 /**
  * @brief Everything the firmware offers a game.
  *
@@ -224,6 +239,7 @@ typedef struct
     const GameAPI_DisplayTypeDef *Display;
     const GameAPI_FontsTypeDef *Fonts;
     const GameAPI_SystemTypeDef *System;
+    const GameAPI_SettingsTypeDef *Settings;
 } GameAPI_TypeDef;
 
 /**
