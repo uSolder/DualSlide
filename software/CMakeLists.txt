@@ -25,8 +25,8 @@ target_include_directories(DualSlideAssets
 
     # Instruments only need the music and audio types.
     PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/firmware/shared/system/inc
-        ${CMAKE_CURRENT_SOURCE_DIR}/firmware/shared/api
+        ${CMAKE_CURRENT_SOURCE_DIR}/firmware/system/inc
+        ${CMAKE_CURRENT_SOURCE_DIR}/firmware/api
 )
 
 target_compile_options(DualSlideAssets PRIVATE
@@ -38,6 +38,4 @@ target_compile_options(DualSlideAssets PRIVATE
     -fdata-sections
 )
 
-add_subdirectory(firmware/shared)
-add_subdirectory(apps)
-add_subdirectory(firmware/embedded)
+add_subdirectory(firmware)

@@ -17,7 +17,7 @@ Usage:
        the game's folder:
            python song_converter.py pong.mid --name pong --loop ^
                --instrument Piano=piano --instrument Bass=bass ^
-               --game-dir ../../apps/games/pong
+               --game-dir path/to/your_game
 
     --instrument TRACK=NAME   TRACK is a track name or index from --list; NAME
                               is an instrument made by instrument_converter.py
