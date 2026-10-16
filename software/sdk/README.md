@@ -11,10 +11,27 @@ DualSlide headers (`render.h`, `controls.h`, `sound.h`, `mixer.h`, `music.h`,
 `AppManager_AppTypeDef` with its `Init`, `Update`, `Render` and other
 callbacks.
 
-Its `CMakeLists.txt` names the game:
+Its `CMakeLists.txt` fetches this repository at a release tag, so every game
+builds against a known SDK, then names the game:
 
 ```cmake
-include("${DUALSLIDE_DIR}/software/sdk/cmake/DualSlideGame.cmake")
+set(DUALSLIDE_VERSION v1.0.0)
+
+include(FetchContent)
+FetchContent_Declare(DualSlide
+    GIT_REPOSITORY https://github.com/uSolder/DualSlide.git
+    GIT_TAG        ${DUALSLIDE_VERSION}
+    GIT_SHALLOW    TRUE
+    SOURCE_SUBDIR  software/sdk)
+FetchContent_MakeAvailable(DualSlide)
+
+if(NOT CMAKE_TOOLCHAIN_FILE)
+    set(CMAKE_TOOLCHAIN_FILE "${dualslide_SOURCE_DIR}/software/sdk/cmake/toolchain.cmake")
+endif()
+
+project(Pong LANGUAGES C)
+
+include("${dualslide_SOURCE_DIR}/software/sdk/cmake/DualSlideGame.cmake")
 
 dualslide_add_game(pong
     APP         Pong_App
@@ -30,6 +47,19 @@ dualslide_add_game(pong
 - `ID` identifies the game for good: keep it when releasing new versions.
 - `VERSION` is the game's own version, shown to players. Raise it with every
   release.
+- `DUALSLIDE_VERSION` is the DualSlide release the game is built for. Each
+  game repository also has a `local` preset that sets
+  `FETCHCONTENT_SOURCE_DIR_DUALSLIDE` to a checkout beside it, for changing
+  the SDK and a game together.
+
+## What games can include
+
+Only the game-facing firmware headers, which the SDK copies into the game's
+build folder (`DUALSLIDE_SDK_HEADERS` in `cmake/DualSlideGame.cmake`):
+`render.h`, `display.h`, `audio.h`, `font.h`, `system_time.h`, `controls.h`,
+`sound.h`, `mixer.h`, `music.h`, `save.h`, `random.h`, `system.h`,
+`app_manager.h`, and the SDK's `open_sans.h` and `open_sans_bold.h`. The rest
+of the firmware is out of reach.
 
 ## How it works
 

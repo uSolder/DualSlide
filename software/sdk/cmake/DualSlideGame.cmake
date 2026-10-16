@@ -12,12 +12,39 @@
 #
 # Produces <target>.dsg in the build folder. The game is compiled with the
 # firmware's compiler settings and its own copy of the C and maths libraries,
-# and calls the firmware through the SDK (sdk/src/dualslide_sdk.c).
+# and calls the firmware through the SDK (sdk/src/dualslide_sdk.c). It sees
+# only the headers in DUALSLIDE_SDK_HEADERS.
 
 set(DUALSLIDE_SDK_DIR "${CMAKE_CURRENT_LIST_DIR}/.." CACHE INTERNAL "")
 set(DUALSLIDE_SOFTWARE_DIR "${DUALSLIDE_SDK_DIR}/.." CACHE INTERNAL "")
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+
+# The headers a game may use, copied from the firmware so games see nothing
+# else of it. game_api.h is here because the SDK's own sources need it.
+set(DUALSLIDE_SDK_HEADERS
+    firmware/api/audio.h
+    firmware/api/display.h
+    firmware/api/render.h
+    firmware/api/system_time.h
+    firmware/system/inc/controls.h
+    firmware/system/inc/game_api.h
+    firmware/system/inc/mixer.h
+    firmware/system/inc/music.h
+    firmware/system/inc/random.h
+    firmware/system/inc/save.h
+    firmware/system/inc/sound.h
+    firmware/system/inc/system.h
+    firmware/apps/app_manager/inc/app_manager.h
+    assets/fonts/font.h
+)
+
+set(DUALSLIDE_SDK_INCLUDE_DIR "${CMAKE_BINARY_DIR}/dualslide_sdk/include" CACHE INTERNAL "")
+
+foreach(HEADER ${DUALSLIDE_SDK_HEADERS})
+    get_filename_component(HEADER_NAME "${HEADER}" NAME)
+    configure_file("${DUALSLIDE_SOFTWARE_DIR}/${HEADER}" "${DUALSLIDE_SDK_INCLUDE_DIR}/${HEADER_NAME}" COPYONLY)
+endforeach()
 
 function(dualslide_add_game TARGET)
     cmake_parse_arguments(GAME "" "APP;ID;NAME;VERSION;AUTHOR;DESCRIPTION" "SOURCES;INCLUDES" ${ARGN})
@@ -40,14 +67,11 @@ function(dualslide_add_game TARGET)
         C_EXTENSIONS OFF
     )
 
-    # The SDK's font headers come first, in place of the firmware's.
+    # The SDK's own headers, including its fonts, then the game-facing firmware headers.
     target_include_directories(${TARGET} PRIVATE
         ${GAME_INCLUDES}
         "${DUALSLIDE_SDK_DIR}/include"
-        "${DUALSLIDE_SOFTWARE_DIR}/firmware/api"
-        "${DUALSLIDE_SOFTWARE_DIR}/firmware/system/inc"
-        "${DUALSLIDE_SOFTWARE_DIR}/firmware/apps/app_manager/inc"
-        "${DUALSLIDE_SOFTWARE_DIR}/assets/fonts"
+        "${DUALSLIDE_SDK_INCLUDE_DIR}"
     )
 
     target_compile_definitions(${TARGET} PRIVATE DUALSLIDE_GAME_APP=${GAME_APP})
