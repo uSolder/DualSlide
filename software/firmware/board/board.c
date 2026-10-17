@@ -321,7 +321,8 @@ static DisplayController_HandleTypeDef Board_LCDDisplayController =
         .HorizontalSync = DISPLAY_CONTROLLER_POLARITY_ACTIVE_LOW,
         .VerticalSync = DISPLAY_CONTROLLER_POLARITY_ACTIVE_LOW,
         .DataEnable = DISPLAY_CONTROLLER_POLARITY_ACTIVE_LOW,
-        .PixelClockEdge = DISPLAY_CONTROLLER_PIXEL_CLOCK_RISING_EDGE
+        /* The panel samples on the rising edge, so the data changes on the falling edge; driving it on the rising edge left green fringes on dark-to-light edges. */
+        .PixelClockEdge = DISPLAY_CONTROLLER_PIXEL_CLOCK_FALLING_EDGE
     },
     .BackgroundColour =
     {
