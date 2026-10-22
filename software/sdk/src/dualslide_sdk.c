@@ -371,6 +371,11 @@ uint32_t SystemTime_GetMilliseconds(void)
     return DualSlide_API->System->GetMilliseconds();
 }
 
+uint32_t SystemTime_GetMicroseconds(void)
+{
+    return DualSlide_API->System->GetMicroseconds();
+}
+
 uint32_t Random_Next(void)
 {
     return DualSlide_API->System->Random();

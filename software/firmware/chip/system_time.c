@@ -1,6 +1,6 @@
 /**
  * @file system_time.c
- * @brief Milliseconds since start-up, from the Cortex-M7 SysTick timer.
+ * @brief Time since start-up, from the Cortex-M7 SysTick timer.
  */
 
 #include "system_time.h"
@@ -30,6 +30,9 @@ static volatile uint32_t SystemTime_Milliseconds;
 
 static bool SystemTime_Initialized;
 
+/** Processor cycles, and so SysTick counts, per microsecond. */
+static uint32_t SystemTime_CyclesPerMicrosecond;
+
 /* -------------------------------------------------------------------------- */
 /* Public functions                                                           */
 /* -------------------------------------------------------------------------- */
@@ -43,10 +46,12 @@ bool SystemTime_Init(void)
         return true;
     }
 
-    if(SystemCoreClock < SYSTEM_TIME_TICKS_PER_SECOND)
+    if(SystemCoreClock < (SYSTEM_TIME_TICKS_PER_SECOND * 1000U))
     {
         return false;
     }
+
+    SystemTime_CyclesPerMicrosecond = SystemCoreClock / (SYSTEM_TIME_TICKS_PER_SECOND * 1000U);
 
     /*
      * SysTick counts from the reload value down to zero.
@@ -86,6 +91,33 @@ uint32_t SystemTime_GetMilliseconds(void)
     }
 
     return SystemTime_Milliseconds;
+}
+
+uint32_t SystemTime_GetMicroseconds(void)
+{
+    uint32_t Milliseconds;
+    uint32_t Remaining;
+    uint32_t Elapsed;
+
+    if(!SystemTime_Initialized)
+    {
+        return 0U;
+    }
+
+    /*
+     * SysTick counts down through the current millisecond. Read the count
+     * again if a tick arrived meanwhile, so the two values belong together.
+     */
+    do
+    {
+        Milliseconds = SystemTime_Milliseconds;
+        Remaining = SysTick->VAL;
+    }
+    while(Milliseconds != SystemTime_Milliseconds);
+
+    Elapsed = (SysTick->LOAD - Remaining) / SystemTime_CyclesPerMicrosecond;
+
+    return (Milliseconds * 1000U) + ((Elapsed < 1000U) ? Elapsed : 999U);
 }
 
 void SystemTime_DelayMilliseconds(uint32_t Milliseconds)

@@ -144,6 +144,7 @@ static const GameAPI_FontsTypeDef GameAPI_Fonts =
 static const GameAPI_SystemTypeDef GameAPI_System =
 {
     .GetMilliseconds = SystemTime_GetMilliseconds,
+    .GetMicroseconds = SystemTime_GetMicroseconds,
     .Random = Random_Next,
     .RandomBetween = Random_Between,
     .GetBatteryMillivolts = System_GetBatteryMillivolts,

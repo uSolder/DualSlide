@@ -187,6 +187,9 @@ typedef struct
     /** Milliseconds since the device started; wraps after about 49 days. */
     uint32_t (*GetMilliseconds)(void);
 
+    /** Microseconds since the device started; wraps after about 71 minutes. */
+    uint32_t (*GetMicroseconds)(void);
+
     /** A random 32-bit value, seeded from hardware randomness. */
     uint32_t (*Random)(void);
 
