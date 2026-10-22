@@ -753,7 +753,8 @@ void Render_DrawText(Render_TargetTypeDef *Target, const Font *FontAsset, const 
 /*
  * These draw through Render_FillRect(), Render_DrawPolygon() and
  * Render_DrawText(), so they honour the clip rectangle. Round shapes are one
- * horizontal span per row.
+ * horizontal span per row. One-pixel lines clip themselves and write the
+ * frame directly.
  */
 
 /* One horizontal span from Left to Right inclusive. */
@@ -1092,46 +1093,154 @@ void Render_DrawCircle(Render_TargetTypeDef *Target, int16_t CentreX, int16_t Ce
     }
 }
 
+/*
+ * A one-pixel line, stepping one pixel at a time along its longer (major)
+ * axis. Step I of MajorLength moves
+ *
+ *     floor((2 * I * MinorLength + MajorLength) / (2 * MajorLength))
+ *
+ * pixels along the minor axis, so the steps inside the clip rectangle are
+ * found directly and only those are walked, straight through the frame.
+ */
+static void Render_DrawThinLine(Render_TargetTypeDef *Target, int32_t X1, int32_t Y1, int32_t X2, int32_t Y2, Render_ColourIndexTypeDef Colour)
+{
+    const int32_t Left = Render_ClipRect.X;
+    const int32_t Top = Render_ClipRect.Y;
+    const int32_t Right = Left + (int32_t)Render_ClipRect.Width - 1;
+    const int32_t Bottom = Top + (int32_t)Render_ClipRect.Height - 1;
+    const int32_t DeltaX = X2 - X1;
+    const int32_t DeltaY = Y2 - Y1;
+    const int32_t Width = (DeltaX < 0) ? -DeltaX : DeltaX;
+    const int32_t Height = (DeltaY < 0) ? -DeltaY : DeltaY;
+    const bool MajorIsX = Width >= Height;
+    const int32_t MajorLength = MajorIsX ? Width : Height;
+    const int32_t MinorLength = MajorIsX ? Height : Width;
+    const int32_t MajorStart = MajorIsX ? X1 : Y1;
+    const int32_t MinorStart = MajorIsX ? Y1 : X1;
+    const int32_t MajorSign = ((MajorIsX ? DeltaX : DeltaY) < 0) ? -1 : 1;
+    const int32_t MinorSign = ((MajorIsX ? DeltaY : DeltaX) < 0) ? -1 : 1;
+    const int32_t MajorLow = MajorIsX ? Left : Top;
+    const int32_t MajorHigh = MajorIsX ? Right : Bottom;
+    const int32_t MinorLow = MajorIsX ? Top : Left;
+    const int32_t MinorHigh = MajorIsX ? Bottom : Right;
+
+    /* Moving right is one physical row on, moving down one physical pixel back. */
+    const int32_t MajorAdvance = MajorSign * (MajorIsX ? (int32_t)Target->StridePixels : -1);
+    const int32_t MinorAdvance = MinorSign * (MajorIsX ? -1 : (int32_t)Target->StridePixels);
+    int32_t First;
+    int32_t Last;
+    int32_t FirstMinor;
+    int32_t LastMinor;
+    int32_t Minor;
+    int32_t Remainder;
+    int32_t Count;
+    Render_ColourIndexTypeDef *Destination;
+
+    if((Render_ClipRect.Width == 0U) || (Render_ClipRect.Height == 0U))
+    {
+        return;
+    }
+
+    /* The steps whose major coordinate is inside the clip rectangle. */
+    First = (MajorSign > 0) ? (MajorLow - MajorStart) : (MajorStart - MajorHigh);
+    Last = (MajorSign > 0) ? (MajorHigh - MajorStart) : (MajorStart - MajorLow);
+    First = Render_MaxInt32(First, 0);
+    Last = Render_MinInt32(Last, MajorLength);
+
+    /* The minor offsets inside it. */
+    FirstMinor = (MinorSign > 0) ? (MinorLow - MinorStart) : (MinorStart - MinorHigh);
+    LastMinor = (MinorSign > 0) ? (MinorHigh - MinorStart) : (MinorStart - MinorLow);
+    FirstMinor = Render_MaxInt32(FirstMinor, 0);
+    LastMinor = Render_MinInt32(LastMinor, MinorLength);
+
+    if((First > Last) || (FirstMinor > LastMinor))
+    {
+        return;
+    }
+
+    if(MinorLength > 0)
+    {
+        const int64_t DoubleMajor = 2 * (int64_t)MajorLength;
+        const int64_t DoubleMinor = 2 * (int64_t)MinorLength;
+
+        /* The first step reaching FirstMinor, and the last before passing LastMinor. */
+        if(FirstMinor > 0)
+        {
+            const int64_t Reach = (DoubleMajor * FirstMinor) - MajorLength;
+
+            First = Render_MaxInt32(First, (int32_t)((Reach + DoubleMinor - 1) / DoubleMinor));
+        }
+
+        if(LastMinor < MinorLength)
+        {
+            const int64_t Pass = (DoubleMajor * (LastMinor + 1)) - MajorLength;
+
+            Last = Render_MinInt32(Last, (int32_t)((Pass + DoubleMinor - 1) / DoubleMinor) - 1);
+        }
+
+        if(First > Last)
+        {
+            return;
+        }
+    }
+
+    if(MajorLength == 0)
+    {
+        Minor = 0;
+        Remainder = 0;
+    }
+    else if(First == 0)
+    {
+        Minor = 0;
+        Remainder = MajorLength;
+    }
+    else
+    {
+        const int64_t Numerator = (2 * (int64_t)First * MinorLength) + MajorLength;
+
+        Minor = (int32_t)(Numerator / (2 * (int64_t)MajorLength));
+        Remainder = (int32_t)(Numerator % (2 * (int64_t)MajorLength));
+    }
+
+    {
+        const int32_t Major = MajorStart + (MajorSign * First);
+        const int32_t MinorCoordinate = MinorStart + (MinorSign * Minor);
+        const int32_t X = MajorIsX ? Major : MinorCoordinate;
+        const int32_t Y = MajorIsX ? MinorCoordinate : Major;
+
+        Destination = &Target->Pixels[((uint32_t)X * Target->StridePixels) + RENDER_PHYSICAL_X(Y)];
+    }
+
+    for(Count = Last - First; ; Count--)
+    {
+        *Destination = Colour;
+
+        if(Count == 0)
+        {
+            break;
+        }
+
+        Destination += MajorAdvance;
+        Remainder += 2 * MinorLength;
+
+        if(Remainder >= 2 * MajorLength)
+        {
+            Remainder -= 2 * MajorLength;
+            Destination += MinorAdvance;
+        }
+    }
+}
+
 void Render_DrawLine(Render_TargetTypeDef *Target, int16_t X1, int16_t Y1, int16_t X2, int16_t Y2, uint16_t Thickness, Render_ColourIndexTypeDef Colour)
 {
     const int32_t DeltaX = (int32_t)X2 - (int32_t)X1;
     const int32_t DeltaY = (int32_t)Y2 - (int32_t)Y1;
 
-    /* Thin lines: one pixel per step (Bresenham). */
     if(Thickness <= 1U)
     {
-        const int32_t StepX = (DeltaX < 0) ? -1 : 1;
-        const int32_t StepY = (DeltaY < 0) ? -1 : 1;
-        const int32_t Width = (DeltaX < 0) ? -DeltaX : DeltaX;
-        const int32_t Height = (DeltaY < 0) ? DeltaY : -DeltaY;
-        int32_t Error = Width + Height;
-        int32_t X = X1;
-        int32_t Y = Y1;
-
-        for(;;)
+        if(Render_IsTargetValid(Target))
         {
-            Render_Span(Target, X, X, Y, Colour);
-
-            if((X == X2) && (Y == Y2))
-            {
-                break;
-            }
-
-            {
-                const int32_t Doubled = 2 * Error;
-
-                if(Doubled >= Height)
-                {
-                    Error += Height;
-                    X += StepX;
-                }
-
-                if(Doubled <= Width)
-                {
-                    Error += Width;
-                    Y += StepY;
-                }
-            }
+            Render_DrawThinLine(Target, X1, Y1, X2, Y2, Colour);
         }
 
         return;

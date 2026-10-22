@@ -40,8 +40,11 @@ typedef uint32_t Display_ColourTypeDef;
 /**
  * @brief A writable frame supplied by the display.
  *
- * Pixels are stored row-major as 8-bit palette indices.  StridePixels may be
+ * Pixels are stored row-major as 8-bit palette indices, in the panel's own
+ * portrait orientation: Width is 480 and Height 800.  StridePixels may be
  * larger than Width to accommodate display-specific alignment or padding.
+ * render.h turns this into the 800 by 480 landscape space games draw in; see
+ * Render_PixelAddress() there.
  */
 typedef struct
 {

@@ -23,6 +23,23 @@
  *   standard palette, whose colours are named below (RENDER_RED and so on).
  *   An app can instead give its own list of up to 128 colours.
  *
+ * WRITING PIXELS YOURSELF
+ *
+ *   The Target's memory is not stored as 800-pixel rows. The screen is a
+ *   portrait panel, so the frame is 480 pixels wide and 800 high, and the
+ *   render functions turn it a quarter turn to give the landscape space
+ *   above. Address pixels with Render_PixelAddress(), never as
+ *   Pixels[Y * StridePixels + X]:
+ *
+ *       Render_ColourIndexTypeDef *Pixel = Render_PixelAddress(Target, X, Y);
+ *
+ *       Pixel += RENDER_STEP_DOWN;               // now (X, Y + 1)
+ *       Pixel += Render_StepRight(Target);       // now (X + 1, Y + 1)
+ *
+ *   A column of pixels (fixed X) is contiguous in memory, with Y increasing
+ *   towards lower addresses. A row (fixed Y) jumps a whole physical row per
+ *   pixel, so drawing in columns is much faster than drawing in rows.
+ *
  * Render functions only write into the target supplied by their caller. They
  * never allocate, acquire, retain, or present a framebuffer.
  */
@@ -59,10 +76,17 @@ typedef uint8_t Render_ColourIndexTypeDef;
 typedef int16_t Render_AngleTypeDef;
 
 /**
- * @brief A writable row-major CLUT8 render target.
+ * @brief A writable CLUT8 render target: the screen's portrait frame.
  *
- * Render functions require an 800 by 480 logical target. StridePixels may be
- * larger than Width when the caller's backing buffer has row padding.
+ * The members describe the physical frame, not the logical 800 by 480
+ * space: Width is 480, Height is 800, and each of the 800 physical rows
+ * starts StridePixels (at least 480) after the one before. Logical pixel
+ * (X, Y) is stored at
+ *
+ *     Pixels[(X * StridePixels) + (479 - Y)]
+ *
+ * which Render_PixelAddress() computes. Render functions reject any other
+ * size.
  */
 typedef struct
 {
@@ -71,6 +95,27 @@ typedef struct
     uint16_t Height;
     uint32_t StridePixels;
 } Render_TargetTypeDef;
+
+/** Address change for one logical pixel down (Y + 1). */
+#define RENDER_STEP_DOWN                     (-1)
+
+/**
+ * @brief Address change for one logical pixel right (X + 1).
+ */
+static inline int32_t Render_StepRight(const Render_TargetTypeDef *Target)
+{
+    return (int32_t)Target->StridePixels;
+}
+
+/**
+ * @brief Address of logical pixel (X, Y) in the target.
+ *
+ * X must be 0 to 799 and Y 0 to 479; nothing is clipped or checked.
+ */
+static inline Render_ColourIndexTypeDef *Render_PixelAddress(Render_TargetTypeDef *Target, int32_t X, int32_t Y)
+{
+    return &Target->Pixels[((uint32_t)X * Target->StridePixels) + ((RENDER_HEIGHT - 1U) - (uint32_t)Y)];
+}
 
 /**
  * @brief A logical rectangle in the 800 by 480 render space.
