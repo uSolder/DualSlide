@@ -658,6 +658,146 @@ void Render_DrawImageRotated(Render_TargetTypeDef *Target, const Render_ImageTyp
 }
 
 /* -------------------------------------------------------------------------- */
+/* 3D helpers                                                                 */
+/* -------------------------------------------------------------------------- */
+
+void Render_DrawTexturedColumn(Render_TargetTypeDef *Target, int16_t X, int16_t Y, uint16_t Height, const Render_ImageTypeDef *Texture, uint16_t U, int32_t VStart, int32_t VStep, const Render_ShadeTableTypeDef *Shade)
+{
+    int32_t Top;
+    int32_t Bottom;
+    int64_t Start;
+    uint32_t TextureRows;
+    uint32_t V;
+    uint32_t Step;
+    uint32_t Count;
+    uint32_t SourceStride;
+    const Render_ColourIndexTypeDef *Source;
+    Render_ColourIndexTypeDef *Destination;
+    Render_ColourIndexTypeDef Colour;
+
+    if(!Render_IsTargetValid(Target) || !Render_IsImageValid(Texture) || (U >= Texture->Width) || (Texture->Height > (uint16_t)INT16_MAX))
+    {
+        return;
+    }
+
+    if((X < Render_ClipRect.X) || ((int32_t)X >= ((int32_t)Render_ClipRect.X + (int32_t)Render_ClipRect.Width)))
+    {
+        return;
+    }
+
+    Top = Render_MaxInt32((int32_t)Y, (int32_t)Render_ClipRect.Y);
+    Bottom = Render_MinInt32((int32_t)Y + (int32_t)Height, (int32_t)Render_ClipRect.Y + (int32_t)Render_ClipRect.Height);
+
+    if(Bottom <= Top)
+    {
+        return;
+    }
+
+    /* Rows in fixed point; under 2^31, so stepping past the end cannot overflow. */
+    TextureRows = (uint32_t)Texture->Height << RENDER_TEXTURE_SHIFT;
+
+    /* Start at the first visible pixel, with both values wrapped into the texture. */
+    Start = ((int64_t)VStart + ((int64_t)(Top - (int32_t)Y) * (int64_t)VStep)) % (int64_t)TextureRows;
+    V = (uint32_t)((Start < 0) ? (Start + (int64_t)TextureRows) : Start);
+    Start = (int64_t)VStep % (int64_t)TextureRows;
+    Step = (uint32_t)((Start < 0) ? (Start + (int64_t)TextureRows) : Start);
+
+    Count = (uint32_t)(Bottom - Top);
+    SourceStride = Texture->StridePixels;
+    Source = &Texture->Pixels[U];
+    Destination = Render_PixelAddress(Target, X, Top);
+
+    /* One logical pixel down is one byte back in the frame. */
+    if(!Texture->HasTransparentColour && (Shade == NULL))
+    {
+        while(Count-- > 0U)
+        {
+            *Destination-- = Source[(V >> RENDER_TEXTURE_SHIFT) * SourceStride];
+            V += Step;
+            V = (V >= TextureRows) ? (V - TextureRows) : V;
+        }
+    }
+    else if(!Texture->HasTransparentColour)
+    {
+        while(Count-- > 0U)
+        {
+            *Destination-- = Shade->Colours[Source[(V >> RENDER_TEXTURE_SHIFT) * SourceStride]];
+            V += Step;
+            V = (V >= TextureRows) ? (V - TextureRows) : V;
+        }
+    }
+    else
+    {
+        while(Count-- > 0U)
+        {
+            Colour = Source[(V >> RENDER_TEXTURE_SHIFT) * SourceStride];
+
+            if(Colour != Texture->TransparentColour)
+            {
+                *Destination = (Shade != NULL) ? Shade->Colours[Colour] : Colour;
+            }
+
+            Destination--;
+            V += Step;
+            V = (V >= TextureRows) ? (V - TextureRows) : V;
+        }
+    }
+}
+
+void Render_MakeShadeTable(Render_ShadeTableTypeDef *Table, const uint32_t *Palette, uint16_t ColourCount, uint32_t Towards, uint8_t Amount)
+{
+    const int32_t TowardsRed = (int32_t)((Towards >> 16) & 0xFFU);
+    const int32_t TowardsGreen = (int32_t)((Towards >> 8) & 0xFFU);
+    const int32_t TowardsBlue = (int32_t)(Towards & 0xFFU);
+    uint32_t Index;
+
+    if(Table == NULL)
+    {
+        return;
+    }
+
+    if(Palette == NULL)
+    {
+        Palette = Render_StandardPalette;
+        ColourCount = (uint16_t)RENDER_STANDARD_COLOUR_COUNT;
+    }
+
+    ColourCount = (ColourCount > 256U) ? 256U : ColourCount;
+
+    for(Index = 0U; Index < 256U; Index++)
+    {
+        Table->Colours[Index] = (Render_ColourIndexTypeDef)Index;
+    }
+
+    for(Index = 0U; Index < ColourCount; Index++)
+    {
+        const int32_t Red = (int32_t)((Palette[Index] >> 16) & 0xFFU);
+        const int32_t Green = (int32_t)((Palette[Index] >> 8) & 0xFFU);
+        const int32_t Blue = (int32_t)(Palette[Index] & 0xFFU);
+        const int32_t WantRed = Red + ((((TowardsRed - Red) * (int32_t)Amount) + 127) / 255);
+        const int32_t WantGreen = Green + ((((TowardsGreen - Green) * (int32_t)Amount) + 127) / 255);
+        const int32_t WantBlue = Blue + ((((TowardsBlue - Blue) * (int32_t)Amount) + 127) / 255);
+        int32_t Nearest = INT32_MAX;
+        uint32_t Candidate;
+
+        /* Nearest by squared distance, with green weighted most as the eye sees it. */
+        for(Candidate = 0U; Candidate < ColourCount; Candidate++)
+        {
+            const int32_t DeltaRed = (int32_t)((Palette[Candidate] >> 16) & 0xFFU) - WantRed;
+            const int32_t DeltaGreen = (int32_t)((Palette[Candidate] >> 8) & 0xFFU) - WantGreen;
+            const int32_t DeltaBlue = (int32_t)(Palette[Candidate] & 0xFFU) - WantBlue;
+            const int32_t Distance = (2 * DeltaRed * DeltaRed) + (4 * DeltaGreen * DeltaGreen) + (3 * DeltaBlue * DeltaBlue);
+
+            if(Distance < Nearest)
+            {
+                Nearest = Distance;
+                Table->Colours[Index] = (Render_ColourIndexTypeDef)Candidate;
+            }
+        }
+    }
+}
+
+/* -------------------------------------------------------------------------- */
 /* Text drawing                                                               */
 /* -------------------------------------------------------------------------- */
 

@@ -38,7 +38,9 @@ static const GameAPI_RenderTypeDef GameAPI_Render =
     .DrawLine = Render_DrawLine,
     .TextWidth = Render_TextWidth,
     .DrawTextAligned = Render_DrawTextAligned,
-    .FormatTextList = Render_FormatTextList
+    .FormatTextList = Render_FormatTextList,
+    .DrawTexturedColumn = Render_DrawTexturedColumn,
+    .MakeShadeTable = Render_MakeShadeTable
 };
 
 static const GameAPI_ControlsTypeDef GameAPI_Controls =

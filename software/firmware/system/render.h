@@ -204,6 +204,52 @@ typedef enum
 /** Number of colours in the standard palette. */
 #define RENDER_STANDARD_COLOUR_COUNT         (18U)
 
+/** The standard palette's colours as 0x00RRGGBB, in palette order. */
+static const uint32_t Render_StandardPalette[RENDER_STANDARD_COLOUR_COUNT] =
+{
+    0x00000000U, /* RENDER_BLACK      */
+    0x00FFFFFFU, /* RENDER_WHITE      */
+    0x00808080U, /* RENDER_GREY       */
+    0x00404040U, /* RENDER_DARK_GREY  */
+    0x00C0C0C0U, /* RENDER_LIGHT_GREY */
+    0x00E53935U, /* RENDER_RED        */
+    0x008E1B1BU, /* RENDER_DARK_RED   */
+    0x00FB8C00U, /* RENDER_ORANGE     */
+    0x00FDD835U, /* RENDER_YELLOW     */
+    0x0043A047U, /* RENDER_GREEN      */
+    0x001B5E20U, /* RENDER_DARK_GREEN */
+    0x0000BCD4U, /* RENDER_CYAN       */
+    0x001E88E5U, /* RENDER_BLUE       */
+    0x000D2A6BU, /* RENDER_DARK_BLUE  */
+    0x008E24AAU, /* RENDER_PURPLE     */
+    0x00F06292U, /* RENDER_PINK       */
+    0x00795548U, /* RENDER_BROWN      */
+    0x0087CEEBU  /* RENDER_SKY        */
+};
+
+/* -------------------------------------------------------------------------- */
+/* 3D helpers                                                                 */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * Texture rows are given in 16.16 fixed point: RENDER_TEXTURE_ONE is one
+ * row. To fit a texture of TextureHeight rows into Height screen pixels, step
+ * by (TextureHeight * RENDER_TEXTURE_ONE) / Height.
+ */
+#define RENDER_TEXTURE_SHIFT                 (16)
+#define RENDER_TEXTURE_ONE                   ((int32_t)1 << RENDER_TEXTURE_SHIFT)
+
+/**
+ * @brief A colour remap: each palette index's colour after shading.
+ *
+ * Make one per light level or distance with Render_MakeShadeTable(), once at
+ * start-up. A flat colour shades as Shade->Colours[Colour].
+ */
+typedef struct
+{
+    Render_ColourIndexTypeDef Colours[256];
+} Render_ShadeTableTypeDef;
+
 /**
  * @brief Restrict subsequent drawing commands to a logical rectangular area.
  *
@@ -309,6 +355,50 @@ void Render_DrawImageRotated(Render_TargetTypeDef *Target, const Render_ImageTyp
  * @param Colour Palette index used for set glyph pixels.
  */
 void Render_DrawText(Render_TargetTypeDef *Target, const Font *FontAsset, const char *Text, int16_t X, int16_t Y, Render_ColourIndexTypeDef Colour);
+
+/**
+ * @brief Draw one screen column from one column of a texture: a wall slice
+ * or sprite slice in a raycaster.
+ *
+ * Fills Height pixels down from (X, Y) with texture column U, starting at
+ * texture row VStart and moving VStep rows per pixel, both in 16.16 fixed
+ * point (RENDER_TEXTURE_ONE). Rows wrap around the texture, so a texture can
+ * repeat up a tall wall. Transparent texture pixels are skipped. When Shade
+ * is not NULL, every pixel is remapped through it.
+ *
+ * Columns are the fast direction in the frame's memory, so a full-screen view
+ * of 800 columns is cheap. Pixels outside the clip rectangle are not written.
+ *
+ * @param Target Writable CLUT8 render target.
+ * @param X Screen column.
+ * @param Y Top of the column, which may be above the screen.
+ * @param Height Column height in screen pixels.
+ * @param Texture Source image, at most 32,767 rows high.
+ * @param U Texture column, below Texture->Width.
+ * @param VStart Texture row at Y, in 16.16 fixed point.
+ * @param VStep Texture rows per screen pixel, in 16.16 fixed point.
+ * @param Shade Colour remap, or NULL for the texture's own colours.
+ */
+void Render_DrawTexturedColumn(Render_TargetTypeDef *Target, int16_t X, int16_t Y, uint16_t Height, const Render_ImageTypeDef *Texture, uint16_t U, int32_t VStart, int32_t VStep, const Render_ShadeTableTypeDef *Shade);
+
+/**
+ * @brief Make a shade table that blends every colour towards one colour.
+ *
+ * Each palette colour is mixed with Towards by Amount (0 keeps it, 255 gives
+ * Towards), then mapped to the nearest colour in the palette. Towards black
+ * gives darkness, towards a fog colour gives fog. Indices from ColourCount
+ * to 255 map to themselves.
+ *
+ * This searches the palette for every colour, so make tables at start-up,
+ * not every frame.
+ *
+ * @param Table Table to fill.
+ * @param Palette The app's colours as 0x00RRGGBB, or NULL for the standard palette.
+ * @param ColourCount Number of colours in Palette, at most 256; ignored for NULL.
+ * @param Towards Colour to blend towards, as 0x00RRGGBB.
+ * @param Amount How far to blend, 0 to 255.
+ */
+void Render_MakeShadeTable(Render_ShadeTableTypeDef *Table, const uint32_t *Palette, uint16_t ColourCount, uint32_t Towards, uint8_t Amount);
 
 /* -------------------------------------------------------------------------- */
 /* Shapes and text helpers                                                    */

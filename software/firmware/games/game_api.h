@@ -102,6 +102,8 @@ typedef struct
     uint16_t (*TextWidth)(const Font *FontAsset, const char *Text);
     void (*DrawTextAligned)(Render_TargetTypeDef *Target, const Font *FontAsset, const char *Text, int16_t X, int16_t Y, Render_AlignTypeDef Align, Render_ColourIndexTypeDef Colour);
     char *(*FormatTextList)(char *Buffer, uint32_t Size, const char *Format, va_list Arguments);
+    void (*DrawTexturedColumn)(Render_TargetTypeDef *Target, int16_t X, int16_t Y, uint16_t Height, const Render_ImageTypeDef *Texture, uint16_t U, int32_t VStart, int32_t VStep, const Render_ShadeTableTypeDef *Shade);
+    void (*MakeShadeTable)(Render_ShadeTableTypeDef *Table, const uint32_t *Palette, uint16_t ColourCount, uint32_t Towards, uint8_t Amount);
 } GameAPI_RenderTypeDef;
 
 /** Buttons and sliders (controls.h). */

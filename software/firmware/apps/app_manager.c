@@ -62,29 +62,6 @@ static const AppManager_RuntimeInterfaceTypeDef AppManager_LauncherInterface =
 };
 
 
-/* The standard palette, for apps without colours of their own; see the RENDER_ colour names. */
-static const Display_ColourTypeDef AppManager_StandardPalette[RENDER_STANDARD_COLOUR_COUNT] =
-{
-    0x00000000U, /* RENDER_BLACK      */
-    0x00FFFFFFU, /* RENDER_WHITE      */
-    0x00808080U, /* RENDER_GREY       */
-    0x00404040U, /* RENDER_DARK_GREY  */
-    0x00C0C0C0U, /* RENDER_LIGHT_GREY */
-    0x00E53935U, /* RENDER_RED        */
-    0x008E1B1BU, /* RENDER_DARK_RED   */
-    0x00FB8C00U, /* RENDER_ORANGE     */
-    0x00FDD835U, /* RENDER_YELLOW     */
-    0x0043A047U, /* RENDER_GREEN      */
-    0x001B5E20U, /* RENDER_DARK_GREEN */
-    0x0000BCD4U, /* RENDER_CYAN       */
-    0x001E88E5U, /* RENDER_BLUE       */
-    0x000D2A6BU, /* RENDER_DARK_BLUE  */
-    0x008E24AAU, /* RENDER_PURPLE     */
-    0x00F06292U, /* RENDER_PINK       */
-    0x00795548U, /* RENDER_BROWN      */
-    0x0087CEEBU  /* RENDER_SKY        */
-};
-
 static AppManager_StateTypeDef AppManager_State;
 static uint16_t AppManager_ActiveApplicationIndex;
 static bool AppManager_Initialized;
@@ -172,7 +149,7 @@ static void AppManager_DrawName(const GameLibrary_GameTypeDef *Game, Render_Targ
 static void AppManager_FillPalette(const AppManager_AppTypeDef *Application, Display_ColourTypeDef *Palette)
 {
     const bool OwnColours = (Application != NULL) && (Application->Palette != NULL);
-    const Display_ColourTypeDef *Colours = OwnColours ? Application->Palette : AppManager_StandardPalette;
+    const Display_ColourTypeDef *Colours = OwnColours ? Application->Palette : Render_StandardPalette;
     uint16_t Count = OwnColours ? Application->PaletteCount : (uint16_t)RENDER_STANDARD_COLOUR_COUNT;
 
     Count = (Count > APP_MANAGER_SPLASH_PALETTE_ENTRY_COUNT) ? (uint16_t)APP_MANAGER_SPLASH_PALETTE_ENTRY_COUNT : Count;

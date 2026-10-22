@@ -155,6 +155,16 @@ char *Render_FormatTextList(char *Buffer, uint32_t Size, const char *Format, va_
     return DualSlide_API->Render->FormatTextList(Buffer, Size, Format, Arguments);
 }
 
+void Render_DrawTexturedColumn(Render_TargetTypeDef *Target, int16_t X, int16_t Y, uint16_t Height, const Render_ImageTypeDef *Texture, uint16_t U, int32_t VStart, int32_t VStep, const Render_ShadeTableTypeDef *Shade)
+{
+    DualSlide_API->Render->DrawTexturedColumn(Target, X, Y, Height, Texture, U, VStart, VStep, Shade);
+}
+
+void Render_MakeShadeTable(Render_ShadeTableTypeDef *Table, const uint32_t *Palette, uint16_t ColourCount, uint32_t Towards, uint8_t Amount)
+{
+    DualSlide_API->Render->MakeShadeTable(Table, Palette, ColourCount, Towards, Amount);
+}
+
 char *Render_FormatText(char *Buffer, uint32_t Size, const char *Format, ...)
 {
     va_list Arguments;
