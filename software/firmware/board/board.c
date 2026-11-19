@@ -18,7 +18,6 @@
 #include "system_time.h"
 #include "timer.h"
 #include "usbd.h"
-#include "w430wvc004_a.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -26,6 +25,19 @@
 /* -------------------------------------------------------------------------- */
 /* Private configuration                                                      */
 /* -------------------------------------------------------------------------- */
+
+/* 1 drives the DH_T4-3_480800-02 panel, 0 the W430WVC004-A. Both use an ST7701S. */
+#define BOARD_LCD_DH_T4_3_480800_02                    1
+
+#if BOARD_LCD_DH_T4_3_480800_02
+#include "dh_t4_3_480800_02.h"
+#define LCD_WIDTH                DH_T4_3_480800_02_WIDTH
+#define LCD_HEIGHT              DH_T4_3_480800_02_HEIGHT
+#else
+#include "w430wvc004_a.h"
+#define LCD_WIDTH                     W430WVC004_A_WIDTH
+#define LCD_HEIGHT                   W430WVC004_A_HEIGHT
+#endif
 
 #define LCD_HORIZONTAL_SYNC_WIDTH                     10U
 #define LCD_HORIZONTAL_BACK_PORCH                     20U
@@ -307,8 +319,8 @@ static DisplayController_HandleTypeDef Board_LCDDisplayController =
     },
     .Timing =
     {
-        .ActiveWidth = W430WVC004_A_WIDTH,
-        .ActiveHeight = W430WVC004_A_HEIGHT,
+        .ActiveWidth = LCD_WIDTH,
+        .ActiveHeight = LCD_HEIGHT,
         .HorizontalSyncWidth = LCD_HORIZONTAL_SYNC_WIDTH,
         .HorizontalBackPorch = LCD_HORIZONTAL_BACK_PORCH,
         .HorizontalFrontPorch = LCD_HORIZONTAL_FRONT_PORCH,
@@ -340,7 +352,11 @@ static ST7701S_HandleTypeDef Board_LCDController =
     .DelayMilliseconds = Delay_Milliseconds
 };
 
+#if BOARD_LCD_DH_T4_3_480800_02
+static DH_T4_3_480800_02_HandleTypeDef Board_LCDPanel =
+#else
 static W430WVC004_A_HandleTypeDef Board_LCDPanel =
+#endif
 {
     .Controller = &Board_LCDController
 };
@@ -630,7 +646,11 @@ static void Board_InitInterfaces(void)
 
 static void Board_InitDevices(void)
 {
+#if BOARD_LCD_DH_T4_3_480800_02
+    if(DH_T4_3_480800_02_Init(&Board_LCDPanel) != DH_T4_3_480800_02_RESULT_OK)
+#else
     if(W430WVC004_A_Init(&Board_LCDPanel) != W430WVC004_A_RESULT_OK)
+#endif
     {
         Board_InitFailure();
     }
