@@ -54,6 +54,7 @@
 
 static void Board_SetLCDReset(bool Asserted);
 static void Board_InitFailure(void);
+static void Board_Reset(void);
 static void Board_InitPowerLatch(void);
 static void Board_InitTarget(void);
 static void Board_InitCriticalInterfaces(void);
@@ -362,11 +363,21 @@ void Board_Init(void)
     Board_InitTarget();
     Board_InitCriticalInterfaces();
 
-    /* On external power, stay unlatched until the power button is pressed. */
+    /*
+     * On external power, stay unlatched until the power button is pressed.
+     * The secondary button also holds BOOT0 high, so pressing it here instead
+     * resets the chip into ST's USB bootloader. Power-off waits for both
+     * buttons to be released, so this only happens on a fresh press while
+     * plugged in and off.
+     */
     if(Board_WakeReason == BOARD_WAKE_REASON_EXTERNAL_POWER)
     {
         while(GPIO_IsLow(&Board_PrimaryButtonPin))
         {
+            if(GPIO_IsHigh(&Board_SecondaryButtonPin))
+            {
+                Board_Reset();
+            }
         }
 
         if(GPIO_Set(&Board_PowerEnablePin) != GPIO_RESULT_OK)
@@ -433,12 +444,14 @@ void Board_PowerOff(void)
     AudioStream_PowerDown();
 
     GPIO_Clear(&Board_PowerEnablePin);
-    while(GPIO_IsHigh(&Board_PrimaryButtonPin))
+
+    /* Wait for both buttons of the off chord to be let go before resetting. */
+    while(GPIO_IsHigh(&Board_PrimaryButtonPin) || GPIO_IsHigh(&Board_SecondaryButtonPin))
     {
     }
 
     Delay_Milliseconds(500U);
-    Chip_PowerOff();
+    Board_Reset();
 }
 
 /* -------------------------------------------------------------------------- */
@@ -455,6 +468,17 @@ static void Board_SetLCDReset(bool Asserted)
     {
         Board_InitFailure();
     }
+}
+
+/*
+ * Every reset goes through here. ST's bootloader never touches the power
+ * enable pin, so it is cleared first; otherwise a reset into the bootloader
+ * would leave the supply latched on.
+ */
+static void Board_Reset(void)
+{
+    GPIO_Clear(&Board_PowerEnablePin);
+    Chip_Reset();
 }
 
 static void Board_InitFailure(void)
@@ -480,6 +504,11 @@ static void Board_InitPowerLatch(void)
     }
 
     if(GPIO_Init(&Board_PrimaryButtonPin, &Board_ButtonInputConfig) != GPIO_RESULT_OK)
+    {
+        Board_InitFailure();
+    }
+
+    if(GPIO_Init(&Board_SecondaryButtonPin, &Board_ButtonInputConfig) != GPIO_RESULT_OK)
     {
         Board_InitFailure();
     }
@@ -579,11 +608,6 @@ static void Board_InitInterfaces(void)
        (Timer_PWMChannelInit(&Board_LCDBacklightChannel) != TIMER_RESULT_OK) ||
        (Timer_OutputEnable(&Board_LCDBacklightChannel) != TIMER_RESULT_OK) ||
        (Timer_Start(&Board_LCDBacklightTimer) != TIMER_RESULT_OK))
-    {
-        Board_InitFailure();
-    }
-
-    if(GPIO_Init(&Board_SecondaryButtonPin, &Board_ButtonInputConfig) != GPIO_RESULT_OK)
     {
         Board_InitFailure();
     }

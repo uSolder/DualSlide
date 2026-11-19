@@ -71,7 +71,7 @@ void Chip_Init(void)
     SystemCoreClockUpdate();
 }
 
-void Chip_PowerOff(void)
+void Chip_Reset(void)
 {
     NVIC_SystemReset();
 }

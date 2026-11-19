@@ -21,9 +21,9 @@ extern "C" {
 void Chip_Init(void);
 
 /**
- * @brief Reset the processor; the board has already cut its own power.
+ * @brief Reset the processor at once.
  */
-void Chip_PowerOff(void);
+void Chip_Reset(void);
 
 /** Words in the chip's unique ID. */
 #define CHIP_UNIQUE_ID_WORDS                (3U)
